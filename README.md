@@ -17,7 +17,7 @@
 
 **agent-sdk-go** is a Go SDK for production AI agents — tools, MCP, human-in-the-loop approvals, and multi-agent delegation — built on [Temporal](https://temporal.io) durable execution.
 
-Most agent frameworks live and die inside a single process: if your server restarts, the run is lost. Here, every agent run is a Temporal workflow end to end. Runs survive crashes and deploys, respect timeouts and retries, and are observable as real service operations. There is no execution path outside Temporal.
+> **Most agent frameworks live and die inside a single process: if your server restarts, the run is lost.** Here, every agent run is a Temporal workflow end to end. Runs survive crashes and deploys, respect timeouts and retries, and are observable as real service operations. There is no execution path outside Temporal.
 
 `pkg/agent` exposes three entry points — `Run`, `Stream`, and `RunAsync` — each mapped directly to a Temporal workflow. Connect via `WithTemporalConfig` or `WithTemporalClient` to your cluster. See [Getting Started](#getting-started) to set up, or [Temporal Runtime](#temporal-runtime) for deeper detail on workers, queues, and streaming.
 
