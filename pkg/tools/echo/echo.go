@@ -19,6 +19,8 @@ func New() *Echo {
 
 func (*Echo) Name() string { return "echo" }
 
+func (*Echo) DisplayName() string { return "Echo" }
+
 func (*Echo) Description() string {
 	return "(Demo) Echoes the given message back. Use for testing tool-calling flow."
 }

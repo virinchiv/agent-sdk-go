@@ -49,6 +49,8 @@ func New(opts ...Option) *Search {
 
 func (*Search) Name() string { return "search" }
 
+func (*Search) DisplayName() string { return "Search" }
+
 func (*Search) Description() string {
 	return "Searches the web via Google. Use when the user needs current information, news, facts, or links. Requires SERPER_API_KEY (2,500 free queries at serper.dev)."
 }

@@ -17,6 +17,8 @@ func NewReverser() *Reverser { return &Reverser{} }
 
 func (*Reverser) Name() string { return "reverser" }
 
+func (*Reverser) DisplayName() string { return "Reverser" }
+
 func (*Reverser) Description() string {
 	return "Reverses the given string. Use when the user wants text reversed or backwards."
 }

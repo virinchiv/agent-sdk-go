@@ -20,6 +20,8 @@ func New() *CurrentTime {
 
 func (*CurrentTime) Name() string { return "current_time" }
 
+func (*CurrentTime) DisplayName() string { return "Current Time" }
+
 func (*CurrentTime) Description() string {
 	return "(Demo) Returns current date and time in ISO8601 (UTC). Use when the user asks about time or date."
 }

@@ -148,10 +148,11 @@ type AgentLLMResult struct {
 
 // ToolCallRequest is a tool invocation with approval flag. NeedsApproval is set by AgentLLMActivity.
 type ToolCallRequest struct {
-	ToolCallID    string         `json:"tool_call_id"` // from LLM; used to match tool results
-	ToolName      string         `json:"tool_name"`
-	Args          map[string]any `json:"args"`
-	NeedsApproval bool           `json:"needs_approval"`
+	ToolCallID      string         `json:"tool_call_id"` // from LLM; used to match tool results
+	ToolName        string         `json:"tool_name"`
+	ToolDisplayName string         `json:"tool_display_name,omitempty"`
+	Args            map[string]any `json:"args"`
+	NeedsApproval   bool           `json:"needs_approval"`
 }
 
 // AgentToolExecuteInput is the input to AgentToolExecuteActivity.
@@ -165,9 +166,10 @@ type AgentToolExecuteInput struct {
 }
 
 type AgentToolApprovalInput struct {
-	ToolName         string         `json:"tool_name"`
-	Args             map[string]any `json:"args"`
 	ToolCallID       string         `json:"tool_call_id"`
+	ToolName         string         `json:"tool_name"`
+	ToolDisplayName  string         `json:"tool_display_name,omitempty"`
+	Args             map[string]any `json:"args"`
 	EventWorkflowID  string         `json:"event_workflow_id"`
 	EventTaskQueue   string         `json:"event_task_queue,omitempty"`
 	LocalChannelName string         `json:"local_channel_name,omitempty"`
@@ -384,10 +386,11 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			if emitErr := emitEvent(&types.AgentEvent{
 				Type: types.AgentEventToolCall,
 				ToolCall: &types.ToolCallEvent{
-					ToolCallID: tc.ToolCallID,
-					ToolName:   tc.ToolName,
-					Args:       tc.Args,
-					Status:     types.ToolCallStatusPending,
+					ToolCallID:      tc.ToolCallID,
+					ToolName:        tc.ToolName,
+					ToolDisplayName: tc.ToolDisplayName,
+					Args:            tc.Args,
+					Status:          types.ToolCallStatusPending,
 				},
 				Timestamp: workflow.Now(ctx),
 			}); emitErr != nil {
@@ -454,11 +457,12 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 				if emitErr := emitEvent(&types.AgentEvent{
 					Type: types.AgentEventToolResult,
 					ToolCall: &types.ToolCallEvent{
-						ToolCallID: tc.ToolCallID,
-						ToolName:   tc.ToolName,
-						Args:       tc.Args,
-						Result:     content,
-						Status:     types.ToolCallStatusDenied,
+						ToolCallID:      tc.ToolCallID,
+						ToolName:        tc.ToolName,
+						ToolDisplayName: tc.ToolDisplayName,
+						Args:            tc.Args,
+						Result:          content,
+						Status:          types.ToolCallStatusDenied,
 					},
 					Timestamp: workflow.Now(ctx),
 				}); emitErr != nil {
@@ -484,6 +488,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 					approvalInput := AgentToolApprovalInput{
 						ToolCallID:       tc.ToolCallID,
 						ToolName:         tc.ToolName,
+						ToolDisplayName:  tc.ToolDisplayName,
 						Args:             tc.Args,
 						EventWorkflowID:  eventWorkflowID,
 						EventTaskQueue:   eventTaskQueue,
@@ -548,11 +553,12 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			if emitErr := emitEvent(&types.AgentEvent{
 				Type: types.AgentEventToolResult,
 				ToolCall: &types.ToolCallEvent{
-					ToolCallID: tc.ToolCallID,
-					ToolName:   tc.ToolName,
-					Args:       tc.Args,
-					Result:     content,
-					Status:     toolStatus,
+					ToolCallID:      tc.ToolCallID,
+					ToolName:        tc.ToolName,
+					ToolDisplayName: tc.ToolDisplayName,
+					Args:            tc.Args,
+					Result:          content,
+					Status:          toolStatus,
 				},
 				Timestamp: workflow.Now(ctx),
 			}); emitErr != nil {
@@ -764,11 +770,16 @@ func (rt *TemporalRuntime) llmResponseToResult(resp *interfaces.LLMResponse, too
 			return nil, fmt.Errorf("unknown tool: %s", tc.ToolName)
 		}
 		needsApproval := rt.requiresApproval(tool)
+		displayName := tool.DisplayName()
+		if displayName == "" {
+			displayName = tc.ToolName
+		}
 		result.ToolCalls = append(result.ToolCalls, ToolCallRequest{
-			ToolCallID:    tc.ToolCallID,
-			ToolName:      tc.ToolName,
-			Args:          tc.Args,
-			NeedsApproval: needsApproval,
+			ToolCallID:      tc.ToolCallID,
+			ToolName:        tc.ToolName,
+			ToolDisplayName: displayName,
+			Args:            tc.Args,
+			NeedsApproval:   needsApproval,
 		})
 	}
 	return result, nil
@@ -832,12 +843,13 @@ func (rt *TemporalRuntime) AgentToolApprovalActivity(ctx context.Context, input 
 		Type:      types.AgentEventApproval,
 		AgentName: rt.AgentSpec.Name,
 		Approval: &types.ApprovalEvent{
-			ToolCallID:    input.ToolCallID,
-			ToolName:      input.ToolName,
-			Args:          input.Args,
-			ApprovalToken: taskTokenB64,
-			Kind:          kind,
-			SubAgentName:  subAgentName,
+			ToolCallID:      input.ToolCallID,
+			ToolName:        input.ToolName,
+			ToolDisplayName: input.ToolDisplayName,
+			Args:            input.Args,
+			ApprovalToken:   taskTokenB64,
+			Kind:            kind,
+			SubAgentName:    subAgentName,
 		},
 		Timestamp: time.Now(),
 	}

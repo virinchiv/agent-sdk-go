@@ -21,6 +21,8 @@ func New() *Random {
 
 func (*Random) Name() string { return "random" }
 
+func (*Random) DisplayName() string { return "Random" }
+
 func (*Random) Description() string {
 	return "(Demo) Generates a random integer between min and max. Use for testing or dice roll."
 }

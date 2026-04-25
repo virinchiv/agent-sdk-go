@@ -14,7 +14,8 @@ import (
 )
 
 var (
-	mcpToolNameTemplate = "mcp_%s_%s"
+	mcpToolNameTemplate        = "mcp_%s_%s"
+	mcpToolDisplayNameTemplate = "%s MCP %s Tool"
 )
 
 var _ interfaces.Tool = (*MCPTool)(nil)
@@ -41,6 +42,17 @@ func mcpToolName(serverName, toolName string) string {
 	return fmt.Sprintf(mcpToolNameTemplate, sn, tn)
 }
 
+// mcpToolDisplayName returns the registered tool display name for an MCP server key and server tool id
+// (same format as [MCPTool.DisplayName]). Trims whitespace on both inputs; returns "" if either is empty after trim.
+func mcpToolDisplayName(serverName, toolName string) string {
+	sn := strings.TrimSpace(serverName)
+	tn := strings.TrimSpace(toolName)
+	if sn == "" || tn == "" {
+		return ""
+	}
+	return fmt.Sprintf(mcpToolDisplayNameTemplate, sn, tn)
+}
+
 // NewMCPTool builds an MCPTool. When spec.Parameters is nil, [MCPTool.Parameters] returns a default object schema.
 func NewMCPTool(serverName string, spec interfaces.ToolSpec, client interfaces.MCPClient) *MCPTool {
 	return &MCPTool{
@@ -56,6 +68,14 @@ func (m *MCPTool) Name() string {
 		return ""
 	}
 	return mcpToolName(m.ServerName, m.Spec.Name)
+}
+
+// DisplayName implements interfaces.Tool.
+func (m *MCPTool) DisplayName() string {
+	if m == nil {
+		return ""
+	}
+	return mcpToolDisplayName(m.ServerName, m.Spec.Name)
 }
 
 // Description implements interfaces.Tool.
