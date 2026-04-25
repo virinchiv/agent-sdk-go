@@ -105,9 +105,10 @@ func TestAgentWorkflow_OneToolThenFinal(t *testing.T) {
 			return &AgentLLMResult{
 				Content: "using tool",
 				ToolCalls: []ToolCallRequest{{
-					ToolCallID: "tc1",
-					ToolName:   "echo",
-					Args:       map[string]any{"x": 1},
+					ToolCallID:      "tc1",
+					ToolName:        "echo",
+					ToolDisplayName: "Echo",
+					Args:            map[string]any{"x": 1},
 				}},
 			}, nil
 		}
@@ -147,9 +148,10 @@ func TestAgentWorkflow_ToolAuthorizationDenied_SkipsExecute(t *testing.T) {
 			return &AgentLLMResult{
 				Content: "using tool",
 				ToolCalls: []ToolCallRequest{{
-					ToolCallID: "tc-auth-deny",
-					ToolName:   "echo",
-					Args:       map[string]any{"x": 1},
+					ToolCallID:      "tc-auth-deny",
+					ToolName:        "echo",
+					ToolDisplayName: "Echo",
+					Args:            map[string]any{"x": 1},
 				}},
 			}, nil
 		}
@@ -208,6 +210,7 @@ func TestAgentLLMActivity_MockLLM_ToolCalls(t *testing.T) {
 
 	mockTool := mocks.NewMockTool(ctrl)
 	mockTool.EXPECT().Name().Return("echo").AnyTimes()
+	mockTool.EXPECT().DisplayName().Return("Echo").AnyTimes()
 	mockTool.EXPECT().Description().Return("d").AnyTimes()
 	mockTool.EXPECT().Parameters().Return(interfaces.JSONSchema{}).AnyTimes()
 

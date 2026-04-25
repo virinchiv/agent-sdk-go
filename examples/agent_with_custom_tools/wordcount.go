@@ -18,6 +18,8 @@ func NewWordCount() *WordCount { return &WordCount{} }
 
 func (*WordCount) Name() string { return "word_count" }
 
+func (*WordCount) DisplayName() string { return "Word Count" }
+
 func (*WordCount) Description() string {
 	return "Counts the number of words in the given text. Use when the user asks for word count."
 }

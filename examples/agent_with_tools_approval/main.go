@@ -77,7 +77,7 @@ func main() {
 func makeApprovalHandler(lineCh <-chan string) agent.ApprovalHandler {
 	return func(ctx context.Context, req *agent.ApprovalRequest) {
 		argsJSON, _ := json.MarshalIndent(req.Args, "", "  ")
-		fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", req.ToolName, string(argsJSON))
+		fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", req.ToolDisplayName, string(argsJSON))
 		select {
 		case <-ctx.Done():
 			return

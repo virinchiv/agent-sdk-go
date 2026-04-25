@@ -25,6 +25,8 @@ func New() *Weather {
 
 func (*Weather) Name() string { return "weather" }
 
+func (*Weather) DisplayName() string { return "Weather" }
+
 func (*Weather) Description() string {
 	return "Gets current weather for a location. Use when the user asks about weather, temperature, humidity, or conditions. Accepts city name or coordinates."
 }
