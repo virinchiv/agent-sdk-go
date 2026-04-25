@@ -22,6 +22,8 @@ func New() *Calculator {
 
 func (*Calculator) Name() string { return "calculator" }
 
+func (*Calculator) DisplayName() string { return "Calculator" }
+
 func (*Calculator) Description() string {
 	return "Performs basic arithmetic: add, subtract, multiply, divide. Use when the user needs to compute or evaluate mathematical expressions."
 }

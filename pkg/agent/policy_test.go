@@ -14,6 +14,7 @@ type mockTool struct {
 }
 
 func (m mockTool) Name() string                      { return m.name }
+func (m mockTool) DisplayName() string               { return "Mock" }
 func (m mockTool) Description() string               { return "mock" }
 func (m mockTool) Parameters() interfaces.JSONSchema { return interfaces.JSONSchema{} }
 func (m mockTool) Execute(ctx context.Context, args map[string]any) (any, error) {

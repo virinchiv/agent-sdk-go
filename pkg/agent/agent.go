@@ -180,12 +180,13 @@ func (a *Agent) RunAsync(ctx context.Context, input string, conversationID strin
 			saved = a.approvalHandler
 			a.approvalHandler = func(handlerCtx context.Context, req *ApprovalRequest) {
 				out := &ApprovalRequest{
-					ToolName:     req.ToolName,
-					Args:         copyApprovalArgs(req.Args),
-					Respond:      req.Respond,
-					Kind:         req.Kind,
-					AgentName:    req.AgentName,
-					SubAgentName: req.SubAgentName,
+					ToolName:        req.ToolName,
+					ToolDisplayName: req.ToolDisplayName,
+					Args:            copyApprovalArgs(req.Args),
+					Respond:         req.Respond,
+					Kind:            req.Kind,
+					AgentName:       req.AgentName,
+					SubAgentName:    req.SubAgentName,
 				}
 				select {
 				case apprCh <- out:

@@ -11,6 +11,7 @@ import (
 type fpTool struct{ name string }
 
 func (f fpTool) Name() string                      { return f.name }
+func (f fpTool) DisplayName() string               { return "FP Tool" }
 func (f fpTool) Description() string               { return "" }
 func (f fpTool) Parameters() interfaces.JSONSchema { return nil }
 func (f fpTool) Execute(ctx context.Context, args map[string]any) (any, error) {

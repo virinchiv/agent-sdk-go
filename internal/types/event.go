@@ -54,10 +54,11 @@ const (
 // The agent that requested approval is on AgentEvent.AgentName, not repeated here.
 // Use with Agent.OnApproval when the user approves or rejects; see streaming examples.
 type ApprovalEvent struct {
-	ToolCallID    string         `json:"tool_call_id,omitempty"`
-	ToolName      string         `json:"tool_name"`
-	Args          map[string]any `json:"args,omitempty"`
-	ApprovalToken string         `json:"approval_token,omitempty"`
+	ToolCallID      string         `json:"tool_call_id,omitempty"`
+	ToolName        string         `json:"tool_name"`
+	ToolDisplayName string         `json:"tool_display_name,omitempty"`
+	Args            map[string]any `json:"args,omitempty"`
+	ApprovalToken   string         `json:"approval_token,omitempty"`
 	// Kind is tool vs sub-agent delegation; use for UI copy.
 	Kind ToolApprovalKind `json:"kind,omitempty"`
 	// DelegateToName is set when Kind is delegation: display name of the target sub-agent.
@@ -75,9 +76,10 @@ const (
 )
 
 type ToolCallEvent struct {
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolName   string         `json:"tool_name"`
-	Args       map[string]any `json:"args,omitempty"`
-	Result     any            `json:"result,omitempty"`
-	Status     ToolCallStatus `json:"status"`
+	ToolCallID      string         `json:"tool_call_id,omitempty"`
+	ToolName        string         `json:"tool_name"`
+	ToolDisplayName string         `json:"tool_display_name,omitempty"`
+	Args            map[string]any `json:"args,omitempty"`
+	Result          any            `json:"result,omitempty"`
+	Status          ToolCallStatus `json:"status"`
 }
