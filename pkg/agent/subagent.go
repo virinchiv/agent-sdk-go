@@ -85,6 +85,13 @@ func (t *subAgentTool) Name() string {
 	return t.name
 }
 
+func (t *subAgentTool) DisplayName() string {
+	if t == nil {
+		return ""
+	}
+	return fmt.Sprintf("Sub-Agent %s", t.agent.Name)
+}
+
 func (t *subAgentTool) Description() string {
 	d := strings.TrimSpace(t.agent.Description)
 	if d != "" {

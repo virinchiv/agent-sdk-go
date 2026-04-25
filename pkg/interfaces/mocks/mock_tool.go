@@ -50,6 +50,20 @@ func (mr *MockToolMockRecorder) Description() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Description", reflect.TypeOf((*MockTool)(nil).Description))
 }
 
+// DisplayName mocks base method.
+func (m *MockTool) DisplayName() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DisplayName")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// DisplayName indicates an expected call of DisplayName.
+func (mr *MockToolMockRecorder) DisplayName() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DisplayName", reflect.TypeOf((*MockTool)(nil).DisplayName))
+}
+
 // Execute mocks base method.
 func (m *MockTool) Execute(arg0 context.Context, arg1 map[string]interface{}) (interface{}, error) {
 	m.ctrl.T.Helper()

@@ -342,12 +342,13 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 			}
 			approvalCtx, cancel := context.WithTimeout(runCtx, rt.AgentExecution.Limits.ApprovalTimeout)
 			req.ApprovalHandler(approvalCtx, &types.ApprovalRequest{
-				ToolName:     ev.Approval.ToolName,
-				Args:         ev.Approval.Args,
-				Respond:      onApproval,
-				Kind:         ev.Approval.Kind,
-				AgentName:    ev.AgentName,
-				SubAgentName: ev.Approval.SubAgentName,
+				ToolName:        ev.Approval.ToolName,
+				ToolDisplayName: ev.Approval.ToolDisplayName,
+				Args:            ev.Approval.Args,
+				Respond:         onApproval,
+				Kind:            ev.Approval.Kind,
+				AgentName:       ev.AgentName,
+				SubAgentName:    ev.Approval.SubAgentName,
 			})
 			cancel()
 		case resp := <-approvalResponseCh:

@@ -33,9 +33,10 @@ type ApprovalHandler func(ctx context.Context, req *ApprovalRequest)
 // Respond is always set; call it once with ApprovalStatusApproved or ApprovalStatusRejected.
 // For Stream approvals, use OnApproval with the approval event payload instead.
 type ApprovalRequest struct {
-	ToolName string         `json:"tool_name"`
-	Args     map[string]any `json:"args"`
-	Respond  ApprovalSender `json:"-"`
+	ToolName        string         `json:"tool_name"`
+	ToolDisplayName string         `json:"tool_display_name,omitempty"`
+	Args            map[string]any `json:"args"`
+	Respond         ApprovalSender `json:"-"`
 	// Kind matches ApprovalEvent: distinguish normal tools from sub-agent delegation.
 	Kind ToolApprovalKind `json:"kind,omitempty"`
 	// AgentName is the agent that requested approval for the current run.

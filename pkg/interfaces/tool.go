@@ -35,6 +35,9 @@ type Tool interface {
 	// Name returns the tool identifier (e.g. "search", "calculator"). Used by the LLM in tool calls.
 	Name() string
 
+	// DisplayName returns the tool display name (e.g. "Search", "Calculator"). Used by the LLM in tool calls.
+	DisplayName() string
+
 	// Description describes when and how to use this tool. Shown to the LLM for tool selection.
 	Description() string
 

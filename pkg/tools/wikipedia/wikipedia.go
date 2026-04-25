@@ -58,6 +58,8 @@ func New(opts ...Option) *Wikipedia {
 
 func (*Wikipedia) Name() string { return "wikipedia" }
 
+func (*Wikipedia) DisplayName() string { return "Wikipedia" }
+
 func (*Wikipedia) Description() string {
 	return "Searches Wikipedia for articles and returns excerpts. Use when the user asks about facts, concepts, people, places, or history. Free, no API key required."
 }

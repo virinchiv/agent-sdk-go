@@ -22,6 +22,8 @@ func NewProtectedNote() *ProtectedNote { return &ProtectedNote{} }
 
 func (*ProtectedNote) Name() string { return "protected_note" }
 
+func (*ProtectedNote) DisplayName() string { return "Protected Note" }
+
 func (*ProtectedNote) Description() string {
 	return "Returns a protected internal note for a topic. Use when the user explicitly asks for the protected note or internal note."
 }
