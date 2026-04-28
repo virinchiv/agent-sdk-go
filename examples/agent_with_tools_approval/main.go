@@ -66,18 +66,31 @@ func main() {
 	}
 
 	fmt.Println("user:", prompt)
-	response, err := a.Run(context.Background(), prompt, "")
+	result, err := a.Run(context.Background(), prompt, "")
 	if err != nil {
 		log.Printf("run failed: %v", err)
 		return
 	}
-	fmt.Println("agent:", response.Content)
+	fmt.Println("agent:", result.Content)
 }
 
 func makeApprovalHandler(lineCh <-chan string) agent.ApprovalHandler {
 	return func(ctx context.Context, req *agent.ApprovalRequest) {
-		argsJSON, _ := json.MarshalIndent(req.Args, "", "  ")
-		fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", req.ToolDisplayName, string(argsJSON))
+		v, err := agent.ParseToolApproval(req)
+		if err != nil {
+			log.Printf("approval handler: %v", err)
+			return
+		}
+		args := v.Args
+		if args == nil {
+			args = map[string]any{}
+		}
+		argsJSON, _ := json.MarshalIndent(args, "", "  ")
+		label := v.ToolDisplayName
+		if label == "" {
+			label = v.ToolName
+		}
+		fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", label, string(argsJSON))
 		select {
 		case <-ctx.Done():
 			return

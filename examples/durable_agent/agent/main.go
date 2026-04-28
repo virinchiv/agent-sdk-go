@@ -24,6 +24,7 @@ import (
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/examples/durable_agent/opts"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
 
@@ -70,7 +71,6 @@ func main() {
 
 	scanner := bufio.NewScanner(os.Stdin)
 
-	// If an initial prompt was provided on the CLI, run it first.
 	initial := strings.Join(os.Args[1:], " ")
 	if initial != "" {
 		runStream(ctx, a, scanner, initial)
@@ -79,7 +79,7 @@ func main() {
 	for {
 		fmt.Print("you> ")
 		if !scanner.Scan() {
-			break // EOF or Ctrl-D
+			break
 		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -93,12 +93,11 @@ func main() {
 		runStream(ctx, a, scanner, line)
 
 		if ctx.Err() != nil {
-			break // SIGINT/SIGTERM
+			break
 		}
 	}
 }
 
-// runStream starts one Stream call, prints events, and handles approval prompts inline.
 func runStream(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, prompt string) {
 	eventCh, err := a.Stream(ctx, prompt, "")
 	if err != nil {
@@ -114,55 +113,63 @@ func runStream(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, prom
 			continue
 		}
 
-		switch ev.Type {
-		case agent.AgentEventContentDelta, agent.AgentEventThinkingDelta:
+		switch ev.Type() {
+		case agent.AgentEventTypeTextMessageContent, agent.AgentEventTypeReasoningMessageContent:
 			streamed = true
-			if ev.Content != "" {
-				fmt.Print(ev.Content)
+			if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+				fmt.Print(t.Delta)
+			} else if r, ok := ev.(*agent.AgentReasoningMessageContentEvent); ok && r.Delta != "" {
+				fmt.Print(r.Delta)
 			}
 
-		case agent.AgentEventContent:
-			if ev.Content != "" {
-				fmt.Printf("[content] %s\n", ev.Content)
+		case agent.AgentEventTypeToolCallStart:
+			if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+				fmt.Printf("\n[tool_call] %s  (id=%s)\n", t.ToolCallName, t.ToolCallID)
 			}
 
-		case agent.AgentEventToolCall:
-			if ev.ToolCall != nil {
-				args, _ := json.Marshal(ev.ToolCall.Args)
-				fmt.Printf("\n[tool_call] %s  status=%s  args=%s\n",
-					ev.ToolCall.ToolName, ev.ToolCall.Status, string(args))
+		case agent.AgentEventTypeToolCallArgs:
+			if t, ok := ev.(*agent.AgentToolCallArgsEvent); ok && t.Delta != "" {
+				fmt.Printf("[tool_args] %s\n", t.Delta)
 			}
 
-		case agent.AgentEventToolResult:
-			if ev.ToolCall != nil {
-				fmt.Printf("[tool_result] %s: %v\n", ev.ToolCall.ToolName, ev.ToolCall.Result)
+		case agent.AgentEventTypeToolCallResult:
+			if t, ok := ev.(*agent.AgentToolCallResultEvent); ok {
+				fmt.Printf("[tool_result] %s: %s\n", t.ToolCallID, t.Content)
 			}
 
-		case agent.AgentEventApproval:
-			if ev.Approval != nil {
-				handleApproval(ctx, a, scanner, ev)
+		case agent.AgentEventTypeCustom:
+			if v, ok := shared.ToolApprovalValueFromEvent(ev); ok {
+				args, _ := json.Marshal(v.Args)
+				fmt.Printf("\n[approval] agent=%s kind=tool target=%s args=%s\n", v.AgentName, v.ToolName, string(args))
+				handleApprovalTokenPrompt(ctx, a, scanner, v.ApprovalToken)
+			} else if v, ok := shared.DelegationApprovalValueFromEvent(ev); ok {
+				args, _ := json.Marshal(v.Args)
+				fmt.Printf("\n[approval] agent=%s kind=delegation target=delegate:%s args=%s\n", v.AgentName, v.SubAgentName, string(args))
+				handleApprovalTokenPrompt(ctx, a, scanner, v.ApprovalToken)
 			}
 
-		case agent.AgentEventError:
-			fmt.Printf("\n[error] %s\n", ev.Content)
+		case agent.AgentEventTypeRunError:
+			if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
+				fmt.Printf("\n[error] %s\n", re.Message)
+			}
 
-		case agent.AgentEventComplete:
+		case agent.AgentEventTypeRunFinished:
 			if streamed {
-				fmt.Println() // newline after token stream
+				fmt.Println()
 			}
-			if ev.Content != "" && !streamed {
-				fmt.Printf("[complete] %s\n", ev.Content)
+			res := shared.RunResultFromFinishedEvent(ev)
+			if res != nil && res.Content != "" && !streamed {
+				fmt.Printf("[complete] %s\n", res.Content)
 			} else {
 				fmt.Println("[complete]")
 			}
-			if ev.Usage != nil {
-				u := ev.Usage
-				fmt.Printf("[usage] prompt=%d completion=%d total=%d\n",
-					u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+			if u := shared.UsageFooter(res); u != "" {
+				fmt.Println(u)
 			}
 
 		default:
-			fmt.Printf("[%s] %+v\n", ev.Type, ev)
+			//fmt.Printf("[%s] %+v\n", ev.Type(), ev)
+			continue
 		}
 	}
 
@@ -170,31 +177,25 @@ func runStream(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, prom
 	fmt.Println()
 }
 
-// handleApproval pauses the event loop and asks the user to approve or reject the tool call.
-func handleApproval(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, ev *agent.AgentEvent) {
-	ap := ev.Approval
-	args, _ := json.Marshal(ap.Args)
-	fmt.Printf("\n[approval] agent=%s tool=%s args=%s\n", ev.AgentName, ap.ToolName, string(args))
-
+func handleApprovalTokenPrompt(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, token string) {
 	for {
 		fmt.Print("approve? (y/n)> ")
 		if !scanner.Scan() {
-			// EOF — treat as reject
 			fmt.Println("EOF, rejecting.")
-			_ = a.OnApproval(ctx, ap.ApprovalToken, agent.ApprovalStatusRejected)
+			_ = a.OnApproval(ctx, token, agent.ApprovalStatusRejected)
 			return
 		}
 		ans := strings.ToLower(strings.TrimSpace(scanner.Text()))
 		switch ans {
 		case "y", "yes":
-			if err := a.OnApproval(ctx, ap.ApprovalToken, agent.ApprovalStatusApproved); err != nil {
+			if err := a.OnApproval(ctx, token, agent.ApprovalStatusApproved); err != nil {
 				fmt.Printf("[approval error] %v\n", err)
 			} else {
 				fmt.Println("[approved]")
 			}
 			return
 		case "n", "no":
-			if err := a.OnApproval(ctx, ap.ApprovalToken, agent.ApprovalStatusRejected); err != nil {
+			if err := a.OnApproval(ctx, token, agent.ApprovalStatusRejected); err != nil {
 				fmt.Printf("[approval error] %v\n", err)
 			} else {
 				fmt.Println("[rejected]")

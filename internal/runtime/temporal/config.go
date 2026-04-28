@@ -44,6 +44,9 @@ type TemporalRuntimeConfig struct {
 	// DisableLocalWorker mirrors pkg/agent [DisableLocalWorker]: when false, the client embeds a worker
 	// so Execute/ExecuteStream skip DescribeTaskQueue poller checks. ([NewAgentWorker] never calls those methods.)
 	DisableLocalWorker bool
+	// DisableFingerprintCheck disables caller-vs-worker agent fingerprint verification at activity entry.
+	// Break-glass only: keep false in production for rollout/config safety.
+	DisableFingerprintCheck bool
 }
 
 // Option configures a TemporalRuntime.
@@ -137,6 +140,14 @@ func WithDisableLocalWorker(disable bool) Option {
 	}
 }
 
+// WithDisableFingerprintCheck disables activity-time caller-vs-worker fingerprint verification.
+// Break-glass only: use temporarily during rollout incidents; default is strict verification.
+func WithDisableFingerprintCheck(disable bool) Option {
+	return func(c *TemporalRuntimeConfig) {
+		c.DisableFingerprintCheck = disable
+	}
+}
+
 func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) {
 	c := &TemporalRuntimeConfig{logger: logger.NoopLogger()}
 	for _, opt := range opts {
@@ -171,6 +182,7 @@ func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) 
 		slog.Int("maxIterations", c.AgentExecution.Limits.MaxIterations),
 		slog.Bool("remoteWorker", c.remoteWorker),
 		slog.Bool("enableRemoteWorkers", c.enableRemoteWorkers),
+		slog.Bool("disableFingerprintCheck", c.DisableFingerprintCheck),
 		slog.Duration("timeout", c.AgentExecution.Limits.Timeout),
 		slog.Duration("approvalTimeout", c.AgentExecution.Limits.ApprovalTimeout),
 		slog.Bool("hasConversation", c.AgentExecution.Session.Conversation != nil))

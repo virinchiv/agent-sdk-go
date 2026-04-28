@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
 
@@ -65,12 +65,12 @@ func main() {
 		if ev == nil {
 			continue
 		}
-		if ev.Type == agent.AgentEventContentDelta || ev.Type == agent.AgentEventContent {
+		if shared.MarksStreamDelta(ev) {
 			streamed = true
 		}
 		printEvent(ev, streamed)
-		if ev.Type == agent.AgentEventComplete {
-			finalContent = ev.Content
+		if res := shared.RunResultFromFinishedEvent(ev); res != nil && res.Content != "" {
+			finalContent = res.Content
 		}
 	}
 	if finalContent != "" {
@@ -78,50 +78,49 @@ func main() {
 	}
 }
 
-func printEvent(ev *agent.AgentEvent, streamedContent bool) {
-	switch ev.Type {
-	case agent.AgentEventContent:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+func printEvent(ev agent.AgentEvent, streamedContent bool) {
+	if ev == nil {
+		return
+	}
+	switch ev.Type() {
+	case agent.AgentEventTypeTextMessageContent:
+		if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+			fmt.Print(t.Delta)
 		}
-	case agent.AgentEventContentDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeReasoningMessageContent:
+		if r, ok := ev.(*agent.AgentReasoningMessageContentEvent); ok && r.Delta != "" {
+			fmt.Printf("[thinking] %s", r.Delta)
 		}
-	case agent.AgentEventThinking:
-		if ev.Content != "" {
-			fmt.Printf("[thinking] %s\n", ev.Content)
+	case agent.AgentEventTypeToolCallStart:
+		if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+			fmt.Printf("\n[tool_call] %s\n", t.ToolCallName)
 		}
-	case agent.AgentEventThinkingDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeToolCallArgs:
+		if t, ok := ev.(*agent.AgentToolCallArgsEvent); ok && t.Delta != "" {
+			fmt.Printf("[tool_args] %s\n", t.Delta)
 		}
-	case agent.AgentEventToolCall:
-		if ev.ToolCall != nil {
-			tc := ev.ToolCall
-			if len(tc.Args) == 0 {
-				fmt.Printf("\n[tool_call] %s\n", tc.ToolName)
-			} else {
-				args, _ := json.Marshal(tc.Args)
-				fmt.Printf("\n[tool_call] %s args=%s\n", tc.ToolName, string(args))
-			}
+	case agent.AgentEventTypeToolCallResult:
+		if t, ok := ev.(*agent.AgentToolCallResultEvent); ok {
+			fmt.Printf("[tool_result] %s: %s\n", t.ToolCallID, t.Content)
 		}
-	case agent.AgentEventToolResult:
-		if ev.ToolCall != nil {
-			fmt.Printf("[tool_result] %s (%s): %v\n", ev.ToolCall.ToolName, ev.ToolCall.Status, ev.ToolCall.Result)
+	case agent.AgentEventTypeRunError:
+		if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
+			fmt.Printf("[error] %s\n", re.Message)
 		}
-	case agent.AgentEventError:
-		fmt.Printf("[error] %s\n", ev.Content)
-	case agent.AgentEventComplete:
-		// Only print content if we didn't already display it via ContentDelta or Content
-		if ev.Content != "" && !streamedContent {
-			who := strings.TrimSpace(ev.AgentName)
+	case agent.AgentEventTypeRunFinished:
+		res := shared.RunResultFromFinishedEvent(ev)
+		if res == nil || res.Content == "" {
+			return
+		}
+		if !streamedContent {
+			who := strings.TrimSpace(res.AgentName)
 			if who == "" {
 				who = "agent"
 			}
-			fmt.Printf("\n[%s complete] %s\n", who, ev.Content)
+			fmt.Printf("\n[%s complete] %s\n", who, res.Content)
 		}
 	default:
-		fmt.Printf("[%s] %+v\n", ev.Type, ev)
+		//fmt.Printf("[%s] %+v\n", ev.Type(), ev)
+		return
 	}
 }

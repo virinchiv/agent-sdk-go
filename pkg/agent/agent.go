@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 )
@@ -26,12 +27,12 @@ type Agent struct {
 // ErrAgentAlreadyRunning is returned when Run, RunAsync, or Stream is called while a run is already in progress.
 var ErrAgentAlreadyRunning = errors.New("agent already has an active run")
 
-// AgentResponse is the structured result of [Agent.Run] and [Agent.RunAsync] ([RunAsyncResult.Response]).
-type AgentResponse = types.AgentResponse
+// AgentRunResult is the structured result of [Agent.Run] and [Agent.RunAsync] ([RunAsyncResult.Result]).
+type AgentRunResult = types.AgentRunResult
 
-// RunAsyncResult is the single outcome from [Agent.RunAsync]. After the channel closes, Err is non-nil
-// on failure; otherwise Response is non-nil.
-type RunAsyncResult = types.RunAsyncResult
+// AgentRunAsyncResult is the single outcome from [Agent.RunAsync]. After the channel closes, Err is non-nil
+// on failure; otherwise Result is non-nil.
+type AgentRunAsyncResult = types.AgentRunAsyncResult
 
 // buildAgent builds an Agent from options. Validates approval handler when tools require approval.
 func buildAgent(opts []Option) (*Agent, error) {
@@ -127,7 +128,7 @@ func (a *Agent) Close() {
 // Run starts one execution and returns the result. Use [WithApprovalHandler] when tools require approval for Run (handler uses req.Respond); [Stream] uses approval events and [Agent.OnApproval].
 // Use [WithTimeout] or a context with deadline to avoid blocking.
 // When using [WithConversation], pass the conversation ID; agent and worker must use the same ID.
-func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*AgentResponse, error) {
+func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*AgentRunResult, error) {
 	a.logger.Debug(ctx, "agent run started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
 
 	if err := a.validateConversationID(conversationID); err != nil {
@@ -144,13 +145,7 @@ func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*
 	if err != nil {
 		return nil, err
 	}
-	return &AgentResponse{
-		Content:   result.Content,
-		AgentName: result.AgentName,
-		Model:     result.Model,
-		Metadata:  result.Metadata,
-		Usage:     result.Usage,
-	}, nil
+	return result, nil
 }
 
 // RunAsync starts the run in a goroutine and returns two channels:
@@ -161,14 +156,14 @@ func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*
 //
 // WithApprovalHandler is temporarily replaced for the duration of the run; restore happens when the run finishes.
 // If tools do not require approval, approvalCh is still closed immediately with no values.
-func (a *Agent) RunAsync(ctx context.Context, input string, conversationID string) (resultCh <-chan RunAsyncResult, approvalCh <-chan *ApprovalRequest, err error) {
+func (a *Agent) RunAsync(ctx context.Context, input string, conversationID string) (resultCh <-chan AgentRunAsyncResult, approvalCh <-chan *ApprovalRequest, err error) {
 	a.logger.Debug(ctx, "agent run async started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
 
 	if err := a.validateConversationID(conversationID); err != nil {
 		return nil, nil, err
 	}
 
-	resCh := make(chan RunAsyncResult, 1)
+	resCh := make(chan AgentRunAsyncResult, 1)
 	apprCh := make(chan *ApprovalRequest, 16)
 
 	go func() {
@@ -180,13 +175,9 @@ func (a *Agent) RunAsync(ctx context.Context, input string, conversationID strin
 			saved = a.approvalHandler
 			a.approvalHandler = func(handlerCtx context.Context, req *ApprovalRequest) {
 				out := &ApprovalRequest{
-					ToolName:        req.ToolName,
-					ToolDisplayName: req.ToolDisplayName,
-					Args:            copyApprovalArgs(req.Args),
-					Respond:         req.Respond,
-					Kind:            req.Kind,
-					AgentName:       req.AgentName,
-					SubAgentName:    req.SubAgentName,
+					Name:    req.Name,
+					Value:   req.Value,
+					Respond: req.Respond,
 				}
 				select {
 				case apprCh <- out:
@@ -200,10 +191,10 @@ func (a *Agent) RunAsync(ctx context.Context, input string, conversationID strin
 
 		resp, runErr := a.Run(ctx, input, conversationID)
 		if runErr != nil {
-			resCh <- RunAsyncResult{Err: runErr}
+			resCh <- AgentRunAsyncResult{Error: runErr}
 			return
 		}
-		resCh <- RunAsyncResult{Response: resp}
+		resCh <- AgentRunAsyncResult{Result: resp}
 	}()
 
 	return resCh, apprCh, nil
@@ -220,14 +211,14 @@ func copyApprovalArgs(src map[string]any) map[string]any {
 	return dst
 }
 
-// Stream starts the run and returns a channel of [AgentEvent]. Events are streamed until
-// [AgentEventComplete] from this agent (the root of the run). Complete events from delegated
-// sub-agents are still delivered but do not close the stream. After that root complete, the
-// channel may stay open until the backend finishes the run (e.g. post-delegation work), then closes;
-// exact timing depends on the runtime implementation.
-// For approvals (tool or delegation), receive [AgentEventApproval] and call [Agent.OnApproval] as in the streaming examples.
+// Stream starts the run and returns a channel of [AgentEvent]. Streaming continues until the root run’s
+// terminal lifecycle event ([AgentEventTypeRunFinished] / [*AgentRunFinishedEvent]); sub-agent runs may emit
+// additional [AgentEventTypeRunFinished] events that are delivered but do not close the root stream (see doc on [BaseEvent]).
+// After the root completes, the channel may stay open briefly while the backend finishes cleanup, then closes.
+// For approvals (tool or delegation), receive [AgentEventTypeCustom] ([AgentCustomEvent]), parse with
+// [ParseCustomEventApproval] / [ParseCustomEventDelegation], then call [Agent.OnApproval] with the token from Value.
 // When using [WithConversation], pass the conversation ID.
-func (a *Agent) Stream(ctx context.Context, input string, conversationID string) (chan *AgentEvent, error) {
+func (a *Agent) Stream(ctx context.Context, input string, conversationID string) (<-chan events.AgentEvent, error) {
 	a.logger.Debug(ctx, "agent run stream started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
 
 	if err := a.validateConversationID(conversationID); err != nil {

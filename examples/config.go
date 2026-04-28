@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -88,13 +90,68 @@ func init() {
 	}
 }
 
+func defaultTaskQueue() string {
+	const base = "agent-sdk-go"
+	// Derive a stable per-example queue suffix from the first path segment after ".../examples/".
+	// This makes agent/worker pairs under the same example (e.g. durable_agent/agent, durable_agent/worker)
+	// share a queue while different examples do not collide when run in parallel.
+	suffix := ""
+	pcs := make([]uintptr, 16)
+	n := runtime.Callers(2, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		f, more := frames.Next()
+		file := filepath.ToSlash(f.File)
+		if idx := strings.Index(file, "/examples/"); idx >= 0 {
+			rest := strings.TrimPrefix(file[idx+len("/examples/"):], "/")
+			if rest != "" {
+				parts := strings.Split(rest, "/")
+				if len(parts) > 0 && parts[0] != "" {
+					name := strings.ToLower(strings.TrimSpace(parts[0]))
+					// Skip this config package file frame (examples/config.go) and continue
+					// to the caller frame from the real example main package.
+					if strings.HasSuffix(name, ".go") {
+						if !more {
+							break
+						}
+						continue
+					}
+					name = strings.NewReplacer(" ", "-", "_", "-", "/", "-", "\\", "-").Replace(name)
+					name = strings.Trim(name, "-")
+					if name != "" {
+						suffix = name
+						break
+					}
+				}
+			}
+		}
+		if !more {
+			break
+		}
+	}
+
+	// TEMPORAL_TASKQUEUE acts as a base prefix; append per-example suffix automatically.
+	// This preserves easy global overrides while keeping examples isolated by default.
+	prefix := strings.TrimSpace(os.Getenv("TEMPORAL_TASKQUEUE"))
+	if prefix == "" {
+		prefix = base
+	}
+	if suffix == "" {
+		return prefix
+	}
+	if strings.HasSuffix(prefix, "-"+suffix) {
+		return prefix
+	}
+	return prefix + "-" + suffix
+}
+
 // LoadFromEnv loads config from environment variables. .env is loaded on package init if present.
 func LoadFromEnv() *Config {
 	cfg := &Config{
 		Host:      getEnv("TEMPORAL_HOST", "localhost"),
 		Port:      getEnvInt("TEMPORAL_PORT", 7233),
 		Namespace: getEnv("TEMPORAL_NAMESPACE", "default"),
-		TaskQueue: getEnv("TEMPORAL_TASKQUEUE", "agent-sdk-go"),
+		TaskQueue: defaultTaskQueue(),
 		LogLevel:  getEnv("LOG_LEVEL", "error"),
 		Provider:  interfaces.LLMProvider(getEnv("LLM_PROVIDER", "openai")),
 		APIKey:    getEnv("LLM_APIKEY", ""),

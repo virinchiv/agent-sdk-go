@@ -23,6 +23,9 @@ func NewAgentWorker(opts ...Option) (*AgentWorker, error) {
 		return nil, err
 	}
 	cfg.remoteWorker = true
+	if cfg.disableFingerprintCheck {
+		return nil, fmt.Errorf("WithDisableFingerprintCheck is not allowed on AgentWorker (remote worker process)")
+	}
 	rt, err := cfg.buildAgentRuntime(true)
 	if err != nil {
 		return nil, err
