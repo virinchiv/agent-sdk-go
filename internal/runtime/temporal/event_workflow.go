@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/workflow"
 )
@@ -38,9 +38,9 @@ func eventChannelName(runID string) string {
 // LocalChannelName is the in-process pub/sub channel name (agent_event_<main-workflow-id>)
 // all nodes in the delegation tree publish to.
 type AgentEventUpdate struct {
-	AgentName        string            `json:"agent_name"`
-	LocalChannelName string            `json:"local_channel_name,omitempty"`
-	Event            *types.AgentEvent `json:"event"`
+	AgentName        string          `json:"agent_name"`
+	LocalChannelName string          `json:"local_channel_name,omitempty"`
+	EventJSON        json.RawMessage `json:"event_json"`
 }
 
 // AgentEventWorkflow is one per agent. Receives events and approval requests via workflow updates.
@@ -65,11 +65,11 @@ func (rt *TemporalRuntime) AgentEventWorkflow(ctx workflow.Context) error {
 	// applies when this handler returns, not when inmem publish succeeds (that runs in the goroutine below).
 	err := workflow.SetUpdateHandlerWithOptions(ctx, agentEventName, func(ctx workflow.Context, upd *AgentEventUpdate) error {
 		noOfEvents++
-		evTypeStr := ""
-		if upd.Event != nil {
-			evTypeStr = string(upd.Event.Type)
+		eventType, err := events.EventTypeFromJSON(upd.EventJSON)
+		if err != nil {
+			return fmt.Errorf("failed to get event type from JSON: %w", err)
 		}
-		logger.Debug("workflow: event update received", "scope", "workflow", "agent", upd.AgentName, "eventType", evTypeStr)
+		logger.Debug("workflow: event update received", "scope", "workflow", "agent", upd.AgentName, "eventType", eventType)
 		eventCh.Send(ctx, upd)
 		return nil
 	}, options)
@@ -89,12 +89,9 @@ func (rt *TemporalRuntime) AgentEventWorkflow(ctx workflow.Context) error {
 			if upd == nil {
 				return
 			}
-			if err := workflow.ExecuteActivity(actCtx, rt.EventPublishActivity, upd.LocalChannelName, upd.Event).Get(ctx, nil); err != nil {
-				evType := ""
-				if upd.Event != nil {
-					evType = string(upd.Event.Type)
-				}
-				logger.Warn("workflow: event publish activity failed", "scope", "workflow", "error", err, "eventType", evType, "agent", upd.AgentName)
+			if err := workflow.ExecuteActivity(actCtx, rt.EventPublishActivity, upd.LocalChannelName, upd.EventJSON).Get(ctx, nil); err != nil {
+				eventType, _ := events.EventTypeFromJSON(upd.EventJSON)
+				logger.Warn("workflow: event publish activity failed", "scope", "workflow", "error", err, "eventType", eventType, "agent", upd.AgentName)
 			}
 			processedCount++
 		}
@@ -132,21 +129,14 @@ func (rt *TemporalRuntime) AgentEventWorkflow(ctx workflow.Context) error {
 }
 
 // EventPublishActivity publishes an event to the given channel (agent_event_<main-workflow-id>).
-func (rt *TemporalRuntime) EventPublishActivity(ctx context.Context, channel string, event *types.AgentEvent) error {
+func (rt *TemporalRuntime) EventPublishActivity(ctx context.Context, channel string, eventJSON json.RawMessage) error {
+	if len(eventJSON) == 0 {
+		return fmt.Errorf("agent event payload is empty")
+	}
 	logger := activity.GetLogger(ctx)
-	evType := ""
-	if event != nil {
-		evType = string(event.Type)
-	}
+	evType, _ := events.EventTypeFromJSON([]byte(eventJSON))
 	logger.Debug("activity: publish event", "scope", "activity", "channel", channel, "eventType", evType)
-	if event == nil {
-		return fmt.Errorf("event is nil")
-	}
-	data, err := json.Marshal(event)
-	if err != nil {
-		return err
-	}
-	if err := rt.eventbus.Publish(ctx, channel, data); err != nil {
+	if err := rt.eventbus.Publish(ctx, channel, []byte(eventJSON)); err != nil {
 		logger.Error("activity: publish event failed", "scope", "activity", "channel", channel, "error", err)
 		return fmt.Errorf("failed to publish agent event: %w", err)
 	}
@@ -154,7 +144,7 @@ func (rt *TemporalRuntime) EventPublishActivity(ctx context.Context, channel str
 }
 
 // subscribeToAgentEvents returns a channel that receives AgentEvent from the given event channel.
-func (rt *TemporalRuntime) subscribeToAgentEvents(ctx context.Context, channel string) (<-chan *types.AgentEvent, func() error, error) {
+func (rt *TemporalRuntime) subscribeToAgentEvents(ctx context.Context, channel string) (<-chan events.AgentEvent, func() error, error) {
 	rt.logger.Debug(ctx, "runtime subscribing to event channel", slog.String("scope", "runtime"), slog.String("channel", channel))
 	ch, closeFn, err := rt.eventbus.Subscribe(ctx, channel)
 	if err != nil {
@@ -162,16 +152,17 @@ func (rt *TemporalRuntime) subscribeToAgentEvents(ctx context.Context, channel s
 		return nil, nil, err
 	}
 
-	eventCh := make(chan *types.AgentEvent)
+	// Buffered so Decode→Forward cannot deadlock when [outCh] applies backpressure (slow consumer).
+	eventCh := make(chan events.AgentEvent, 64)
 	go func() {
 		defer close(eventCh)
 		for data := range ch {
-			var ev types.AgentEvent
-			if err := json.Unmarshal(data, &ev); err != nil {
-				rt.logger.Debug(ctx, "runtime event decode skipped", slog.String("scope", "runtime"), slog.Any("error", err))
+			ev, err := events.EventFromJSON(data)
+			if err != nil {
+				rt.logger.Warn(ctx, "runtime event decode skipped", slog.String("scope", "runtime"), slog.Any("error", err))
 				continue
 			}
-			eventCh <- &ev
+			eventCh <- ev
 		}
 	}()
 

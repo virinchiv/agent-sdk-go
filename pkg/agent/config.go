@@ -67,7 +67,7 @@ type MCPConfig struct {
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
-//     WithMCPConfig, WithMCPClients, WithAgentMode
+//     WithMCPConfig, WithMCPClients, WithAgentMode, WithDisableFingerprintCheck
 type agentConfig struct {
 	ID                 string
 	Name               string
@@ -102,6 +102,8 @@ type agentConfig struct {
 	disableLocalWorker  bool // true when user calls DisableLocalWorker; no local worker. Agent only.
 	enableRemoteWorkers bool // true: run remote event path for streaming/approvals. false (default): in-process only. Agent only.
 	remoteWorker        bool // true for AgentWorker: worker-side runtime (remote activities/updates).
+	// break-glass: disable caller-vs-worker fingerprint guard at activity entry.
+	disableFingerprintCheck bool
 
 	// Sub-agents: direct children exposed to the LLM; subAgentTools is filled by buildSubAgentTools (graph + name checks), merged in toolsList with base and MCP tools. maxSubAgentDepth caps nesting from this agent (direct children = 1; default 2 when unset or <= 0).
 	subAgents        []*Agent
@@ -252,6 +254,14 @@ func EnableRemoteWorkers() Option {
 // DisableLocalWorker marks to skip local worker creation. Agent only. Use with NewAgentWorker.
 func DisableLocalWorker() Option {
 	return func(c *agentConfig) { c.disableLocalWorker = true }
+}
+
+// WithDisableFingerprintCheck disables caller-vs-worker fingerprint verification at activity entry.
+// This option is applicable to the Temporal runtime only ([WithTemporalConfig] / [WithTemporalClient]).
+// Break-glass only: keep false by default to avoid config drift across pods/workers.
+// Not allowed for [NewAgentWorker] (remote worker process).
+func WithDisableFingerprintCheck(disable bool) Option {
+	return func(c *agentConfig) { c.disableFingerprintCheck = disable }
 }
 
 // WithConversation sets the conversation for message history. Applies to Agent and AgentWorker.
@@ -429,6 +439,7 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Bool("disableLocalWorker", c.disableLocalWorker),
 		slog.Bool("enableRemoteWorkers", c.enableRemoteWorkers),
 		slog.Bool("remoteWorker", c.remoteWorker),
+		slog.Bool("disableFingerprintCheck", c.disableFingerprintCheck),
 		slog.String("agentMode", string(c.agentMode)),
 		slog.Bool("hasApprovalHandler", c.approvalHandler != nil),
 		slog.Duration("timeout", c.timeout),

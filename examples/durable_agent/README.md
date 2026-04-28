@@ -1,6 +1,6 @@
 # durable_agent
 
-Separate **agent** and **worker** processes: `DisableLocalWorker` / `EnableRemoteWorkers` on the agent, `NewAgentWorker` on the worker, shared options in [`opts/opts.go`](opts/opts.go). The agent uses **`Stream`** with `WithStream(true)` and prints events (tokens, tools, approvals, `complete`).
+Separate **agent** and **worker** processes: `DisableLocalWorker` / `EnableRemoteWorkers` on the agent, `NewAgentWorker` on the worker, shared options in [`opts/opts.go`](opts/opts.go). The agent uses **`Stream`** with `WithStream(true)`; the sample prints streaming event types (`AgentEventTypeTextMessageContent`, tool events, **`AgentEventTypeCustom`** for approvals, **`AgentEventTypeRunFinished`**, etc.—see [`agent/main.go`](agent/main.go)).
 
 ```bash
 # From examples/ (after cp env.sample .env and Temporal is up)

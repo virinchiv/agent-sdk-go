@@ -3,13 +3,13 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
@@ -18,8 +18,7 @@ import (
 )
 
 // agent_with_stream_conversation demonstrates Stream with conversation and
-// proper event handling: ContentDelta/Content streamed to user, Complete content
-// not re-printed when already displayed (avoids duplicate output).
+// proper event handling: streamed text not duplicated from RUN_FINISHED.
 func main() {
 	cfg := config.LoadFromEnv()
 
@@ -75,7 +74,7 @@ func main() {
 
 func runSingleTurn(ctx context.Context, a *agent.Agent, prompt, convID string) {
 	fmt.Println("user:", prompt)
-	fmt.Print("assistant: ")
+	fmt.Println("assistant:")
 	eventCh, err := a.Stream(ctx, prompt, convID)
 	if err != nil {
 		log.Printf("Stream failed: %v", err)
@@ -112,63 +111,69 @@ func runInteractive(ctx context.Context, a *agent.Agent, convID string) {
 }
 
 // handleEvents processes the event stream. Tracks streamedContent so we don't
-// re-print Complete's content when it was already shown via ContentDelta/Content.
-// Caller prints "assistant: " before calling so all events (tools, content) are under assistant.
-func handleEvents(eventCh <-chan *agent.AgentEvent) {
+// re-print RUN_FINISHED body when it was already streamed as TEXT_MESSAGE_CONTENT.
+func handleEvents(eventCh <-chan agent.AgentEvent) {
 	var streamedContent bool
 	var finalContent string
 	for ev := range eventCh {
 		if ev == nil {
 			continue
 		}
-		if ev.Type == agent.AgentEventContentDelta || ev.Type == agent.AgentEventContent {
+		if shared.MarksStreamDelta(ev) {
 			streamedContent = true
 		}
 		printEvent(ev, streamedContent)
-		if ev.Type == agent.AgentEventComplete {
-			finalContent = ev.Content
+		if res := shared.RunResultFromFinishedEvent(ev); res != nil && res.Content != "" {
+			finalContent = res.Content
 		}
 	}
-	_ = finalContent // use for logging/storage if needed
+	_ = finalContent
 }
 
-func printEvent(ev *agent.AgentEvent, streamedContent bool) {
-	switch ev.Type {
-	case agent.AgentEventContent:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+func printEvent(ev agent.AgentEvent, streamedContent bool) {
+	if ev == nil {
+		return
+	}
+	switch eventType := ev.Type(); eventType {
+	case agent.AgentEventTypeTextMessageContent:
+		if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+			fmt.Print(t.Delta)
 		}
-	case agent.AgentEventContentDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeReasoningMessageContent:
+		if r, ok := ev.(*agent.AgentReasoningMessageContentEvent); ok && r.Delta != "" {
+			fmt.Printf("[thinking] %s", r.Delta)
 		}
-	case agent.AgentEventThinking:
-		if ev.Content != "" {
-			fmt.Printf("[thinking] %s\n", ev.Content)
+	case agent.AgentEventTypeToolCallStart:
+		if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+			fmt.Printf("\n[%s] %s (%s)\n", eventType, t.ToolCallName, t.ToolCallID)
 		}
-	case agent.AgentEventThinkingDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeToolCallArgs:
+		if t, ok := ev.(*agent.AgentToolCallArgsEvent); ok && t.Delta != "" {
+			fmt.Printf("[%s] %s %s\n", eventType, t.ToolCallID, t.Delta)
 		}
-	case agent.AgentEventToolCall:
-		if ev.ToolCall != nil {
-			args, _ := json.Marshal(ev.ToolCall.Args)
-			fmt.Printf("\n[tool_call] %s (%s) args=%s\n", ev.ToolCall.ToolDisplayName, ev.ToolCall.ToolCallID, string(args))
+	case agent.AgentEventTypeToolCallResult:
+		if t, ok := ev.(*agent.AgentToolCallResultEvent); ok {
+			fmt.Printf("[%s] %s: %s\n", eventType, t.ToolCallID, t.Content)
 		}
-	case agent.AgentEventToolResult:
-		if ev.ToolCall != nil {
-			fmt.Printf("[tool_result] %s: %v\n", ev.ToolCall.ToolDisplayName, ev.ToolCall.Result)
+	case agent.AgentEventTypeRunStarted:
+		if r, ok := ev.(*agent.AgentRunStartedEvent); ok {
+			fmt.Printf("[%s] threadID=%s runID=%s\n", eventType, r.ThreadID, r.RunID)
 		}
-	case agent.AgentEventApproval:
-		// Handled in main loop; Approval events are not printed here
-	case agent.AgentEventError:
-		fmt.Printf("[error] %s\n", ev.Content)
-	case agent.AgentEventComplete:
-		// Only print content if we didn't already display it via ContentDelta or Content
-		if ev.Content != "" && !streamedContent {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeRunError:
+		if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
+			fmt.Printf("[%s] %s\n", eventType, re.Message)
+		}
+	case agent.AgentEventTypeRunFinished:
+		res := shared.RunResultFromFinishedEvent(ev)
+		if res != nil && res.Content != "" && !streamedContent {
+			fmt.Printf("[%s] %s\n", eventType, res.Content)
+		}
+		if u := shared.UsageFooter(res); u != "" {
+			fmt.Println()
+			fmt.Println(u)
 		}
 	default:
-		fmt.Printf("[%s] %+v\n", ev.Type, ev)
+		//fmt.Printf("[%s] %+v\n", eventType, ev)
+		return
 	}
 }

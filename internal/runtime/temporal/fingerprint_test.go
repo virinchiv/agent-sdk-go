@@ -116,6 +116,27 @@ func TestVerifyAgentFingerprint_emptyWantWhenWorkerHasFingerprint(t *testing.T) 
 	}
 }
 
+func TestVerifyAgentFingerprint_disableCheckAllowsMismatch(t *testing.T) {
+	cfg := &TemporalRuntimeConfig{
+		AgentSpec:               sdkruntime.AgentSpec{Name: "x"},
+		DisableFingerprintCheck: true,
+		PolicyFingerprint:       "require_all",
+		AgentExecution: sdkruntime.AgentExecution{
+			LLM:     sdkruntime.AgentLLM{},
+			Tools:   sdkruntime.AgentTools{Tools: nil},
+			Session: sdkruntime.AgentSession{},
+			Limits:  sdkruntime.AgentLimits{},
+		},
+	}
+	rt := &TemporalRuntime{
+		TemporalRuntimeConfig: *cfg,
+		agentFingerprint:      computeAgentFingerprintFromRuntimeConfig(cfg),
+	}
+	if err := rt.verifyAgentFingerprint("definitely-different"); err != nil {
+		t.Fatalf("expected bypass when skip is enabled, got: %v", err)
+	}
+}
+
 func TestToolNamesFromTools_skipsNil(t *testing.T) {
 	if got := ToolNamesFromTools(nil); got != nil {
 		t.Fatalf("nil tools: %v", got)

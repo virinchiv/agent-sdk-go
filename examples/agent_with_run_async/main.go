@@ -77,8 +77,17 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for req := range approvalCh {
-			argsJSON, _ := json.MarshalIndent(req.Args, "", "  ")
-			fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", req.ToolName, string(argsJSON))
+			v, err := agent.ParseToolApproval(req)
+			if err != nil {
+				log.Printf("approval from RunAsync: %v", err)
+				continue
+			}
+			args := v.Args
+			if args == nil {
+				args = map[string]any{}
+			}
+			argsJSON, _ := json.MarshalIndent(args, "", "  ")
+			fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", v.ToolName, string(argsJSON))
 			line, ok := <-lineCh
 			if ok && strings.TrimSpace(strings.ToLower(line)) == "y" {
 				if err := req.Respond(agent.ApprovalStatusApproved); err != nil {
@@ -96,9 +105,13 @@ func main() {
 	res := <-resultCh
 	wg.Wait()
 
-	if res.Err != nil {
-		log.Printf("run failed: %v", res.Err)
+	if res.Error != nil {
+		log.Printf("run failed: %v", res.Error)
 		return
 	}
-	fmt.Println("agent:", res.Response.Content)
+	if res.Result == nil {
+		log.Print("run finished with no result payload")
+		return
+	}
+	fmt.Println("agent:", res.Result.Content)
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/google/uuid"
@@ -112,31 +113,25 @@ type AgentWorkflowInput struct {
 	StreamingEnabled bool                           `json:"streaming_enabled,omitempty"`
 	ConversationID   string                         `json:"conversation_id,omitempty"`
 	AgentFingerprint string                         `json:"agent_fingerprint,omitempty"`
-	EventTypes       []types.AgentEventType         `json:"event_types,omitempty"`
+	EventTypes       []events.AgentEventType        `json:"event_types,omitempty"`
 	SubAgentDepth    int                            `json:"sub_agent_depth,omitempty"`
 	SubAgentRoutes   map[string]types.SubAgentRoute `json:"sub_agent_routes,omitempty"`
 	MaxSubAgentDepth int                            `json:"max_sub_agent_depth,omitempty"`
 }
 
-// AgentLLMInput is the input to AgentLLMActivity. When ConversationID is set, activity fetches messages from store.
-// UserPrompt is passed directly; no message construction in workflow. Messages used only for non-conversation multi-turn.
+// AgentLLMInput is the input to AgentLLMActivity and AgentLLMStreamActivity.
+// When ConversationID is set, the activity loads history from the store. MessageID is the assistant text id
+// for TEXT_MESSAGE_* (and stream ordering with REASONING_*); the workflow sets it each turn.
 type AgentLLMInput struct {
-	ConversationID   string               `json:"conversation_id,omitempty"`
-	Messages         []interfaces.Message `json:"messages,omitempty"`
-	SkipTools        bool                 `json:"skip_tools,omitempty"`
-	AgentFingerprint string               `json:"agent_fingerprint,omitempty"`
-}
-
-// AgentLLMStreamInput is the input to AgentLLMStreamActivity.
-type AgentLLMStreamInput struct {
 	AgentName        string               `json:"agent_name,omitempty"`
 	ConversationID   string               `json:"conversation_id,omitempty"`
 	Messages         []interfaces.Message `json:"messages,omitempty"`
+	SkipTools        bool                 `json:"skip_tools,omitempty"`
+	AgentFingerprint string               `json:"agent_fingerprint,omitempty"`
+	MessageID        string               `json:"message_id,omitempty"`
 	EventWorkflowID  string               `json:"event_workflow_id,omitempty"`
 	EventTaskQueue   string               `json:"event_task_queue,omitempty"`
 	LocalChannelName string               `json:"local_channel_name,omitempty"`
-	SkipTools        bool                 `json:"skip_tools,omitempty"`
-	AgentFingerprint string               `json:"agent_fingerprint,omitempty"`
 }
 
 // AgentLLMResult is the return value of AgentLLMActivity. Workflow uses it to decide: return content or execute tools.
@@ -166,6 +161,7 @@ type AgentToolExecuteInput struct {
 }
 
 type AgentToolApprovalInput struct {
+	AgentName        string         `json:"agent_name"`
 	ToolCallID       string         `json:"tool_call_id"`
 	ToolName         string         `json:"tool_name"`
 	ToolDisplayName  string         `json:"tool_display_name,omitempty"`
@@ -191,9 +187,10 @@ type AgentToolAuthorizeResult struct {
 
 // SendAgentEventActivityInput is the payload for SendAgentEventUpdateActivity (workflow + activity).
 type SendAgentEventActivityInput struct {
-	EventWorkflowID string            `json:"event_workflow_id,omitempty"`
-	EventTaskQueue  string            `json:"event_task_queue,omitempty"`
-	Update          *AgentEventUpdate `json:"update"`
+	EventWorkflowID string                `json:"event_workflow_id,omitempty"`
+	EventTaskQueue  string                `json:"event_task_queue,omitempty"`
+	EventType       events.AgentEventType `json:"event_type"`
+	Update          *AgentEventUpdate     `json:"update"`
 }
 
 // AddConversationMessagesInput is the input to AddConversationMessagesActivity.
@@ -206,7 +203,7 @@ type AddConversationMessagesInput struct {
 // AgentWorkflow runs the agent loop: LLM → tool calls → approval/execute → feed results back to LLM → repeat.
 // Stops when LLM returns no tool calls, or max iterations reached.
 // When Input.EventWorkflowID is set, sends agent events and approval requests to the event workflow.
-func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkflowInput) (*types.AgentResponse, error) {
+func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkflowInput) (*types.AgentRunResult, error) {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("workflow: agent run started", "scope", "workflow")
 	if n := len(input.SubAgentRoutes); n > 0 {
@@ -218,6 +215,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	eventWorkflowID := input.EventWorkflowID
 	eventTaskQueue := input.EventTaskQueue
 	agentName := rt.AgentSpec.Name
+	model := rt.AgentExecution.LLM.Client.GetModel()
 
 	maxIter := rt.AgentExecution.Limits.MaxIterations
 
@@ -277,11 +275,10 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	})
 
 	var streamingUnavailable bool
-	emitEvent := func(ev *types.AgentEvent) error {
+	emitEvent := func(ev events.AgentEvent) error {
 		if ev == nil {
 			return nil
 		}
-		ev.AgentName = agentName
 		eventTypes := input.EventTypes
 		if len(eventTypes) == 0 {
 			return nil
@@ -291,11 +288,11 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		}
 		emit := false
 		for _, et := range eventTypes {
-			if et == types.AgentEventAll {
+			if et == events.AgentEventAll {
 				emit = true
 				break
 			}
-			if et == ev.Type {
+			if et == ev.Type() {
 				emit = true
 				break
 			}
@@ -303,18 +300,17 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		if !emit {
 			return nil
 		}
-		if ev.Timestamp.IsZero() {
-			ev.Timestamp = workflow.Now(ctx)
-		}
+		eventBytes, _ := ev.ToJSON()
 		upd := &AgentEventUpdate{
 			AgentName:        agentName,
 			LocalChannelName: input.LocalChannelName,
-			Event:            ev,
+			EventJSON:        json.RawMessage(eventBytes),
 		}
 		var res SendAgentEventResult
 		actIn := SendAgentEventActivityInput{
 			EventWorkflowID: eventWorkflowID,
 			EventTaskQueue:  eventTaskQueue,
+			EventType:       ev.Type(),
 			Update:          upd,
 		}
 		if err := workflow.ExecuteActivity(sendEventCtx, rt.SendAgentEventUpdateActivity, actIn).Get(ctx, &res); err != nil {
@@ -335,33 +331,27 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	var llmResult AgentLLMResult
 	for iter := 0; iter < maxIter; iter++ {
 
-		llmInput := AgentLLMInput{
-			ConversationID:   input.ConversationID,
-			Messages:         messages,
-			AgentFingerprint: input.AgentFingerprint,
-		}
+		messageID := uuid.New().String()
 
-		streamInput := AgentLLMStreamInput{
+		llmInput := AgentLLMInput{
 			AgentName:        agentName,
 			ConversationID:   input.ConversationID,
 			Messages:         messages,
+			AgentFingerprint: input.AgentFingerprint,
+			MessageID:        messageID,
 			EventWorkflowID:  eventWorkflowID,
 			EventTaskQueue:   eventTaskQueue,
 			LocalChannelName: input.LocalChannelName,
-			AgentFingerprint: input.AgentFingerprint,
 		}
 
 		if useStreaming {
-			err = workflow.ExecuteActivity(streamActCtx, rt.AgentLLMStreamActivity, streamInput).Get(streamActCtx, &llmResult)
+			err = workflow.ExecuteActivity(streamActCtx, rt.AgentLLMStreamActivity, llmInput).Get(streamActCtx, &llmResult)
 		} else {
 			err = workflow.ExecuteActivity(llmActCtx, rt.AgentLLMActivity, llmInput).Get(llmActCtx, &llmResult)
 		}
 		if err != nil {
 			if temporal.IsCanceledError(err) {
 				return nil, err
-			}
-			if emitErr := emitEvent(&types.AgentEvent{Type: types.AgentEventError, Content: err.Error(), Timestamp: workflow.Now(ctx)}); emitErr != nil {
-				return nil, emitErr
 			}
 			return nil, err
 		}
@@ -371,38 +361,15 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		if len(llmResult.ToolCalls) == 0 {
 			// Final response: accumulate assistant message for conversation
 			messages = append(messages, interfaces.Message{Role: interfaces.MessageRoleAssistant, Content: llmResult.Content})
-			if emitErr := emitEvent(&types.AgentEvent{Type: types.AgentEventComplete, Content: llmResult.Content, Usage: runUsage, Timestamp: workflow.Now(ctx)}); emitErr != nil {
-				return nil, emitErr
-			}
 			lastContent = llmResult.Content
 			break
-		} else {
-			if emitErr := emitEvent(&types.AgentEvent{Type: types.AgentEventContent, Content: llmResult.Content, Timestamp: workflow.Now(ctx)}); emitErr != nil {
-				return nil, emitErr
-			}
-		}
-
-		for _, tc := range llmResult.ToolCalls {
-			if emitErr := emitEvent(&types.AgentEvent{
-				Type: types.AgentEventToolCall,
-				ToolCall: &types.ToolCallEvent{
-					ToolCallID:      tc.ToolCallID,
-					ToolName:        tc.ToolName,
-					ToolDisplayName: tc.ToolDisplayName,
-					Args:            tc.Args,
-					Status:          types.ToolCallStatusPending,
-				},
-				Timestamp: workflow.Now(ctx),
-			}); emitErr != nil {
-				return nil, emitErr
-			}
 		}
 
 		if iter == maxIter-1 {
 			logger.Info("workflow: max iterations reached, final LLM round without tools", "scope", "workflow", "iteration", iter)
 			if useStreaming {
-				streamInput.SkipTools = true
-				err = workflow.ExecuteActivity(streamActCtx, rt.AgentLLMStreamActivity, streamInput).Get(streamActCtx, &llmResult)
+				llmInput.SkipTools = true
+				err = workflow.ExecuteActivity(streamActCtx, rt.AgentLLMStreamActivity, llmInput).Get(streamActCtx, &llmResult)
 			} else {
 				llmInput.SkipTools = true
 				err = workflow.ExecuteActivity(llmActCtx, rt.AgentLLMActivity, llmInput).Get(llmActCtx, &llmResult)
@@ -413,10 +380,8 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 				}
 				return nil, err
 			}
+			runUsage = mergeLLMUsage(runUsage, llmResult.Usage)
 			messages = append(messages, interfaces.Message{Role: interfaces.MessageRoleAssistant, Content: llmResult.Content})
-			if emitErr := emitEvent(&types.AgentEvent{Type: types.AgentEventComplete, Content: llmResult.Content, Timestamp: workflow.Now(ctx)}); emitErr != nil {
-				return nil, emitErr
-			}
 			lastContent = llmResult.Content
 			break
 		}
@@ -437,7 +402,29 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		}
 		messages = append(messages, assistantMsg)
 
+		emitToolEndThenResult := func(toolCallID, content string) error {
+			if emitErr := emitEvent(events.NewAgentToolCallEndEvent(toolCallID)); emitErr != nil {
+				return emitErr
+			}
+			return emitEvent(events.NewAgentToolCallResultEvent(messageID, toolCallID, content, string(interfaces.MessageRoleTool)))
+		}
+
+		// authorize / approve / execute, then TOOL_CALL_END + TOOL_CALL_RESULT.
 		for _, tc := range llmResult.ToolCalls {
+			//TOOL_CALL_START
+			if emitErr := emitEvent(events.NewAgentToolCallStartEvent(tc.ToolCallID, tc.ToolName, messageID)); emitErr != nil {
+				return nil, emitErr
+			}
+			//TOOL_CALL_ARGS
+			if argsJSON, err := json.Marshal(tc.Args); err == nil {
+				s := strings.TrimSpace(string(argsJSON))
+				if s != "" && s != "null" && s != "{}" {
+					if emitErr := emitEvent(events.NewAgentToolCallArgsEvent(tc.ToolCallID, s)); emitErr != nil {
+						return nil, emitErr
+					}
+				}
+			}
+
 			var authResult AgentToolAuthorizeResult
 			authInput := AgentToolAuthorizeInput{
 				ToolCallID:       tc.ToolCallID,
@@ -454,18 +441,8 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 				if strings.TrimSpace(authResult.Reason) != "" {
 					content = fmt.Sprintf("%s Reason: %s", content, authResult.Reason)
 				}
-				if emitErr := emitEvent(&types.AgentEvent{
-					Type: types.AgentEventToolResult,
-					ToolCall: &types.ToolCallEvent{
-						ToolCallID:      tc.ToolCallID,
-						ToolName:        tc.ToolName,
-						ToolDisplayName: tc.ToolDisplayName,
-						Args:            tc.Args,
-						Result:          content,
-						Status:          types.ToolCallStatusDenied,
-					},
-					Timestamp: workflow.Now(ctx),
-				}); emitErr != nil {
+				//TOOL_CALL_END + TOOL_CALL_RESULT
+				if emitErr := emitToolEndThenResult(tc.ToolCallID, content); emitErr != nil {
 					return nil, emitErr
 				}
 
@@ -486,6 +463,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 				} else {
 					var status types.ApprovalStatus
 					approvalInput := AgentToolApprovalInput{
+						AgentName:        agentName,
 						ToolCallID:       tc.ToolCallID,
 						ToolName:         tc.ToolName,
 						ToolDisplayName:  tc.ToolDisplayName,
@@ -509,10 +487,8 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			}
 
 			var content string
-			var toolStatus types.ToolCallStatus
 			switch approvalStatus {
 			case types.ApprovalStatusApproved:
-				toolStatus = types.ToolCallStatusCompleted
 				if route, ok := input.SubAgentRoutes[tc.ToolName]; ok {
 					logger.Info("workflow: executing sub-agent delegation",
 						"scope", "workflow",
@@ -520,7 +496,11 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 						"toolCallID", tc.ToolCallID,
 						"childTaskQueue", strings.TrimSpace(route.TaskQueue),
 						"subAgentDepth", input.SubAgentDepth)
-					content = rt.delegateToSubAgent(ctx, input, tc, route)
+					var subErr error
+					content, subErr = rt.delegateToSubAgent(ctx, input, tc, route, emitEvent)
+					if subErr != nil {
+						return nil, subErr
+					}
 				} else {
 					logger.Info("workflow: executing tool",
 						"scope", "workflow",
@@ -542,26 +522,14 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 					}
 				}
 			case types.ApprovalStatusRejected:
-				toolStatus = types.ToolCallStatusCompleted
 				content = msgToolRejected
 			case types.ApprovalStatusUnavailable:
-				toolStatus = types.ToolCallStatusFailed
 				content = msgToolApprovalUnavailable
 			default:
 				return nil, fmt.Errorf("workflow: unexpected approval status %q for tool %q", approvalStatus, tc.ToolName)
 			}
-			if emitErr := emitEvent(&types.AgentEvent{
-				Type: types.AgentEventToolResult,
-				ToolCall: &types.ToolCallEvent{
-					ToolCallID:      tc.ToolCallID,
-					ToolName:        tc.ToolName,
-					ToolDisplayName: tc.ToolDisplayName,
-					Args:            tc.Args,
-					Result:          content,
-					Status:          toolStatus,
-				},
-				Timestamp: workflow.Now(ctx),
-			}); emitErr != nil {
+			//TOOL_CALL_END + TOOL_CALL_RESULT
+			if emitErr := emitToolEndThenResult(tc.ToolCallID, content); emitErr != nil {
 				return nil, emitErr
 			}
 
@@ -593,12 +561,8 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 	// Log summary only; avoid full content to prevent leaking sensitive data
 	logger.Info("workflow: agent run completed", "scope", "workflow", "contentLen", len(lastContent))
-	return &types.AgentResponse{
-		Content:   lastContent,
-		AgentName: rt.AgentSpec.Name,
-		Model:     rt.AgentExecution.LLM.Client.GetModel(),
-		Metadata:  map[string]any{},
-		Usage:     runUsage,
+	return &types.AgentRunResult{
+		Content: lastContent, AgentName: agentName, Model: model, Metadata: map[string]any{}, Usage: runUsage,
 	}, nil
 }
 
@@ -627,9 +591,29 @@ func startLongActivityHeartbeats(ctx context.Context) (stop func()) {
 	}
 }
 
-// AgentLLMStreamActivity streams LLM response tokens and emits content_delta/thinking_delta events.
+// publishAgentEventToStream delivers one event to the run’s local stream (event workflow update or in-memory bus).
+func (rt *TemporalRuntime) publishAgentEventToStream(ctx context.Context, agentName, localChannelName, eventWorkflowID, eventTaskQueue string, ev events.AgentEvent) {
+	if ev == nil || strings.TrimSpace(localChannelName) == "" {
+		return
+	}
+	eventBytes, _ := ev.ToJSON()
+	upd := &AgentEventUpdate{
+		AgentName:        strings.TrimSpace(agentName),
+		LocalChannelName: localChannelName,
+		EventJSON:        json.RawMessage(eventBytes),
+	}
+	if eventWorkflowID != "" {
+		_ = rt.sendAgentEventWorkflowUpdate(ctx, eventWorkflowID, eventTaskQueue, upd, client.WorkflowUpdateStageAccepted, updateWorkflowEventRPCTimeout)
+	} else if rt.eventbus != nil {
+		data, _ := json.Marshal(ev)
+		_ = rt.eventbus.Publish(ctx, localChannelName, data)
+	}
+}
+
+// AgentLLMStreamActivity streams LLM response tokens. Event order: optional reasoning block
+// (REASONING_*), then TEXT_MESSAGE_START → TEXT_MESSAGE_CONTENT* → TEXT_MESSAGE_END.
 // When input.ConversationID is set, fetches messages from conversation and prepends to workflow messages.
-func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input AgentLLMStreamInput) (*AgentLLMResult, error) {
+func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input AgentLLMInput) (*AgentLLMResult, error) {
 	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
 		return nil, err
 	}
@@ -653,6 +637,36 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 
 	req, tools := rt.buildLLMRequest(messages, input.SkipTools)
 
+	emitDelta := func(ev events.AgentEvent) {
+		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
+	}
+
+	textMsgOpen := false
+	openTextMsg := func() {
+		if textMsgOpen {
+			return
+		}
+		emitDelta(events.NewAgentTextMessageStartEvent(input.MessageID, string(interfaces.MessageRoleAssistant)))
+		textMsgOpen = true
+	}
+	closeTextMsg := func() {
+		if !textMsgOpen {
+			return
+		}
+		emitDelta(events.NewAgentTextMessageEndEvent(input.MessageID))
+		textMsgOpen = false
+	}
+	// If the model never sent text chunks, still emit one text message (empty for tool-only) to match one activity = one assistant turn.
+	finalizeAssistantTextMessage := func(result *AgentLLMResult) {
+		if textMsgOpen {
+			closeTextMsg()
+			return
+		}
+		openTextMsg()
+		emitDelta(events.NewAgentTextMessageContentEvent(input.MessageID, result.Content))
+		closeTextMsg()
+	}
+
 	isLLMStreamSupported := rt.AgentExecution.LLM.Client.IsStreamSupported()
 	if !isLLMStreamSupported {
 		logger.Debug("activity: LLM stream unsupported, using generate", "scope", "activity")
@@ -664,6 +678,7 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 		if err != nil {
 			return nil, err
 		}
+		finalizeAssistantTextMessage(result)
 		return result, nil
 	}
 
@@ -672,23 +687,31 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 		return nil, err
 	}
 
-	// Emit deltas as they arrive. Route via event workflow when set; else in-memory agentChannel.
-	emitDelta := func(ev *types.AgentEvent) {
-		if ev == nil {
+	// Reasoning AG-UI order: REASONING_START → REASONING_MESSAGE_START → REASONING_MESSAGE_CONTENT* →
+	// REASONING_MESSAGE_END → REASONING_END (flushed before the first assistant text delta, or at stream end).
+	// reasoningMID is a new UUID per reasoning phase (regenerated after a prior phase is flushed).
+	var reasoningMID string
+	reasoningPhaseOpen := false
+	reasoningMsgOpen := false
+	flushReasoning := func() {
+		if reasoningMsgOpen {
+			emitDelta(events.NewAgentReasoningMessageEndEvent(reasoningMID))
+			reasoningMsgOpen = false
+		}
+		if reasoningPhaseOpen {
+			emitDelta(events.NewAgentReasoningEndEvent(reasoningMID))
+			reasoningPhaseOpen = false
+		}
+	}
+	openReasoning := func() {
+		if reasoningPhaseOpen {
 			return
 		}
-		upd := &AgentEventUpdate{
-			AgentName:        agentName,
-			LocalChannelName: input.LocalChannelName,
-			Event:            ev,
-		}
-		if input.EventWorkflowID != "" {
-			// Best-effort: same deadline semantics as SendAgentEventUpdateActivity (event worker down / slow).
-			_ = rt.sendAgentEventWorkflowUpdate(ctx, input.EventWorkflowID, input.EventTaskQueue, upd, client.WorkflowUpdateStageAccepted, updateWorkflowEventRPCTimeout)
-		} else if rt.eventbus != nil {
-			data, _ := json.Marshal(ev)
-			_ = rt.eventbus.Publish(ctx, input.LocalChannelName, data)
-		}
+		reasoningMID = uuid.New().String()
+		emitDelta(events.NewAgentReasoningStartEvent(reasoningMID))
+		reasoningPhaseOpen = true
+		emitDelta(events.NewAgentReasoningMessageStartEvent(reasoningMID, string(interfaces.MessageRoleReasoning)))
+		reasoningMsgOpen = true
 	}
 
 	for stream.Next() {
@@ -697,12 +720,18 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 			continue
 		}
 		if chunk.ContentDelta != "" {
-			emitDelta(&types.AgentEvent{Type: types.AgentEventContentDelta, AgentName: agentName, Content: chunk.ContentDelta, Timestamp: time.Now()})
+			flushReasoning()
+			openTextMsg()
+			//TEXT_MESSAGE_CONTENT
+			emitDelta(events.NewAgentTextMessageContentEvent(input.MessageID, chunk.ContentDelta))
 		}
 		if chunk.ThinkingDelta != "" {
-			emitDelta(&types.AgentEvent{Type: types.AgentEventThinkingDelta, AgentName: agentName, Content: chunk.ThinkingDelta, Timestamp: time.Now()})
+			openReasoning()
+			//REASONING_MESSAGE_CONTENT
+			emitDelta(events.NewAgentReasoningMessageContentEvent(reasoningMID, chunk.ThinkingDelta))
 		}
 	}
+	flushReasoning()
 	if err := stream.Err(); err != nil {
 		return nil, err
 	}
@@ -716,6 +745,7 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 	if err != nil {
 		return nil, err
 	}
+	finalizeAssistantTextMessage(result)
 	return result, nil
 }
 
@@ -809,11 +839,22 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 		return nil, err
 	}
 	logger.Debug("activity: LLM generate completed", "scope", "activity", "messageCount", len(messages))
-	return rt.llmResponseToResult(resp, tools)
+	result, err := rt.llmResponseToResult(resp, tools)
+	if err != nil {
+		return nil, err
+	}
+	agentNameTrim := strings.TrimSpace(input.AgentName)
+	publish := func(ev events.AgentEvent) {
+		rt.publishAgentEventToStream(ctx, agentNameTrim, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
+	}
+	publish(events.NewAgentTextMessageStartEvent(input.MessageID, string(interfaces.MessageRoleAssistant)))
+	publish(events.NewAgentTextMessageContentEvent(input.MessageID, result.Content))
+	publish(events.NewAgentTextMessageEndEvent(input.MessageID))
+	return result, nil
 }
 
 // AgentToolApprovalActivity blocks until the driver completes it via CompleteActivity.
-// Sends approval request as AgentEventApproval on event channel (same channel for Run and Stream).
+// Publishes a CUSTOM (tool_approval / delegation) event to the local agent_event channel (Run and Stream).
 // When EventWorkflowID is set, UpdateWorkflow uses WorkflowUpdateStageCompleted and updateWorkflowApprovalRPCTimeout
 // so the event handler has returned before ErrResultPending; RPC timeout maps to ApprovalStatusUnavailable.
 func (rt *TemporalRuntime) AgentToolApprovalActivity(ctx context.Context, input AgentToolApprovalInput) (types.ApprovalStatus, error) {
@@ -826,40 +867,47 @@ func (rt *TemporalRuntime) AgentToolApprovalActivity(ctx context.Context, input 
 	info := activity.GetInfo(ctx)
 	taskTokenB64 := base64.StdEncoding.EncodeToString(info.TaskToken)
 
-	kind := types.ToolApprovalKindTool
+	agentEventName := events.AgentCustomEventNameToolApproval
 	subAgentName := input.SubAgentName
 	if subAgentName != "" {
-		kind = types.ToolApprovalKindDelegation
+		agentEventName = events.AgentCustomEventNameSubAgentDelegation
 	}
 
-	if kind == types.ToolApprovalKindDelegation {
-		logger.Debug("activity: approval is sub-agent delegation",
+	var ev *events.AgentCustomEvent
+	if agentEventName == events.AgentCustomEventNameToolApproval {
+		logger.Debug("activity: approval is tool approval",
 			"scope", "activity",
 			"tool", input.ToolName,
-			"subAgent", subAgentName,
 			"mainAgent", rt.AgentSpec.Name)
-	}
-	ev := &types.AgentEvent{
-		Type:      types.AgentEventApproval,
-		AgentName: rt.AgentSpec.Name,
-		Approval: &types.ApprovalEvent{
+		ev = events.NewAgentCustomEvent(string(agentEventName), events.AgentCustomEventApprovalValue{
+			AgentName:       input.AgentName,
 			ToolCallID:      input.ToolCallID,
 			ToolName:        input.ToolName,
 			ToolDisplayName: input.ToolDisplayName,
 			Args:            input.Args,
 			ApprovalToken:   taskTokenB64,
-			Kind:            kind,
-			SubAgentName:    subAgentName,
-		},
-		Timestamp: time.Now(),
+		})
+	} else {
+		logger.Debug("activity: approval is sub-agent delegation",
+			"scope", "activity",
+			"tool", input.ToolName,
+			"subAgent", subAgentName,
+			"mainAgent", rt.AgentSpec.Name)
+		ev = events.NewAgentCustomEvent(string(agentEventName), events.AgentCustomEventDelegationValue{
+			AgentName:     input.AgentName,
+			SubAgentName:  subAgentName,
+			Args:          input.Args,
+			ApprovalToken: taskTokenB64,
+		})
 	}
 
 	// Route via event workflow when eventWorkflowID is set (TemporalRuntime.enableRemoteWorkers)
 	if input.EventWorkflowID != "" {
+		eventBytes, _ := ev.ToJSON()
 		upd := &AgentEventUpdate{
 			AgentName:        rt.AgentSpec.Name,
 			LocalChannelName: input.LocalChannelName,
-			Event:            ev,
+			EventJSON:        json.RawMessage(eventBytes),
 		}
 		if err := rt.sendAgentEventWorkflowUpdate(ctx, input.EventWorkflowID, input.EventTaskQueue, upd, client.WorkflowUpdateStageCompleted, updateWorkflowApprovalRPCTimeout); err != nil {
 			return types.ApprovalStatusUnavailable, nil
@@ -890,12 +938,12 @@ func (rt *TemporalRuntime) SendAgentEventUpdateActivity(ctx context.Context, in 
 	upd := in.Update
 	logger.Debug("activity: send event update started", "scope", "activity", "eventPipelineID", in.EventWorkflowID)
 
-	if upd == nil || upd.Event == nil {
+	if upd == nil || upd.EventJSON == nil {
 		return SendAgentEventResult{}, nil
 	}
 
-	if upd.Event != nil {
-		logger.Debug("activity: send event update", "scope", "activity", "eventType", string(upd.Event.Type), "agent", upd.AgentName)
+	if upd.EventJSON != nil {
+		logger.Debug("activity: send event update", "scope", "activity", "eventType", string(in.EventType), "agent", upd.AgentName)
 	}
 
 	// Route via event workflow when eventWorkflowID is set (TemporalRuntime.enableRemoteWorkers)
@@ -908,11 +956,7 @@ func (rt *TemporalRuntime) SendAgentEventUpdateActivity(ctx context.Context, in 
 		if rt.eventbus == nil {
 			return SendAgentEventResult{}, fmt.Errorf("agentChannel required when eventWorkflowID is empty")
 		}
-		data, err := json.Marshal(upd.Event)
-		if err != nil {
-			return SendAgentEventResult{}, err
-		}
-		if err := rt.eventbus.Publish(ctx, upd.LocalChannelName, data); err != nil {
+		if err := rt.eventbus.Publish(ctx, upd.LocalChannelName, []byte(upd.EventJSON)); err != nil {
 			return SendAgentEventResult{StreamUnavailable: true}, nil
 		}
 		logger.Debug("activity: event sent to local channel", "scope", "activity", "channel", upd.LocalChannelName, "agent", upd.AgentName)
@@ -1021,14 +1065,14 @@ func findToolByName(tools []interfaces.Tool, toolName string) (interfaces.Tool, 
 	return nil, false
 }
 
-func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentWorkflowInput, tc ToolCallRequest, route types.SubAgentRoute) string {
+func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentWorkflowInput, tc ToolCallRequest, route types.SubAgentRoute, emitEvent func(events.AgentEvent) error) (string, error) {
 	logger := workflow.GetLogger(ctx)
 	if strings.TrimSpace(route.TaskQueue) == "" {
 		logger.Warn("workflow: sub-agent delegation skipped (empty task queue)",
 			"scope", "workflow",
 			"tool", tc.ToolName,
 			"toolCallID", tc.ToolCallID)
-		return "Sub-agent delegation failed: sub-agent task queue is not configured."
+		return "Sub-agent delegation failed: sub-agent task queue is not configured.", nil
 	}
 	maxDepth := input.MaxSubAgentDepth
 	if input.SubAgentDepth >= maxDepth {
@@ -1038,7 +1082,7 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 			"maxDepth", maxDepth,
 			"tool", tc.ToolName,
 			"toolCallID", tc.ToolCallID)
-		return fmt.Sprintf("Sub-agent delegation refused: maximum nesting depth (%d) reached for this agent.", maxDepth)
+		return fmt.Sprintf("Sub-agent delegation refused: maximum nesting depth (%d) reached for this agent.", maxDepth), nil
 	}
 
 	query := subAgentQueryFromArgs(tc.Args)
@@ -1060,7 +1104,7 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 		return uuid.New().String()
 	}).Get(&childSuffix); err != nil {
 		logger.Warn("workflow: sub-agent child run id failed", "scope", "workflow", "error", err)
-		return "Sub-agent workflow failed: " + err.Error()
+		return "", err
 	}
 
 	parentID := workflow.GetInfo(ctx).WorkflowExecution.ID
@@ -1087,23 +1131,36 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 		WaitForCancellation:      true,
 	})
 
-	var childResp *types.AgentResponse
-	if err := workflow.ExecuteChildWorkflow(childCtx, rt.AgentWorkflow, childInput).Get(childCtx, &childResp); err != nil {
+	stepName := strings.TrimSpace(route.Name)
+	if stepName == "" {
+		stepName = tc.ToolName
+	}
+
+	if emitErr := emitEvent(events.NewAgentStepStartedEvent(stepName)); emitErr != nil {
+		return "", emitErr
+	}
+
+	var childResult *types.AgentRunResult
+	if err := workflow.ExecuteChildWorkflow(childCtx, rt.AgentWorkflow, childInput).Get(childCtx, &childResult); err != nil {
 		logger.Warn("workflow: sub-agent child run failed",
 			"scope", "workflow",
 			"childWorkflowID", childWfID,
 			"tool", tc.ToolName,
 			"error", err)
-		return "Sub-agent workflow failed: " + err.Error()
+		return "Sub-agent workflow failed: " + err.Error(), nil
+	}
+
+	if emitErr := emitEvent(events.NewAgentStepFinishedEvent(stepName)); emitErr != nil {
+		return "", emitErr
 	}
 
 	logger.Debug("workflow: sub-agent child run completed",
 		"scope", "workflow",
 		"childWorkflowID", childWfID,
 		"tool", tc.ToolName,
-		"responseContentLen", len(childResp.Content))
+		"resultContentLen", len(childResult.Content))
 
-	return childResp.Content
+	return childResult.Content, nil
 }
 
 func (rt *TemporalRuntime) requiresApproval(t interfaces.Tool) bool {

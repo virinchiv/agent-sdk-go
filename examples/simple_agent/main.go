@@ -44,19 +44,19 @@ func main() {
 		prompt = "Hello, what can you do?"
 	}
 	fmt.Println("user:", prompt)
-	response, err := a.Run(context.Background(), prompt, "")
+	result, err := a.Run(context.Background(), prompt, "")
 	if err != nil {
 		log.Printf("agent foreground run failed: %v", err)
 		return
 	}
-	fmt.Printf("assistant: %s\n", response.Content)
-	if u := response.Usage; u != nil {
-		fmt.Printf("\nusage: prompt=%d completion=%d total=%d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)
-		if u.CachedPromptTokens > 0 {
-			fmt.Printf(" cached_prompt=%d", u.CachedPromptTokens)
+	fmt.Printf("assistant: %s\n", result.Content)
+	if result.Usage != nil {
+		fmt.Printf("\nusage: prompt=%d completion=%d total=%d", result.Usage.PromptTokens, result.Usage.CompletionTokens, result.Usage.TotalTokens)
+		if result.Usage.CachedPromptTokens > 0 {
+			fmt.Printf(" cached_prompt=%d", result.Usage.CachedPromptTokens)
 		}
-		if u.ReasoningTokens > 0 {
-			fmt.Printf(" reasoning=%d", u.ReasoningTokens)
+		if result.Usage.ReasoningTokens > 0 {
+			fmt.Printf(" reasoning=%d", result.Usage.ReasoningTokens)
 		}
 		fmt.Println()
 	}

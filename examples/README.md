@@ -16,14 +16,15 @@ The examples use `TEMPORAL_HOST`, `TEMPORAL_PORT`, and `TEMPORAL_NAMESPACE` from
 | `agent_with_temporal_client` | Caller-owned Temporal client — `WithTemporalClient` + `WithTaskQueue`; create and close client yourself (TLS, API key, Cloud) |
 | `agent_with_conversation` | In-memory conversation with `WithConversation` — multi-turn context, same `conversationID` for `Run` |
 | `agent_with_tools` | Built-in tools (echo, calculator, weather, wikipedia, search) with auto-approval |
-| `agent_with_stream` | Streaming with `Stream` + partial content (`content_delta`, `tool_call`, `complete`); prints aggregated token usage on `complete` |
-| `agent_with_stream_conversation` | Stream + conversation; event handling to avoid duplicate output (ContentDelta vs Complete) |
+| `agent_with_stream` | Streaming with `Stream` — **`TEXT_MESSAGE_*`**, **`TOOL_CALL_*`**, **`RUN_FINISHED`**; prints token usage from **`RUN_FINISHED`** result when present |
+| `agent_copilotkit` | Go **`POST /agui` SSE** + **Next.js + CopilotKit** ([`agent_copilotkit/README.md`](agent_copilotkit/README.md)) — two processes: agent server, then `ui/` dev server |
+| `agent_with_stream_conversation` | Stream + conversation; avoid printing the same text twice (**`TEXT_MESSAGE_CONTENT`** deltas vs **`RUN_FINISHED`** body) |
 | `agent_with_tools_approval` | Tools + `WithApprovalHandler` — user approves or rejects each tool run (Run only) |
 | `agent_with_run_async` | `RunAsync` — `resultCh` + `approvalCh`; use `req.Respond` (no `WithApprovalHandler`) |
 | `agent_with_custom_tools` | Custom tools via `WithTools` — implementing `interfaces.Tool` |
 | `agent_with_tool_authorizer` | Custom tool authorization via `interfaces.ToolAuthorizer` — denied calls surface as `tool_result` with `denied` status |
 | `multiple_agents` | Multiple agents with `WithInstanceId` — sequential or concurrent |
-| `agent_with_subagents` | Main agent + math specialist — `WithSubAgents`, separate task queues |
+| `agent_with_subagents` | Main agent + math specialist — `WithSubAgents`, separate task queues; prints **`STEP_STARTED` / `STEP_FINISHED`** (sub-agent name) around each child run when using `Stream` |
 | `agent_with_json_response` | Structured LLM output — `WithResponseFormat` + `interfaces.JSONSchema` (JSON with schema; no tools) |
 | `agent_with_reasoning` | Generic `interfaces.LLMReasoning` via `WithLLMSampling` — `Stream` to observe `thinking_delta` (e.g. Anthropic) |
 | `agent_with_worker` | Agent and worker in separate processes — `DisableLocalWorker` + `NewAgentWorker`; agent uses **`Stream`** |
@@ -98,7 +99,7 @@ go run ./agent_with_reasoning "Why is the sky blue? One short paragraph."
 
 ### Streaming + conversation (event handling pattern)
 
-Interactive multi-turn with `Stream`. Demonstrates how to handle ContentDelta/Content and Complete to avoid printing the same text twice.
+Interactive multi-turn with `Stream`. Uses **`AgentEventTypeTextMessageContent`** (deltas) and **`AgentEventTypeRunFinished`** (final body) so the same answer is not printed twice.
 
 ```bash
 go run ./agent_with_stream_conversation

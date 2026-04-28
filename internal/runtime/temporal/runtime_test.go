@@ -2,7 +2,6 @@ package temporal
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
@@ -69,28 +69,41 @@ func TestAgentNameFromExecuteRequest(t *testing.T) {
 }
 
 func TestSyntheticStreamCompleteEvent(t *testing.T) {
-	ev := syntheticStreamCompleteEvent(nil, "root")
-	if ev == nil || ev.Type != types.AgentEventComplete || ev.AgentName != "root" {
+	ev := syntheticStreamCompleteEvent(nil, "threadID", "runID", "root")
+	if ev == nil || ev.Type() != events.AgentEventTypeRunFinished || ev.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult).AgentName != "root" {
 		t.Fatalf("nil resp: %+v", ev)
 	}
 
-	ev2 := syntheticStreamCompleteEvent(&types.AgentResponse{
+	ev2 := syntheticStreamCompleteEvent(&types.AgentRunResult{
 		Content:   "body",
-		AgentName: "from-resp",
+		AgentName: "from-result",
 		Usage:     &types.LLMUsage{TotalTokens: 9},
-	}, "ignored")
-	if ev2.Content != "body" || ev2.AgentName != "from-resp" || ev2.Usage.TotalTokens != 9 {
+	}, "threadID", "runID", "root")
+
+	result, ok := ev2.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult)
+	if !ok {
+		t.Fatalf("expected AgentRunResult, got %T", ev2.(*events.AgentRunFinishedEvent).Result)
+	}
+	if result.Content != "body" || result.AgentName != "from-result" || result.Usage.TotalTokens != 9 {
 		t.Fatalf("with AgentName: %+v", ev2)
 	}
 
-	ev3 := syntheticStreamCompleteEvent(&types.AgentResponse{Content: "c", AgentName: ""}, "fallback")
-	if ev3.AgentName != "fallback" {
-		t.Fatalf("fallback name: got %q", ev3.AgentName)
+	ev3 := syntheticStreamCompleteEvent(&types.AgentRunResult{Content: "c", AgentName: ""}, "threadID", "runID", "fallback")
+	result, ok = ev3.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult)
+	if !ok {
+		t.Fatalf("expected AgentRunResult, got %T", ev3.(*events.AgentRunFinishedEvent).Result)
+	}
+	if result.AgentName != "fallback" {
+		t.Fatalf("fallback name: got %q", result.AgentName)
 	}
 
-	ev4 := syntheticStreamCompleteEvent(&types.AgentResponse{Content: "only"}, "")
-	if ev4.AgentName != "" {
-		t.Fatalf("empty rootName with empty resp.AgentName: got %q", ev4.AgentName)
+	ev4 := syntheticStreamCompleteEvent(&types.AgentRunResult{Content: "only"}, "threadID", "runID", "")
+	result, ok = ev4.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult)
+	if !ok {
+		t.Fatalf("expected AgentRunResult, got %T", ev4.(*events.AgentRunFinishedEvent).Result)
+	}
+	if result.AgentName != "" {
+		t.Fatalf("empty rootName with empty resp.AgentName: got %q", result.AgentName)
 	}
 }
 
@@ -121,29 +134,6 @@ func TestResolveEventPipeline(t *testing.T) {
 	}
 	if rt.activeEventWorkflowID == "" {
 		t.Fatal("activeEventWorkflowID should be set")
-	}
-}
-
-func TestStreamCompleteEndsRun(t *testing.T) {
-	root := "Main agent"
-	if streamCompleteEndsRun(nil, root) {
-		t.Error("nil event should not end run")
-	}
-	if streamCompleteEndsRun(&types.AgentEvent{Type: types.AgentEventContent}, root) {
-		t.Error("non-complete should not end run")
-	}
-	if !streamCompleteEndsRun(&types.AgentEvent{Type: types.AgentEventComplete, AgentName: ""}, root) {
-		t.Error("complete with empty agent should end run (legacy)")
-	}
-	if !streamCompleteEndsRun(&types.AgentEvent{Type: types.AgentEventComplete, AgentName: root}, root) {
-		t.Error("complete from root should end run")
-	}
-	if streamCompleteEndsRun(&types.AgentEvent{Type: types.AgentEventComplete, AgentName: "MathSpecialist"}, root) {
-		t.Error("complete from sub-agent should not end root run")
-	}
-	// Trimming: spaced names should still match root
-	if !streamCompleteEndsRun(&types.AgentEvent{Type: types.AgentEventComplete, AgentName: "  Main agent  "}, " Main agent ") {
-		t.Error("complete should match after trim")
 	}
 }
 
@@ -269,16 +259,16 @@ func TestTemporalRuntime_SetEventBus_GetEventBus(t *testing.T) {
 
 func TestGetWorkflowID_Format(t *testing.T) {
 	rt := &TemporalRuntime{}
-	run := rt.getWorkflowID("MyAgent", false)
-	if !strings.HasPrefix(run, "agent-run-MyAgent-") || len(run) < len("agent-run-MyAgent-")+8 {
+	run := rt.getWorkflowID("runID", "MyAgent", false)
+	if !strings.HasPrefix(run, "agent-run-MyAgent-") || len(run) < len("agent-run-MyAgent-") {
 		t.Fatalf("unexpected run id: %q", run)
 	}
-	stream := rt.getWorkflowID("Helper", true)
+	stream := rt.getWorkflowID("runID", "Helper", true)
 	if !strings.HasPrefix(stream, "agent-stream-Helper-") {
 		t.Fatalf("unexpected stream id: %q", stream)
 	}
 	// Spaces/special chars sanitized like event workflow IDs.
-	if got := rt.getWorkflowID("  my agent  ", false); !strings.HasPrefix(got, "agent-run-my-agent-") {
+	if got := rt.getWorkflowID("runID", "  my agent  ", false); !strings.HasPrefix(got, "agent-run-my-agent-") {
 		t.Fatalf("sanitize run id: %q", got)
 	}
 }
@@ -368,13 +358,13 @@ func TestTemporalRuntime_Run_Success(t *testing.T) {
 	tc := temporalmocks.NewClient(t)
 	wfRun := temporalmocks.NewWorkflowRun(t)
 
-	want := &types.AgentResponse{AgentName: "agent-a", Content: "hello", Model: "m"}
+	want := &types.AgentRunResult{AgentName: "agent-a", Content: "hello", Model: "m"}
 	tc.On("DescribeTaskQueue", mock.Anything, "tq", enumspb.TASK_QUEUE_TYPE_WORKFLOW).
 		Return(describeTaskQueueWithPollers(), nil)
 	tc.On("ExecuteWorkflow", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
 		Return(wfRun, nil)
 	wfRun.On("Get", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-		p := args.Get(1).(**types.AgentResponse)
+		p := args.Get(1).(**types.AgentRunResult)
 		if p != nil {
 			*p = want
 		}
@@ -476,9 +466,7 @@ func TestTemporalRuntime_Run_WorkflowGetError(t *testing.T) {
 
 func TestTemporalRuntime_ExecuteStream_Success(t *testing.T) {
 	tc := temporalmocks.NewClient(t)
-	// Do not use NewWorkflowRun(t): ExecuteStream forwards AgentEventComplete on outCh before
-	// blocking on getWG.Wait(), so the test can finish before the Get goroutine runs; auto
-	// AssertExpectations in NewWorkflowRun's cleanup would race and flake.
+	// Do not use NewWorkflowRun(t): custom WorkflowRun avoid AssertExpectations flake against async Get.
 	wfRun := &temporalmocks.WorkflowRun{}
 
 	var localChannel string
@@ -490,9 +478,9 @@ func TestTemporalRuntime_ExecuteStream_Success(t *testing.T) {
 			localChannel = in.LocalChannelName
 		}).Return(wfRun, nil)
 	wfRun.On("Get", mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
-		p := args.Get(1).(**types.AgentResponse)
+		p := args.Get(1).(**types.AgentRunResult)
 		if p != nil {
-			*p = &types.AgentResponse{AgentName: "root"}
+			*p = &types.AgentRunResult{AgentName: "root"}
 		}
 	}).Return(nil)
 
@@ -515,20 +503,9 @@ func TestTemporalRuntime_ExecuteStream_Success(t *testing.T) {
 		t.Fatal("expected workflow input to set local channel")
 	}
 
-	payload, err := json.Marshal(&types.AgentEvent{
-		Type:      types.AgentEventComplete,
-		AgentName: "root",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rt.GetEventBus().Publish(ctx, localChannel, payload); err != nil {
-		t.Fatalf("Publish: %v", err)
-	}
-
 	var sawComplete bool
 	for ev := range outCh {
-		if ev != nil && ev.Type == types.AgentEventComplete {
+		if ev != nil && ev.Type() == events.AgentEventTypeRunFinished {
 			sawComplete = true
 			break
 		}
@@ -564,7 +541,7 @@ func TestTemporalRuntime_ExecuteStream_WorkflowGetError(t *testing.T) {
 
 	var sawErr bool
 	for ev := range outCh {
-		if ev != nil && ev.Type == types.AgentEventError && ev.Content == "stream wf err" {
+		if ev != nil && ev.Type() == events.AgentEventTypeRunError && ev.(*events.AgentRunErrorEvent).Message == "stream wf err" {
 			sawErr = true
 			break
 		}
