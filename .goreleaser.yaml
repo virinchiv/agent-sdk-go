@@ -34,7 +34,7 @@ checksum:
 
 release:
   header: |
-    ## AI Agent SDK for Go, Powered by Temporal
+    ## AI Agent SDK for Go - Temporal-first
 
     ### Install the SDK (library)
 
