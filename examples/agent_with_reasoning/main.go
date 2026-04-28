@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
@@ -22,7 +23,7 @@ import (
 // What to expect by provider:
 //   - OpenAI: reasoning_effort is sent only when Effort is non-empty; omit Effort for standard chat models.
 //     For o1/o3/gpt-5-style reasoning models, set Effort e.g. "low" or "medium" in WithLLMSampling.
-//   - Anthropic: extended thinking when BudgetTokens ≥ 1024 (or Enabled with default 1024); stream may show thinking_delta tokens.
+//   - Anthropic: extended thinking when BudgetTokens ≥ 1024 (or Enabled with default 1024); stream may show reasoning message deltas.
 //   - Gemini: ThinkingConfig from Enabled / Effort / BudgetTokens; thought parts may appear in the model output depending on model support.
 //
 // Use a reasoning-capable / extended-thinking model in LLM_MODEL for best results.
@@ -51,7 +52,6 @@ func main() {
 			Reasoning: &interfaces.LLMReasoning{
 				Enabled:      true,
 				BudgetTokens: 2048,
-				// Effort: set e.g. "medium" for OpenAI reasoning models only; leave unset for gpt-4o etc.
 			},
 		}),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
@@ -69,7 +69,7 @@ func main() {
 	}
 
 	fmt.Println("user:", prompt)
-	fmt.Println("--- stream (thinking_delta appears for Anthropic extended thinking; content follows) ---")
+	fmt.Println("--- stream (REASONING_MESSAGE_CONTENT may appear before assistant text) ---")
 
 	eventCh, err := a.Stream(context.Background(), prompt, "")
 	if err != nil {
@@ -81,7 +81,7 @@ func main() {
 		if ev == nil {
 			continue
 		}
-		if ev.Type == agent.AgentEventContentDelta || ev.Type == agent.AgentEventThinkingDelta {
+		if shared.MarksStreamDelta(ev) {
 			streamed = true
 		}
 		printEvent(ev, streamed)
@@ -89,25 +89,35 @@ func main() {
 	fmt.Println()
 }
 
-func printEvent(ev *agent.AgentEvent, streamedSoFar bool) {
-	switch ev.Type {
-	case agent.AgentEventContentDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+func printEvent(ev agent.AgentEvent, streamedSoFar bool) {
+	if ev == nil {
+		return
+	}
+	switch ev.Type() {
+	case agent.AgentEventTypeReasoningStart:
+		fmt.Printf("\n[%s]\n", ev.Type())
+	case agent.AgentEventTypeReasoningMessageStart:
+		fmt.Printf("\n[%s]\n", ev.Type())
+	case agent.AgentEventTypeReasoningMessageContent:
+		if r, ok := ev.(*agent.AgentReasoningMessageContentEvent); ok && r.Delta != "" {
+			fmt.Print(r.Delta)
 		}
-	case agent.AgentEventThinkingDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeReasoningMessageEnd:
+		fmt.Printf("\n[%s]\n", ev.Type())
+	case agent.AgentEventTypeReasoningEnd:
+		fmt.Printf("\n[%s]\n", ev.Type())
+	case agent.AgentEventTypeTextMessageContent:
+		if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+			fmt.Print(t.Delta)
 		}
-	case agent.AgentEventThinking:
-		if ev.Content != "" {
-			fmt.Printf("\n[thinking] %s\n", ev.Content)
+	case agent.AgentEventTypeRunError:
+		if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
+			fmt.Printf("\n[error] %s\n", re.Message)
 		}
-	case agent.AgentEventError:
-		fmt.Printf("\n[error] %s\n", ev.Content)
-	case agent.AgentEventComplete:
-		if ev.Content != "" && !streamedSoFar {
-			fmt.Printf("\n[complete] %s\n", ev.Content)
+	case agent.AgentEventTypeRunFinished:
+		res := shared.RunResultFromFinishedEvent(ev)
+		if res != nil && res.Content != "" && !streamedSoFar {
+			fmt.Printf("\n[complete] %s\n", res.Content)
 		}
 	default:
 		// Ignore tool events (none registered).

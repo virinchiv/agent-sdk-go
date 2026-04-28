@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
-	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -35,17 +35,25 @@ func TestEventPublishActivity_PublishesToEventBus(t *testing.T) {
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.EventPublishActivity)
-	ev := &types.AgentEvent{Type: types.AgentEventContent, Content: "hello-event"}
-	if _, err := actEnv.ExecuteActivity(rt.EventPublishActivity, chName, ev); err != nil {
+	ev := events.NewAgentTextMessageContentEvent("message-id", "hello-event")
+	evJSON, err := ev.ToJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := actEnv.ExecuteActivity(rt.EventPublishActivity, chName, evJSON); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case data := <-subCh:
-		var got types.AgentEvent
-		if err := json.Unmarshal(data, &got); err != nil {
+		got, err := events.EventFromJSON(data)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Type != types.AgentEventContent || got.Content != "hello-event" {
+		if got.Type() != events.AgentEventTypeTextMessageContent {
+			t.Fatalf("want TEXT_MESSAGE_CONTENT, got type %v (%+v)", got.Type(), got)
+		}
+		ev, ok := got.(*events.AgentTextMessageContentEvent)
+		if !ok || ev.Delta != "hello-event" {
 			t.Fatalf("decoded event = %+v", got)
 		}
 	case <-time.After(2 * time.Second):
@@ -86,7 +94,7 @@ func TestSubscribeToAgentEvents_RoundTrip(t *testing.T) {
 		}
 	}()
 
-	payload, err := json.Marshal(&types.AgentEvent{Type: types.AgentEventContent, Content: "payload"})
+	payload, err := json.Marshal(events.NewAgentTextMessageContentEvent("message-id", "payload"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,8 +104,14 @@ func TestSubscribeToAgentEvents_RoundTrip(t *testing.T) {
 
 	select {
 	case ev := <-evCh:
-		if ev == nil || ev.Content != "payload" || ev.Type != types.AgentEventContent {
-			t.Fatalf("event = %+v", ev)
+		if ev == nil || ev.Type() != events.AgentEventTypeTextMessageContent {
+			ev, ok := ev.(*events.AgentTextMessageContentEvent)
+			if !ok {
+				t.Fatalf("decoded event = %+v", ev)
+			}
+			if ev.Delta != "payload" {
+				t.Fatalf("decoded event = %+v", ev)
+			}
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for decoded event (goroutine must unblock unbuffered send)")
@@ -128,21 +142,30 @@ func TestAgentEventWorkflow_UpdateTriggersEventPublishActivity(t *testing.T) {
 	rt := testRuntimeForWorkflow(t)
 
 	var gotChannel string
-	var gotEvent *types.AgentEvent
+	var gotEvent events.AgentEvent
 	env.RegisterWorkflow(rt.AgentEventWorkflow)
 	env.OnActivity(rt.EventPublishActivity, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, channel string, event *types.AgentEvent) error {
+		func(ctx context.Context, channel string, eventJSON json.RawMessage) error {
 			gotChannel = channel
-			gotEvent = event
+			ev, err := events.EventFromJSON(eventJSON)
+			if err != nil {
+				return err
+			}
+			gotEvent = ev
 			return nil
 		},
 	)
 
 	env.RegisterDelayedCallback(func() {
+		ev := events.NewAgentTextMessageContentEvent("message-id", "via-update")
+		evJSON, err := ev.ToJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
 		env.UpdateWorkflowNoRejection(agentEventName, "upd-1", t, &AgentEventUpdate{
 			AgentName:        rt.AgentSpec.Name,
 			LocalChannelName: "agent_event_mock_run",
-			Event:            &types.AgentEvent{Type: types.AgentEventContent, Content: "via-update"},
+			EventJSON:        evJSON,
 		})
 	}, time.Millisecond)
 	env.RegisterDelayedCallback(func() {
@@ -155,6 +178,10 @@ func TestAgentEventWorkflow_UpdateTriggersEventPublishActivity(t *testing.T) {
 	require.NoError(t, env.GetWorkflowError())
 	require.Equal(t, "agent_event_mock_run", gotChannel)
 	require.NotNil(t, gotEvent)
-	require.Equal(t, types.AgentEventContent, gotEvent.Type)
-	require.Equal(t, "via-update", gotEvent.Content)
+	require.Equal(t, events.AgentEventTypeTextMessageContent, gotEvent.Type())
+	ev, ok := gotEvent.(*events.AgentTextMessageContentEvent)
+	if !ok {
+		t.Fatalf("decoded event = %+v", gotEvent)
+	}
+	require.Equal(t, "via-update", ev.Delta)
 }

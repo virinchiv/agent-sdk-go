@@ -30,6 +30,8 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (runtime.Runtime
 		temporal.WithMCPFingerprint(mcpConfigFingerprint(cfg.mcpServers, mcpExtraClientNames(cfg.mcpClients))),
 		temporal.WithAgentMode(string(cfg.agentMode)),
 		temporal.WithDisableLocalWorker(cfg.disableLocalWorker),
+		// Never allow fingerprint bypass on remote worker runtime.
+		temporal.WithDisableFingerprintCheck(cfg.disableFingerprintCheck && !remoteWorker),
 		temporal.WithRemoteWorker(remoteWorker),
 	}
 	if cfg.temporalConfig != nil {

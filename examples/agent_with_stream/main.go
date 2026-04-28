@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
@@ -62,7 +64,7 @@ func main() {
 
 	prompt := strings.Join(os.Args[1:], " ")
 	if prompt == "" {
-		prompt = "What's the current time and what's 17 * 23?"
+		prompt = "What's the current time?"
 	}
 
 	fmt.Println("user:", prompt)
@@ -80,7 +82,7 @@ func main() {
 		if ev == nil {
 			continue
 		}
-		if ev.Type == agent.AgentEventContentDelta || ev.Type == agent.AgentEventThinkingDelta {
+		if shared.MarksStreamDelta(ev) {
 			streamed = true
 		}
 		printEvent(ev, streamed)
@@ -88,54 +90,66 @@ func main() {
 	fmt.Println()
 }
 
-func printEvent(ev *agent.AgentEvent, streamedSoFar bool) {
-	switch ev.Type {
-	case agent.AgentEventContent:
-		if ev.Content != "" {
-			fmt.Printf("[content] %s\n", ev.Content)
+func printEvent(ev agent.AgentEvent, streamedSoFar bool) {
+	if ev == nil {
+		return
+	}
+	switch eventType := ev.Type(); eventType {
+	case agent.AgentEventTypeTextMessageStart:
+		if t, ok := ev.(*agent.AgentTextMessageStartEvent); ok {
+			fmt.Printf("\n[%s] %s\n", eventType, t.MessageID)
 		}
-	case agent.AgentEventContentDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeTextMessageContent:
+		if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+			fmt.Print(t.Delta)
 		}
-	case agent.AgentEventThinking:
-		if ev.Content != "" {
-			fmt.Printf("[thinking] %s\n", ev.Content)
+	case agent.AgentEventTypeTextMessageEnd:
+		if t, ok := ev.(*agent.AgentTextMessageEndEvent); ok {
+			fmt.Printf("\n[%s] %s\n", eventType, t.MessageID)
 		}
-	case agent.AgentEventThinkingDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeToolCallStart:
+		if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+			fmt.Printf("\n[%s] %s (%s)\n", eventType, t.ToolCallName, t.ToolCallID)
 		}
-	case agent.AgentEventToolCall:
-		if ev.ToolCall != nil {
-			args, _ := json.Marshal(ev.ToolCall.Args)
-			fmt.Printf("[tool_call] %s (%s) args=%s\n", ev.ToolCall.ToolName, ev.ToolCall.ToolCallID, string(args))
-		}
-	case agent.AgentEventToolResult:
-		if ev.ToolCall != nil {
-			fmt.Printf("[tool_result] %s: %v\n", ev.ToolCall.ToolName, ev.ToolCall.Result)
-		}
-	case agent.AgentEventError:
-		fmt.Printf("[error] %s\n", ev.Content)
-	case agent.AgentEventComplete:
-		// Final text is often duplicate when tokens were streamed; skip verbose line.
-		if ev.Content != "" && !streamedSoFar {
-			fmt.Printf("[complete] %s\n", ev.Content)
-		} else if ev.Content != "" {
-			fmt.Println("[complete]")
-		}
-		if ev.Usage != nil {
-			u := ev.Usage
-			fmt.Printf("\n[usage] prompt=%d completion=%d total=%d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)
-			if u.CachedPromptTokens > 0 {
-				fmt.Printf(" cached_prompt=%d", u.CachedPromptTokens)
+	case agent.AgentEventTypeToolCallArgs:
+		if t, ok := ev.(*agent.AgentToolCallArgsEvent); ok && t.Delta != "" {
+			var args any
+			if json.Unmarshal([]byte(t.Delta), &args) == nil {
+				b, _ := json.Marshal(args)
+				fmt.Printf("[%s] %s args=%s\n", eventType, t.ToolCallID, string(b))
+			} else {
+				fmt.Printf("[%s] %s raw=%s\n", eventType, t.ToolCallID, t.Delta)
 			}
-			if u.ReasoningTokens > 0 {
-				fmt.Printf(" reasoning=%d", u.ReasoningTokens)
-			}
+		}
+	case agent.AgentEventTypeToolCallEnd:
+		if t, ok := ev.(*agent.AgentToolCallEndEvent); ok {
+			fmt.Printf("[%s] %s\n", eventType, t.ToolCallID)
+		}
+	case agent.AgentEventTypeToolCallResult:
+		if t, ok := ev.(*agent.AgentToolCallResultEvent); ok {
+			fmt.Printf("[%s] %s: %s\n", eventType, t.ToolCallID, t.Content)
+		}
+	case agent.AgentEventTypeRunError:
+		if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
+			fmt.Printf("[%s] %s\n", eventType, re.Message)
+		}
+	case agent.AgentEventTypeRunStarted:
+		if r, ok := ev.(*agent.AgentRunStartedEvent); ok {
+			fmt.Printf("[%s] threadID=%s runID=%s\n", eventType, r.ThreadID, r.RunID)
+		}
+	case agent.AgentEventTypeRunFinished:
+		res := shared.RunResultFromFinishedEvent(ev)
+		if res != nil && res.Content != "" && !streamedSoFar {
+			fmt.Printf("[%s] %s\n", eventType, res.Content)
+		} else if res != nil && res.Content != "" {
+			fmt.Printf("[%s]", eventType)
+		}
+		if u := shared.UsageFooter(res); u != "" {
 			fmt.Println()
+			fmt.Println(u)
 		}
 	default:
-		fmt.Printf("[%s] %+v\n", ev.Type, ev)
+		//fmt.Printf("[%s] %+v\n", ev.Type(), ev)
+		return
 	}
 }

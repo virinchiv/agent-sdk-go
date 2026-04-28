@@ -25,6 +25,7 @@
 
 - **LLM providers** — OpenAI, Anthropic, and Gemini out of the box; bring your own via `interfaces.LLMClient`.
 - **Streaming** — Partial tokens and events via `Stream` and `WithStream`.
+- **AG-UI** — Stream events conform to the [AG-UI protocol](https://docs.ag-ui.com); agents work out of the box with any AG-UI compatible frontend such as [CopilotKit](https://copilotkit.ai).
 - **Reasoning** — Extended thinking / chain-of-thought where supported (Anthropic, Gemini).
 - **Token usage** — Track input, output, and reasoning token counts per run.
 - **Tools** — Register built-in or custom tools via `interfaces.Tool`.
@@ -73,6 +74,31 @@ Stream events and approval events cross two boundaries: **Temporal** (durable wo
 - **Approvals degrade gracefully.** If an approval event cannot be delivered, the run continues rather than hanging — the tool is skipped with a clear message. This is intentional for autonomous backend execution; for interactive scenarios, design your UX so users are not silently blocked.
 - **Your responsibility.** Keep worker processes supervised and restarting on crash, maintain a stable connection to your Temporal cluster, and ensure stream subscribers can reconnect.
 - **Client reconnection and UX.** For interactive apps, if the process serving `Stream` crashes, the workflow continues in Temporal but your client loses the connection. Once a stream is lost, reconnecting to that specific run is not supported — the recommended approach is to block the user from sending a new prompt until the current one completes, then fetch the final response and display it. This keeps conversation turns sequential and avoids out-of-order state. For autonomous agents, this is a non-issue since the caller waits for completion and the workflow finishes regardless.
+
+## AG-UI Protocol
+
+Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), making your agents natively compatible with any AG-UI frontend without extra integration work.
+
+Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are emitted in the correct AG-UI sequence during every `Stream()` call. Serialize any event with `event.ToJSON()` and forward it over SSE, WebSocket, or Redis to a TypeScript/React frontend using the AG-UI client SDK.
+
+For a complete server + UI reference, see [`examples/agent_copilotkit`](examples/agent_copilotkit) (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
+
+```go
+ch, err := a.Stream(ctx, prompt, conversationID)
+if err != nil {
+    return err
+}
+for ev := range ch {
+    if ev == nil {
+        continue
+    }
+    data, err := ev.ToJSON()
+    if err != nil {
+        continue
+    }
+    _ = data // e.g. SSE or WebSocket
+}
+```
 
 ## Reference apps
 
@@ -197,7 +223,9 @@ Other providers: implement [`interfaces.LLMClient`](pkg/interfaces/llm.go) (`Gen
 
 ### Stream events (Stream)
 
-`Stream` returns a channel of `AgentEvent`. Use `agent.WithStream(true)` for partial tokens as they arrive. For how **Temporal** durability relates to **live** events (restarts, approvals), see **[Streaming and approvals](#streaming-and-approvals)** under **[Temporal Runtime](#temporal-runtime)**.
+`Stream` returns a channel of `AgentEvent`. Use `agent.WithStream(true)` for partial tokens as they arrive. For **AG-UI** clients, see [AG-UI Protocol](#ag-ui-protocol); for **Temporal** vs. live delivery, see [Streaming and approvals](#streaming-and-approvals).
+
+Lifecycle events include **`RUN_STARTED`**, **`RUN_FINISHED`**, **`RUN_ERROR`**, and (for some flows) **`STEP_STARTED`** / **`STEP_FINISHED`**. Step events bracket a sub-agent child workflow; see [Sub-agents](#sub-agents).
 
 ```go
 a, _ := agent.NewAgent(
@@ -209,13 +237,20 @@ defer a.Close()
 
 eventCh, err := a.Stream(ctx, "What's 17 * 23?", "")
 for ev := range eventCh {
-    switch ev.Type {
-    case agent.AgentEventContentDelta:
-        fmt.Print(ev.Content)
-    case agent.AgentEventToolCall:
-        fmt.Printf("tool: %s\n", ev.ToolCall.ToolName)
-    case agent.AgentEventComplete:
-        fmt.Println("done:", ev.Content)
+    if ev == nil {
+        continue
+    }
+    switch ev.Type() {
+    case agent.AgentEventTypeTextMessageContent:
+        if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok {
+            fmt.Print(t.Delta)
+        }
+    case agent.AgentEventTypeToolCallStart:
+        if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+            fmt.Printf("tool: %s\n", t.ToolCallName)
+        }
+    case agent.AgentEventTypeRunFinished:
+        fmt.Println("done")
     }
 }
 ```
@@ -224,16 +259,16 @@ for ev := range eventCh {
 
 #### Displaying stream events
 
-`ContentDelta` then `Complete` often duplicate the same text—don’t print both. Use `ev.AgentName` to distinguish agents; several `complete` events can appear before the main one finishes. See [examples/agent_with_stream_conversation](examples/agent_with_stream_conversation).
+Streaming text deltas (`TEXT_MESSAGE_*`) versus the **`RUN_FINISHED`** body often duplicate—don’t print both. Use `AgentName` on typed events / results to distinguish agents in delegation; several **`RUN_FINISHED`** events may appear before the root run completes. See [examples/agent_with_stream_conversation](examples/agent_with_stream_conversation).
 
 ### Token usage (`LLMUsage`)
 
 Each LLM completion can report token counts via [`interfaces.LLMUsage`](pkg/interfaces/llm.go) on [`interfaces.LLMResponse.Usage`](pkg/interfaces/llm.go). OpenAI, Anthropic, and Gemini clients populate **`PromptTokens`**, **`CompletionTokens`**, **`TotalTokens`**, and optional **`CachedPromptTokens`** / **`ReasoningTokens`** when the provider returns them.
 
-- **`Agent.Run` / `RunAsync`:** [`AgentResponse.Usage`](pkg/agent/agent.go) is the **sum** of usage across all LLM calls in that run (including tool rounds). Use it for cost estimates, quotas, and logging.
-- **`Stream`:** the root agent’s final [`AgentEventComplete`](pkg/agent/event.go) includes **`Usage`** with the same aggregate. OpenAI streaming requests **`include_usage`** automatically so totals appear on the final stream result.
+- **`Agent.Run` / `RunAsync`:** **`Usage`** on [*AgentRunResult](pkg/agent/agent.go) is the **sum** across all LLM calls in that run (including tool rounds). Use it for cost estimates, quotas, and logging.
+- **`Stream`:** the same aggregate appears as **`Usage`** on **`RUN_FINISHED`**: assert **`[*AgentRunFinishedEvent](pkg/agent/agent.go)`**, then **`Result`** as **`[*AgentRunResult](pkg/agent/agent.go)`**. OpenAI streaming **`include_usage`** surfaces totals there. Helpers: [examples/shared/utils.go](examples/shared/utils.go) (`UsageFooter`, `RunResultFromFinishedEvent`).
 
-Examples: [examples/simple_agent](examples/simple_agent) (prints usage after `Run`), [examples/agent_with_stream](examples/agent_with_stream) (prints usage on `complete`).
+Examples: [examples/simple_agent](examples/simple_agent) (prints usage after `Run`), [examples/agent_with_stream](examples/agent_with_stream) (prints usage on **`RUN_FINISHED`**).
 
 ### Tools
 
@@ -364,6 +399,8 @@ Build each specialist with `NewAgent` (its own `TaskQueue`, LLM, tools, and prom
 
 For streaming scenarios, the main agent is the single subscription point. When using `Stream`, events from all delegated sub-agents fan in to the same main-agent stream, including sub-agent tool approvals and tool call/result events.
 
+**`STEP_STARTED` / `STEP_FINISHED`:** When delegation actually runs a sub-agent **child workflow**, the parent run emits **`AgentEventTypeStepStarted`** then **`AgentEventTypeStepFinished`**, each with **`StepName`** set to the sub-agent’s route name (the `Name` in the `WithSubAgents` configuration). **`STEP_FINISHED`** is emitted when the child returns, whether the sub-run succeeded or failed (a failed run still surfaces as an error string in the following tool result). These are not emitted when delegation is skipped (e.g. empty sub-agent task queue or max depth).
+
 ```go
 mathAgent, _ := agent.NewAgent(
     agent.WithName("MathSpecialist"),
@@ -397,7 +434,7 @@ result, _ := mainAgent.Run(ctx, "What is 144 divided by 12?", "")
 
 [examples/agent_with_subagents](examples/agent_with_subagents)
 
-**Stream event fan-in:** Subscribe once on the main agent and you receive events from the whole delegation tree, including sub-agent tool calls and approvals. Use `ev.AgentName` on each `AgentEvent` to see which agent produced the event (content, tools, approvals, complete). The approval payload is `ev.Approval` (`ApprovalEvent`); the requesting agent is not duplicated there—use `ev.AgentName`.
+**Stream event fan-in:** Subscribe once on the main agent; the stream includes the full tree (tool events, **`AgentEventTypeCustom`** for approvals/delegation, optional **`AgentEventTypeStepStarted` / `AgentEventTypeStepFinished`** around sub-agent runs, **`AgentEventTypeRunFinished`**, etc.). For each event, use **`ev.Type()`** and type-assert to the concrete struct (see [examples/agent_with_stream](examples/agent_with_stream), [examples/agent_with_subagents](examples/agent_with_subagents)). For **`CUSTOM`**, assert **`*AgentCustomEvent`**, then [`ParseCustomEventApproval`](pkg/agent/event.go) or [`ParseCustomEventDelegation`](pkg/agent/event.go) to read **`AgentName`**, **`ApprovalToken`**, **`ToolName`** or **`SubAgentName`**, and call [`OnApproval`](pkg/agent/approval.go) with the token.
 
 ### Approvals
 
@@ -434,7 +471,8 @@ These three types are provided by the `agent` package. For anything else, implem
 
 #### Sub-agents (approval behavior)
 
-- `ApprovalRequest` (Run / RunAsync) and stream `ev.Approval` (`ApprovalEvent`) include `Kind` (`tool` or `delegation`) and `DelegateToName` (target specialist when `Kind` is `delegation`). The agent that asked for approval is on `ev.AgentName` for Stream (and `req.AgentName` on `ApprovalRequest`).
+- **`ApprovalRequest`** (Run / RunAsync): `Name` is [`ApprovalRequestNameTool`](pkg/agent/approval.go) or [`ApprovalRequestNameSubAgent`](pkg/agent/approval.go); decode **`Value`** with [`ParseToolApproval`](pkg/agent/approval.go) (**`ToolName`**, **`AgentName`**) or [`ParseDelegationApproval`](pkg/agent/approval.go) (**`SubAgentName`**, **`AgentName`**).
+- **Stream:** match **`AgentEventTypeCustom`**, parse with **`ParseCustomEventApproval`** / **`ParseCustomEventDelegation`**, then **`OnApproval(ctx, token, status)`** with **`ApprovalToken`** from the parsed value (same payload shape as **`ApprovalRequest.Value`** on Run).
 - **Parent (main agent):** one policy for its whole list—e.g. `RequireAll` → approving delegation to MathSpecialist is the same flow as approving `calculator` on that agent. `AutoToolApprovalPolicy()` → no approval for delegation or other tools on that agent.
 - **Specialist:** separate agent, **its own** `WithToolApprovalPolicy`. Calculator calls inside the specialist use **that** policy, not the parent’s.
 
@@ -457,13 +495,21 @@ a, _ := agent.NewAgent(
 a.Run(ctx, prompt, "")
 ```
 
-**Stream** — receive `AgentEventApproval` and call `agent.OnApproval`:
+**Stream** — approval and delegation requests are **`CUSTOM`** events (`[AgentEventTypeCustom](pkg/agent/event.go)`). Parse with [`ParseCustomEventApproval`](pkg/agent/event.go) / [`ParseCustomEventDelegation`](pkg/agent/event.go), then call [`OnApproval`](pkg/agent/approval.go) with the token from the value field (see [examples/durable_agent/agent/main.go](examples/durable_agent/agent/main.go)):
 
 ```go
 for ev := range eventCh {
-    if ev.Type == agent.AgentEventApproval && ev.Approval != nil {
-        // Show UI, then:
-        a.OnApproval(ctx, ev.Approval.ApprovalToken, agent.ApprovalStatusApproved)
+    if ev == nil || ev.Type() != agent.AgentEventTypeCustom {
+        continue
+    }
+    ce, ok := ev.(*agent.AgentCustomEvent)
+    if !ok {
+        continue
+    }
+    if v, err := agent.ParseCustomEventApproval(ce); err == nil {
+        _ = a.OnApproval(ctx, v.ApprovalToken, agent.ApprovalStatusApproved)
+    } else if d, err := agent.ParseCustomEventDelegation(ce); err == nil {
+        _ = a.OnApproval(ctx, d.ApprovalToken, agent.ApprovalStatusApproved)
     }
 }
 ```
@@ -485,7 +531,7 @@ if res.Err != nil { /* handle */ }
 // res.Response.Content
 ```
 
-For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use `OnApproval` as in the snippet above (first argument comes from `ev.Approval`).
+For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use **`OnApproval`** as in the snippet above—the activity token string is **`ApprovalToken`** from **`ParseCustomEventApproval`** / **`ParseCustomEventDelegation`** (not a field on the **`AgentEvent`** interface).
 
 [examples/agent_with_tools_approval](examples/agent_with_tools_approval)
 
@@ -729,7 +775,7 @@ A Temporal connection is **required** — one of `WithTemporalConfig` or `WithTe
 - **WithMaxSubAgentDepth**: Maximum delegation hops from this agent (default 2). See [Sub-agents](#sub-agents).
 - **WithMaxIterations**: Max LLM rounds (default 5).
 - **WithStream**: Enable `Stream` partial content streaming.
-- **Token usage:** Not a separate option. On **`Run`**, read **`result.Usage`** (`*interfaces.LLMUsage`) when set. On **`Stream`**, read **`ev.Usage`** on the root agent’s **`complete`** event (aggregated across tool rounds). See [Token usage](#token-usage-llmusage).
+- **Token usage:** Not a separate option. On **`Run`**, read **`Usage`** on **`[*AgentRunResult](pkg/agent/agent.go)`** when set. On **`Stream`**, assert **`[*AgentRunFinishedEvent](pkg/agent/agent.go)`** with **`[*AgentRunResult](pkg/agent/agent.go)`** in **`Result`** (aggregate across LLM/tool rounds when the provider reports it). See [Token usage](#token-usage-llmusage).
 - **WithLLMSampling**: Pass `&agent.LLMSampling{...}`; nil or zero fields leave that knob to the provider default. Which fields apply where:
   - **`Temperature`** — OpenAI, Anthropic, Gemini.
   - **`MaxTokens`** — OpenAI, Anthropic, Gemini (max output / completion tokens).

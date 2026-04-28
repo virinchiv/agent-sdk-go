@@ -70,19 +70,19 @@ func main() {
 	}
 
 	fmt.Println("user:", prompt)
-	resp, err := a.Run(context.Background(), prompt, "")
+	result, err := a.Run(context.Background(), prompt, "")
 	if err != nil {
 		log.Fatalf("run failed: %v", err)
 	}
 
 	var verify json.RawMessage
-	if err := json.Unmarshal([]byte(resp.Content), &verify); err != nil {
-		fmt.Println("assistant (raw):", resp.Content)
+	if err := json.Unmarshal([]byte(result.Content), &verify); err != nil {
+		fmt.Println("assistant (raw):", result.Content)
 		log.Fatalf("expected JSON body: %v", err)
 	}
 	pretty, err := json.MarshalIndent(verify, "", "  ")
 	if err != nil {
-		fmt.Println("assistant:", resp.Content)
+		fmt.Println("assistant:", result.Content)
 		return
 	}
 	fmt.Printf("assistant (JSON):\n%s\n", string(pretty))

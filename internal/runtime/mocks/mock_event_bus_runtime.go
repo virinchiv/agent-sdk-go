@@ -9,6 +9,7 @@ import (
 	reflect "reflect"
 
 	eventbus "github.com/agenticenv/agent-sdk-go/internal/eventbus"
+	events "github.com/agenticenv/agent-sdk-go/internal/events"
 	runtime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	types "github.com/agenticenv/agent-sdk-go/internal/types"
 	gomock "github.com/golang/mock/gomock"
@@ -64,10 +65,10 @@ func (mr *MockEventBusRuntimeMockRecorder) Close() *gomock.Call {
 }
 
 // Execute mocks base method.
-func (m *MockEventBusRuntime) Execute(arg0 context.Context, arg1 *runtime.ExecuteRequest) (*types.AgentResponse, error) {
+func (m *MockEventBusRuntime) Execute(arg0 context.Context, arg1 *runtime.ExecuteRequest) (*types.AgentRunResult, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Execute", arg0, arg1)
-	ret0, _ := ret[0].(*types.AgentResponse)
+	ret0, _ := ret[0].(*types.AgentRunResult)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -79,10 +80,10 @@ func (mr *MockEventBusRuntimeMockRecorder) Execute(arg0, arg1 interface{}) *gomo
 }
 
 // ExecuteStream mocks base method.
-func (m *MockEventBusRuntime) ExecuteStream(arg0 context.Context, arg1 *runtime.ExecuteRequest) (chan *types.AgentEvent, error) {
+func (m *MockEventBusRuntime) ExecuteStream(arg0 context.Context, arg1 *runtime.ExecuteRequest) (<-chan events.AgentEvent, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ExecuteStream", arg0, arg1)
-	ret0, _ := ret[0].(chan *types.AgentEvent)
+	ret0, _ := ret[0].(<-chan events.AgentEvent)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
