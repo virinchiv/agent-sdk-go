@@ -64,10 +64,10 @@ func main() {
 	}
 
 	fmt.Println("user:", prompt)
-	response, err := a.Run(context.Background(), prompt, "")
+	result, err := a.Run(context.Background(), prompt, "")
 	if err != nil {
 		log.Printf("run failed: %v", err)
 		return
 	}
-	fmt.Println("agent:", response.Content)
+	fmt.Println("agent:", result.Content)
 }

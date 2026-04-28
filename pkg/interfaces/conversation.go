@@ -14,6 +14,7 @@ const (
 	MessageRoleUser      MessageRole = "user"
 	MessageRoleAssistant MessageRole = "assistant"
 	MessageRoleTool      MessageRole = "tool"
+	MessageRoleReasoning MessageRole = "reasoning"
 )
 
 // Message represents a conversation turn for multi-turn (including tool use).

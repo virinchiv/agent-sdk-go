@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
@@ -26,17 +27,17 @@ type Runtime interface {
 	// Use WithTimeout or a context with deadline to avoid blocking.
 	// When using conversation, pass the conversation ID on the request; agent and worker must use the same ID.
 	// Agent identity is on req.AgentSpec.Name when AgentSpec is set.
-	Execute(ctx context.Context, req *ExecuteRequest) (*types.AgentResponse, error)
+	Execute(ctx context.Context, req *ExecuteRequest) (*types.AgentRunResult, error)
 
-	// ExecuteStream starts the run and returns a channel of AgentEvent. Events are streamed until
-	// AgentEventComplete from this agent (the root of the run). Complete events from delegated
-	// sub-agents are still delivered but do not close the stream. After that root complete, the
-	// channel may remain open until the implementation finishes the run (e.g. backend cleanup), then closes.
-	// For approvals (tool or delegation), receive AgentEventApproval and call the approval path
-	// provided by the agent package (e.g. OnApproval in streaming examples).
+	// ExecuteStream starts the run and returns a channel of AgentEvent. Streams RUN_* lifecycle,
+	// streaming assistant/tool/reasoning events, and CUSTOM approvals until RUN_FINISHED or RUN_ERROR ends the stream.
+	// Delegated workflows may emit their own RUN_FINISHED; semantics for "root" completion are defined in pkg/agent.
+	// After the terminal lifecycle event the channel may stay open briefly, then closes.
+	// For approvals (tool or delegation), receive CUSTOM (AgentEventTypeCustom) events and use the agent
+	// package approval path (e.g. OnApproval with the token from the custom payload).
 	// When using conversation, pass the conversation ID on the request.
 	// Agent identity is on req.AgentSpec.Name when AgentSpec is set.
-	ExecuteStream(ctx context.Context, req *ExecuteRequest) (chan *types.AgentEvent, error)
+	ExecuteStream(ctx context.Context, req *ExecuteRequest) (<-chan events.AgentEvent, error)
 
 	// Approve completes a pending tool approval when the runtime uses out-of-band approval
 	// (e.g. Temporal CompleteActivity). Returns ErrApprovalNotSupported if not applicable.
@@ -128,7 +129,7 @@ type ExecuteRequest struct {
 	ConversationID   string
 	StreamingEnabled bool
 	// EventTypes filters streamed events; empty means default (implementation-defined, often all types).
-	EventTypes       []types.AgentEventType
+	EventTypes       []events.AgentEventType
 	SubAgentRoutes   map[string]types.SubAgentRoute
 	MaxSubAgentDepth int
 

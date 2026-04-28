@@ -1,7 +1,7 @@
 package types
 
-// AgentResponse is the structured result of a completed run (content, model, metadata).
-type AgentResponse struct {
+// AgentRunResult is the structured result of a completed run (content, model, metadata).
+type AgentRunResult struct {
 	Content   string         `json:"content"`
 	AgentName string         `json:"agent_name"`
 	Model     string         `json:"model"`
@@ -10,11 +10,11 @@ type AgentResponse struct {
 	Usage *LLMUsage `json:"usage,omitempty"`
 }
 
-// RunAsyncResult is the single outcome from RunAsync. After the channel closes, Err is non-nil
-// on failure; otherwise Response is non-nil.
-type RunAsyncResult struct {
-	Response *AgentResponse
-	Err      error
+// AgentRunAsyncResult is the single outcome from AgentRunAsync. After the channel closes, Err is non-nil
+// on failure; otherwise Result is non-nil.
+type AgentRunAsyncResult struct {
+	Result *AgentRunResult
+	Error  error
 }
 
 // AgentMode distinguishes how the agent is driven: human-in-the-loop versus self-directed runs.

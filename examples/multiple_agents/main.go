@@ -62,12 +62,12 @@ func main() {
 
 	runAgent := func(name string, a *agent.Agent, p string) {
 		fmt.Printf("\n--- %s ---\n", name)
-		response, err := a.Run(context.Background(), p, "")
+		result, err := a.Run(context.Background(), p, "")
 		if err != nil {
 			fmt.Printf("%s error: %v\n", name, err)
 			return
 		}
-		fmt.Printf("%s: %s\n", name, response.Content)
+		fmt.Printf("%s: %s\n", name, result.Content)
 	}
 
 	if mode == "concurrent" {

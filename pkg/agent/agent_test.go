@@ -10,6 +10,7 @@ import (
 	"github.com/golang/mock/gomock"
 
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	rtmocks "github.com/agenticenv/agent-sdk-go/internal/runtime/mocks"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
@@ -32,7 +33,7 @@ func TestAgent_Run_ForwardsRequestAndReturnsResponse(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockRT := rtmocks.NewMockRuntime(ctrl)
-	mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, req *runtime.ExecuteRequest) (*types.AgentResponse, error) {
+	mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, req *runtime.ExecuteRequest) (*types.AgentRunResult, error) {
 		if req.StreamingEnabled {
 			t.Error("Run must set StreamingEnabled false")
 		}
@@ -43,7 +44,7 @@ func TestAgent_Run_ForwardsRequestAndReturnsResponse(t *testing.T) {
 		if req.AgentSpec != nil {
 			name = req.AgentSpec.Name
 		}
-		return &types.AgentResponse{Content: "reply", AgentName: name, Model: "m1"}, nil
+		return &types.AgentRunResult{Content: "reply", AgentName: name, Model: "m1"}, nil
 	})
 
 	a := testAgentWithRuntime(mockRT)
@@ -61,16 +62,17 @@ func TestAgent_Stream_SetsStreamingEnabled(t *testing.T) {
 	defer ctrl.Finish()
 	mockRT := rtmocks.NewMockRuntime(ctrl)
 	var streamReq *runtime.ExecuteRequest
-	mockRT.EXPECT().ExecuteStream(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, req *runtime.ExecuteRequest) (chan *types.AgentEvent, error) {
+	mockRT.EXPECT().ExecuteStream(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, req *runtime.ExecuteRequest) (<-chan events.AgentEvent, error) {
 		streamReq = req
-		ch := make(chan *types.AgentEvent, 2)
+		ch := make(chan events.AgentEvent, 2)
 		evName := ""
 		if req.AgentSpec != nil {
 			evName = req.AgentSpec.Name
 		}
-		ch <- &types.AgentEvent{Type: types.AgentEventComplete, AgentName: evName, Content: "done"}
+		ch <- events.NewAgentRunFinishedEvent("", "", &types.AgentRunResult{AgentName: evName, Content: "done"})
 		close(ch)
-		return ch, nil
+		var recv <-chan events.AgentEvent = ch
+		return recv, nil
 	})
 
 	a := testAgentWithRuntime(mockRT)
@@ -88,9 +90,26 @@ func TestAgent_Stream_SetsStreamingEnabled(t *testing.T) {
 	if streamReq.UserPrompt != "prompt" {
 		t.Errorf("UserPrompt = %q", streamReq.UserPrompt)
 	}
+	if ch == nil {
+		t.Fatal("Stream returned nil channel")
+	}
 	ev := <-ch
-	if ev == nil || ev.Type != types.AgentEventComplete {
-		t.Fatalf("event = %+v", ev)
+	if ev == nil {
+		t.Fatal("nil event")
+	}
+	if ev.Type() != events.AgentEventTypeRunFinished {
+		t.Fatalf("want RunFinished, got type %v", ev.Type())
+	}
+	fin, ok := ev.(*events.AgentRunFinishedEvent)
+	if !ok || fin == nil {
+		t.Fatalf("event not *AgentRunFinishedEvent: %+v", ev)
+	}
+	result, ok := fin.Result.(*types.AgentRunResult)
+	if !ok || result == nil {
+		t.Fatalf("Result not *AgentRunResult: %+v", fin.Result)
+	}
+	if result.Content != "done" {
+		t.Fatalf("result.Content = %q", result.Content)
 	}
 }
 
@@ -98,7 +117,7 @@ func TestAgent_RunAsync_DeliversResult(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockRT := rtmocks.NewMockRuntime(ctrl)
-	mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).Return(&types.AgentResponse{Content: "mock", AgentName: "TestAgent", Model: "stub"}, nil)
+	mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).Return(&types.AgentRunResult{Content: "mock", AgentName: "TestAgent", Model: "stub"}, nil)
 
 	a := testAgentWithRuntime(mockRT)
 	resCh, apprCh, err := a.RunAsync(context.Background(), "async", "")
@@ -107,10 +126,10 @@ func TestAgent_RunAsync_DeliversResult(t *testing.T) {
 	}
 	select {
 	case r := <-resCh:
-		if r.Err != nil {
-			t.Fatal(r.Err)
+		if r.Error != nil {
+			t.Fatal(r.Error)
 		}
-		if r.Response == nil || r.Response.Content != "mock" {
+		if r.Result == nil || r.Result.Content != "mock" {
 			t.Fatalf("result = %+v", r)
 		}
 	case <-time.After(3 * time.Second):
@@ -125,9 +144,9 @@ func TestAgent_Stream_CustomStreamFn(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	mockRT := rtmocks.NewMockRuntime(ctrl)
-	mockRT.EXPECT().ExecuteStream(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, req *runtime.ExecuteRequest) (chan *types.AgentEvent, error) {
-		ch := make(chan *types.AgentEvent, 1)
-		ch <- &types.AgentEvent{Type: types.AgentEventContent, Content: "partial"}
+	mockRT.EXPECT().ExecuteStream(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, req *runtime.ExecuteRequest) (<-chan events.AgentEvent, error) {
+		ch := make(chan events.AgentEvent, 1)
+		ch <- events.NewAgentTextMessageContentEvent("", "partial")
 		close(ch)
 		return ch, nil
 	})
@@ -138,7 +157,14 @@ func TestAgent_Stream_CustomStreamFn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := <-ch
-	if ev == nil || ev.Content != "partial" {
+	if ev == nil || ev.Type() != events.AgentEventTypeTextMessageContent {
+		ev, ok := ev.(*events.AgentTextMessageContentEvent)
+		if !ok {
+			t.Fatalf("ev = %+v", ev)
+		}
+		if ev.Delta != "partial" {
+			t.Fatalf("ev = %+v", ev)
+		}
 		t.Fatalf("ev = %+v", ev)
 	}
 }

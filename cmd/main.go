@@ -30,7 +30,7 @@ var version = "dev"
 
 const (
 	exitPrompt = "Type 'exit', 'quit', or 'bye' to end the conversation."
-	convID     = "interactive"
+	convID     = "interactive-agentctl"
 )
 
 func main() {
@@ -142,30 +142,66 @@ func main() {
 			if ev == nil {
 				continue
 			}
-			if ev.Type == agent.AgentEventApproval && ev.Approval != nil {
-				ap := ev.Approval
-				if len(ap.Args) == 0 {
-					fmt.Printf("\n--- Tool approval required ---\nTool: %s\nApprove? (y/n): ", ap.ToolName)
-				} else {
-					argsJSON := toolArgsJSONIndented(ap.Args)
-					fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", ap.ToolName, argsJSON)
-				}
-				line, ok := <-lineCh
-				status := agent.ApprovalStatusRejected
-				if ok && strings.TrimSpace(strings.ToLower(line)) == "y" {
-					status = agent.ApprovalStatusApproved
-				}
-				if err := a.OnApproval(context.Background(), ev.Approval.ApprovalToken, status); err != nil {
-					log.Printf("approval failed: %v", err)
-				}
-				continue
-			}
-			if ev.Type == agent.AgentEventContentDelta || ev.Type == agent.AgentEventContent {
+			if marksStreamDelta(ev) {
 				streamedContent = true
 			}
-			printEvent(ev, streamedContent)
-			if ev.Type == agent.AgentEventComplete {
-				finalContent = ev.Content
+			switch ev.Type() {
+			case agent.AgentEventTypeCustom:
+				ce, ok := ev.(*agent.AgentCustomEvent)
+				if !ok || ce == nil {
+					printEvent(ev, streamedContent)
+					continue
+				}
+				var approvalToken string
+				switch ce.Name {
+				case string(agent.AgentCustomEventNameToolApproval):
+					apv, err := agent.ParseCustomEventApproval(ce)
+					if err != nil || apv.ApprovalToken == "" {
+						printEvent(ev, streamedContent)
+						continue
+					}
+					argsLine := ""
+					if len(apv.Args) > 0 {
+						argsLine = fmt.Sprintf("\nArgs:\n%s\n", toolArgsJSONIndented(apv.Args))
+					}
+					fmt.Printf("\n--- Tool approval required ---\nSource agent: %s\nTool: %s\n%sApprove? (y/n): ",
+						apv.AgentName, apv.ToolName, argsLine)
+					approvalToken = apv.ApprovalToken
+				case string(agent.AgentCustomEventNameSubAgentDelegation):
+					dv, err := agent.ParseCustomEventDelegation(ce)
+					if err != nil || dv.ApprovalToken == "" {
+						printEvent(ev, streamedContent)
+						continue
+					}
+					argsLine := ""
+					if len(dv.Args) > 0 {
+						argsLine = fmt.Sprintf("\nArgs:\n%s\n", toolArgsJSONIndented(dv.Args))
+					}
+					fmt.Printf("\n--- Sub-agent delegation required ---\nSource agent: %s\nSub-agent: %s\n%sApprove? (y/n): ",
+						dv.AgentName, dv.SubAgentName, argsLine)
+					approvalToken = dv.ApprovalToken
+				default:
+					printEvent(ev, streamedContent)
+					continue
+				}
+				line2, ok2 := <-lineCh
+				status := agent.ApprovalStatusRejected
+				if ok2 && strings.TrimSpace(strings.ToLower(line2)) == "y" {
+					status = agent.ApprovalStatusApproved
+				}
+				if err := a.OnApproval(context.Background(), approvalToken, status); err != nil {
+					log.Printf("approval failed: %v", err)
+				}
+			default:
+				printEvent(ev, streamedContent)
+			}
+			if ev.Type() == agent.AgentEventTypeTextMessageContent {
+				if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+					fmt.Print(t.Delta)
+				}
+			}
+			if res := runResultFromFinishedEvent(ev); res != nil && res.Content != "" {
+				finalContent = res.Content
 			}
 		}
 		if finalContent != "" {
@@ -174,53 +210,93 @@ func main() {
 	}
 }
 
-func printEvent(ev *agent.AgentEvent, streamedContent bool) {
-	switch ev.Type {
-	case agent.AgentEventContent:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+// marksStreamDelta is true for events that stream visible assistant or reasoning text.
+func marksStreamDelta(ev agent.AgentEvent) bool {
+	if ev == nil {
+		return false
+	}
+	switch ev.Type() {
+	case agent.AgentEventTypeTextMessageContent, agent.AgentEventTypeReasoningMessageContent:
+		return true
+	default:
+		return false
+	}
+}
+
+// runResultFromFinishedEvent returns the typed result from RUN_FINISHED, or nil.
+func runResultFromFinishedEvent(ev agent.AgentEvent) *agent.AgentRunResult {
+	if ev == nil || ev.Type() != agent.AgentEventTypeRunFinished {
+		return nil
+	}
+	fin, ok := ev.(*agent.AgentRunFinishedEvent)
+	if !ok || fin == nil {
+		return nil
+	}
+	res, _ := fin.Result.(*agent.AgentRunResult)
+	return res
+}
+
+func printEvent(ev agent.AgentEvent, streamedContent bool) {
+	if ev == nil {
+		return
+	}
+	switch ev.Type() {
+	case agent.AgentEventTypeCustom:
+		return
+	case agent.AgentEventTypeTextMessageStart, agent.AgentEventTypeTextMessageEnd:
+		return
+	case agent.AgentEventTypeTextMessageContent:
+		return
+	case agent.AgentEventTypeReasoningStart, agent.AgentEventTypeReasoningEnd,
+		agent.AgentEventTypeReasoningMessageStart, agent.AgentEventTypeReasoningMessageEnd:
+		return
+	case agent.AgentEventTypeReasoningMessageContent:
+		if r, ok := ev.(*agent.AgentReasoningMessageContentEvent); ok && r.Delta != "" {
+			fmt.Printf("[thinking] %s", r.Delta)
 		}
-	case agent.AgentEventContentDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeToolCallStart:
+		if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+			fmt.Printf("\n[tool_call] %s (%s)\n", t.ToolCallName, t.ToolCallID)
 		}
-	case agent.AgentEventThinking:
-		if ev.Content != "" {
-			fmt.Printf("[thinking] %s\n", ev.Content)
+	case agent.AgentEventTypeToolCallArgs:
+		if t, ok := ev.(*agent.AgentToolCallArgsEvent); ok && t.Delta != "" {
+			fmt.Printf("[tool_args] %s %s\n", t.ToolCallID, t.Delta)
 		}
-	case agent.AgentEventThinkingDelta:
-		if ev.Content != "" {
-			fmt.Print(ev.Content)
+	case agent.AgentEventTypeToolCallEnd:
+		return
+	case agent.AgentEventTypeToolCallResult:
+		if t, ok := ev.(*agent.AgentToolCallResultEvent); ok {
+			fmt.Printf("[tool_result] %s: %s\n", t.ToolCallID, t.Content)
 		}
-	case agent.AgentEventToolCall:
-		if ev.ToolCall != nil {
-			tc := ev.ToolCall
-			if len(tc.Args) == 0 {
-				fmt.Printf("\n[tool_call] %s\n", tc.ToolName)
-			} else {
-				args, _ := json.Marshal(tc.Args)
-				fmt.Printf("\n[tool_call] %s args=%s\n", tc.ToolName, string(args))
-			}
+	case agent.AgentEventTypeRunError:
+		if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
+			fmt.Printf("[error] %s\n", re.Message)
 		}
-	case agent.AgentEventApproval:
-		// Handled in main loop; Approval events are not printed here
-	case agent.AgentEventToolResult:
-		if ev.ToolCall != nil {
-			fmt.Printf("[tool_result] %s: %v\n", ev.ToolCall.ToolName, ev.ToolCall.Result)
-		}
-	case agent.AgentEventError:
-		fmt.Printf("[error] %s\n", ev.Content)
-	case agent.AgentEventComplete:
-		// Only print content if we didn't already display it via ContentDelta or Content
-		if ev.Content != "" && !streamedContent {
-			who := strings.TrimSpace(ev.AgentName)
+	case agent.AgentEventTypeRunFinished:
+		if res := runResultFromFinishedEvent(ev); res != nil && res.Content != "" && !streamedContent {
+			who := strings.TrimSpace(res.AgentName)
 			if who == "" {
 				who = "agent"
 			}
-			fmt.Printf("\n[%s complete] %s\n", who, ev.Content)
+			fmt.Printf("\n[%s complete] %s\n", who, res.Content)
+		}
+	case agent.AgentEventTypeRunStarted:
+		return
+	case agent.AgentEventTypeStepStarted:
+		if t, ok := ev.(*agent.AgentStepStartedEvent); ok && t.StepName != "" {
+			fmt.Printf("\n[step] %s (sub-agent: %s)\n", ev.Type(), t.StepName)
+		} else {
+			fmt.Printf("\n[step] %s\n", ev.Type())
+		}
+	case agent.AgentEventTypeStepFinished:
+		if t, ok := ev.(*agent.AgentStepFinishedEvent); ok && t.StepName != "" {
+			fmt.Printf("[step] %s (sub-agent: %s)\n", ev.Type(), t.StepName)
+		} else {
+			fmt.Printf("[step] %s\n", ev.Type())
 		}
 	default:
-		fmt.Printf("[%s] %+v\n", ev.Type, ev)
+		//fmt.Printf("[%s] %+v\n", ev.Type(), ev)
+		return
 	}
 }
 

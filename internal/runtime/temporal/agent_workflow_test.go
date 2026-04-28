@@ -63,11 +63,11 @@ func TestAgentWorkflow_SingleLLMNoTools(t *testing.T) {
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
-	var out types.AgentResponse
-	require.NoError(t, env.GetWorkflowResult(&out))
-	require.Equal(t, "final answer", out.Content)
-	require.Equal(t, "WorkflowTestAgent", out.AgentName)
-	require.Equal(t, "stub", out.Model)
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, "final answer", result.Content)
+	require.Equal(t, "WorkflowTestAgent", result.AgentName)
+	require.Equal(t, "stub", result.Model)
 }
 
 func TestAgentWorkflow_StreamingPath_UsesStreamActivity(t *testing.T) {
@@ -77,7 +77,7 @@ func TestAgentWorkflow_StreamingPath_UsesStreamActivity(t *testing.T) {
 	rt.AgentExecution.LLM.Client = streamCapableStubLLM{}
 
 	env.RegisterWorkflow(rt.AgentWorkflow)
-	env.OnActivity(rt.AgentLLMStreamActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMStreamInput) (*AgentLLMResult, error) {
+	env.OnActivity(rt.AgentLLMStreamActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
 		return &AgentLLMResult{Content: "streamed", ToolCalls: nil}, nil
 	})
 
@@ -87,9 +87,9 @@ func TestAgentWorkflow_StreamingPath_UsesStreamActivity(t *testing.T) {
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
-	var out types.AgentResponse
-	require.NoError(t, env.GetWorkflowResult(&out))
-	require.Equal(t, "streamed", out.Content)
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, "streamed", result.Content)
 }
 
 func TestAgentWorkflow_OneToolThenFinal(t *testing.T) {
@@ -129,9 +129,9 @@ func TestAgentWorkflow_OneToolThenFinal(t *testing.T) {
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
-	var out types.AgentResponse
-	require.NoError(t, env.GetWorkflowResult(&out))
-	require.Equal(t, "after tool", out.Content)
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, "after tool", result.Content)
 	require.Equal(t, 2, llmCalls)
 }
 
@@ -166,9 +166,9 @@ func TestAgentWorkflow_ToolAuthorizationDenied_SkipsExecute(t *testing.T) {
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
-	var out types.AgentResponse
-	require.NoError(t, env.GetWorkflowResult(&out))
-	require.Equal(t, "after deny", out.Content)
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, "after deny", result.Content)
 	require.Equal(t, 2, llmCalls)
 }
 
@@ -371,7 +371,7 @@ func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMStreamActivity)
-	val, err := actEnv.ExecuteActivity(rt.AgentLLMStreamActivity, AgentLLMStreamInput{
+	val, err := actEnv.ExecuteActivity(rt.AgentLLMStreamActivity, AgentLLMInput{
 		AgentName:        "StreamAct",
 		Messages:         []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "s"}},
 		LocalChannelName: "ch",

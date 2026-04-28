@@ -73,12 +73,12 @@ func main() {
 
 func runSingleTurn(ctx context.Context, a *agent.Agent, prompt, convID string) {
 	fmt.Println("user:", prompt)
-	response, err := a.Run(ctx, prompt, convID)
+	result, err := a.Run(ctx, prompt, convID)
 	if err != nil {
 		log.Printf("run failed: %v", err)
 		return
 	}
-	fmt.Println("assistant:", response.Content)
+	fmt.Println("assistant:", result.Content)
 }
 
 func runInteractive(ctx context.Context, a *agent.Agent, convID string) {
@@ -96,11 +96,11 @@ func runInteractive(ctx context.Context, a *agent.Agent, convID string) {
 		if prompt == "exit" || prompt == "quit" || prompt == "bye" {
 			break
 		}
-		response, err := a.Run(ctx, prompt, convID)
+		result, err := a.Run(ctx, prompt, convID)
 		if err != nil {
 			log.Printf("run failed: %v", err)
 			continue
 		}
-		fmt.Println("assistant:", response.Content)
+		fmt.Println("assistant:", result.Content)
 	}
 }

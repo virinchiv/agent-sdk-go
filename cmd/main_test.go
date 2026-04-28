@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
-	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
 
 func TestIsExitCommand(t *testing.T) {
@@ -34,16 +34,19 @@ func TestToolArgsJSONIndented(t *testing.T) {
 
 func TestPrintEvent_smokeNoPanic(t *testing.T) {
 	// Smoke: fmt to stdout; asserts wiring and nil-safety for branches used in the REPL loop.
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventContent, Content: "hi"}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventContentDelta, Content: "x"}, true)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventThinking, Content: "t"}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventThinkingDelta, Content: "d"}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventToolCall, ToolCall: &types.ToolCallEvent{ToolName: "echo", Args: map[string]any{"q": "1"}}}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventToolCall, ToolCall: &types.ToolCallEvent{ToolName: "echo"}}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventToolResult, ToolCall: &types.ToolCallEvent{ToolName: "echo", Result: "ok"}}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventError, Content: "e"}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventComplete, Content: "done", AgentName: "A"}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventComplete, Content: "done", AgentName: ""}, false)
-	printEvent(&agent.AgentEvent{Type: agent.AgentEventApproval}, false)
-	printEvent(&agent.AgentEvent{Type: types.AgentEventType("unknown")}, false)
+	printEvent(events.NewAgentTextMessageContentEvent("m1", "hi"), false)
+	printEvent(events.NewAgentReasoningMessageContentEvent("m2", "d"), false)
+	printEvent(events.NewAgentToolCallStartEvent("tid", "echo"), false)
+	printEvent(events.NewAgentToolCallArgsEvent("tid", `{"q":"1"}`), false)
+	printEvent(events.NewAgentToolCallResultEvent("m1", "tid", "ok"), false)
+	printEvent(events.NewAgentRunErrorEvent("e"), false)
+	printEvent(events.NewAgentRunFinishedEvent("", "", &types.AgentRunResult{Content: "done", AgentName: "A"}), false)
+	printEvent(events.NewAgentRunFinishedEvent("", "", &types.AgentRunResult{Content: "done", AgentName: ""}), false)
+	printEvent(events.NewAgentCustomEvent(string(events.AgentCustomEventNameToolApproval), events.AgentCustomEventApprovalValue{
+		ToolName: "echo", ApprovalToken: "tok",
+	}), false)
+	printEvent(events.NewAgentRunStartedEvent("t", "r"), false)
+	printEvent(events.NewAgentTextMessageStartEvent("m", "assistant"), false)
+	printEvent(events.NewAgentTextMessageEndEvent("m"), false)
+	printEvent(events.NewBaseEvent(events.AgentEventType("UNKNOWN")), false)
 }

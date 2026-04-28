@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
@@ -19,14 +20,11 @@ import (
 // flow up to the main agent's Stream subscriber on the same in-memory channel.
 //
 // Approval flow:
-//  1. Main agent asks to delegate to MathSpecialist → approval prompt (kind: delegation)
-//  2. MathSpecialist calls the calculator tool    → approval prompt (kind: tool, from sub-agent)
+//  1. Main agent asks to delegate to MathSpecialist → CUSTOM name=delegation
+//  2. MathSpecialist calls the calculator tool    → CUSTOM name=approval
 //
 // Both approvals arrive on the main agent's Stream event channel, proving that
 // sub-agent events fan-in to the root agent's LocalChannelName.
-//
-// The main agent system prompt also asks the model to continue after delegation returns,
-// so you can observe another LLM round / streamed content on the main agent after the child workflow completes.
 func main() {
 	cfg := config.LoadFromEnv()
 
@@ -51,8 +49,6 @@ func main() {
 	mathReg := tools.NewRegistry()
 	mathReg.Register(calculator.New())
 
-	// MathSpecialist uses RequireAllToolApprovalPolicy so its calculator tool
-	// also requires approval — we observe this approval on the main agent's stream.
 	mathSpecialist, err := agent.NewAgent(
 		agent.WithName("MathSpecialist"),
 		agent.WithDescription("Arithmetic specialist with calculator tool."),
@@ -114,49 +110,70 @@ func main() {
 	}
 
 	for ev := range eventCh {
-		switch ev.Type {
-		case agent.AgentEventApproval:
-			ap := ev.Approval
-			if ap == nil {
+		if ev == nil {
+			continue
+		}
+		switch eventType := ev.Type(); eventType {
+		case agent.AgentEventTypeStepStarted:
+			if t, ok := ev.(*agent.AgentStepStartedEvent); ok && t.StepName != "" {
+				fmt.Printf("[%s] %s\n", eventType, t.StepName)
+			}
+		case agent.AgentEventTypeStepFinished:
+			if t, ok := ev.(*agent.AgentStepFinishedEvent); ok && t.StepName != "" {
+				fmt.Printf("[%s] %s\n", eventType, t.StepName)
+			}
+		case agent.AgentEventTypeCustom:
+			if tv, ok := shared.ToolApprovalValueFromEvent(ev); ok {
+				argsJSON, _ := json.MarshalIndent(tv.Args, "", "  ")
+				fmt.Printf("\n--- Tool approval ---\n")
+				fmt.Printf("[%s] Source agent : %s\n", eventType, tv.AgentName)
+				fmt.Printf("[%s] Tool         : %s\n", eventType, tv.ToolName)
+				fmt.Printf("[%s] Args:\n%s\nApprove? (y/n): ", eventType, string(argsJSON))
+
+				line, ok := <-lineCh
+				approved := ok && strings.TrimSpace(strings.ToLower(line)) == "y"
+				status := agent.ApprovalStatusRejected
+				if approved {
+					status = agent.ApprovalStatusApproved
+				}
+				if err := mainAgent.OnApproval(context.Background(), tv.ApprovalToken, status); err != nil {
+					fmt.Printf("[%s] approval error: %v\n", eventType, err)
+				}
 				continue
 			}
-			argsJSON, _ := json.MarshalIndent(ap.Args, "", "  ")
-			title := "Tool approval"
-			if ap.Kind == agent.ToolApprovalKindDelegation {
-				title = "Delegate to specialist"
-			}
-			fmt.Printf("\n--- %s ---\n", title)
-			fmt.Printf("Source agent : %s\n", ev.AgentName)
-			if ap.SubAgentName != "" {
-				fmt.Printf("Delegate to  : %s\n", ap.SubAgentName)
-			}
-			fmt.Printf("Tool         : %s\n", ap.ToolName)
-			fmt.Printf("Args:\n%s\nApprove? (y/n): ", string(argsJSON))
+			if dv, ok := shared.DelegationApprovalValueFromEvent(ev); ok {
+				argsJSON, _ := json.MarshalIndent(dv.Args, "", "  ")
+				fmt.Printf("\n--- Delegate to specialist ---\n")
+				fmt.Printf("[%s] Source agent : %s\n", eventType, dv.AgentName)
+				fmt.Printf("[%s] Delegate to  : %s\n", eventType, dv.SubAgentName)
+				fmt.Printf("[%s] Args:\n%s\nApprove? (y/n): ", eventType, string(argsJSON))
 
-			approved := false
-			select {
-			case line, ok := <-lineCh:
-				approved = ok && strings.TrimSpace(strings.ToLower(line)) == "y"
-			}
-			status := agent.ApprovalStatusRejected
-			if approved {
-				status = agent.ApprovalStatusApproved
-			}
-			if err := mainAgent.OnApproval(context.Background(), ap.ApprovalToken, status); err != nil {
-				fmt.Printf("approval error: %v\n", err)
+				line, ok := <-lineCh
+				approved := ok && strings.TrimSpace(strings.ToLower(line)) == "y"
+				status := agent.ApprovalStatusRejected
+				if approved {
+					status = agent.ApprovalStatusApproved
+				}
+				if err := mainAgent.OnApproval(context.Background(), dv.ApprovalToken, status); err != nil {
+					fmt.Printf("[%s] approval error: %v\n", eventType, err)
+				}
 			}
 
-		case agent.AgentEventContentDelta:
-			fmt.Print(ev.Content)
+		case agent.AgentEventTypeTextMessageContent:
+			if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok && t.Delta != "" {
+				fmt.Printf("[%s] %s\n", eventType, t.Delta)
+			}
 
-		case agent.AgentEventComplete:
-			// You may see two completes on one Stream: specialist first, then main after it
-			// incorporates the tool result. Only the main agent's complete ends the stream.
-			who := strings.TrimSpace(ev.AgentName)
+		case agent.AgentEventTypeRunFinished:
+			res := shared.RunResultFromFinishedEvent(ev)
+			if res == nil {
+				continue
+			}
+			who := strings.TrimSpace(res.AgentName)
 			if who == "" {
 				who = "agent"
 			}
-			fmt.Printf("\n[%s complete] %s\n", who, ev.Content)
+			fmt.Printf("\n[%s] [%s complete] %s\n", eventType, who, res.Content)
 		}
 	}
 }
