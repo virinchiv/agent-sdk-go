@@ -2,7 +2,7 @@
 # release.sh — create a release tag (triggers GitHub Actions release workflow)
 #
 # Usage:
-#   ./scripts/release.sh              # Auto-increment patch from latest tag (v0.0.1 → v0.0.2)
+#   ./scripts/release.sh              # Auto-increment patch from highest v*.*.* tag in repo (not git describe)
 #   ./scripts/release.sh v1.0.0       # Use exact version (v1.0.0 or 1.0.0)
 #   ./scripts/release.sh v1.0.0 -p   # Create tag and push (triggers release)
 #
@@ -48,7 +48,10 @@ git fetch --tags 2>/dev/null || true
 
 # Resolve version
 if [[ -z "$VERSION" ]]; then
-  LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+  # Highest semver-like tag in the repo (--sort=-v:refname). Do not use `git describe`: that is
+  # "nearest tag reachable from HEAD", so a newer tag on another branch or not merged is ignored.
+  LATEST=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+  [[ -z "$LATEST" ]] && LATEST="v0.0.0"
   LATEST=${LATEST#v}
   IFS=. read -r MAJOR MINOR PATCH <<< "$LATEST"
   PATCH=$((PATCH + 1))
