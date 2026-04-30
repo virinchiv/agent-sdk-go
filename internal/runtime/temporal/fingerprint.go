@@ -40,6 +40,9 @@ type AgentFingerprintPayload struct {
 	// AgentMode is the execution mode (e.g. interactive vs autonomous); must match pkg/agent WithAgentMode on caller and worker.
 	AgentMode string `json:"agent_mode"`
 
+	// AgentToolExecutionMode is the tool execution mode (e.g. sequential vs parallel); must match pkg/agent WithAgentToolExecutionMode on caller and worker.
+	AgentToolExecutionMode string `json:"agent_tool_execution_mode"`
+
 	Sampling *sdkruntime.LLMSampling `json:"sampling,omitempty"`
 
 	SessionSize int `json:"session_size"`
@@ -75,6 +78,7 @@ func BuildAgentFingerprintPayload(
 	limits sdkruntime.AgentLimits,
 	mcpFingerprint string,
 	agentMode string,
+	agentToolExecutionMode types.AgentToolExecutionMode,
 ) AgentFingerprintPayload {
 	names := append([]string(nil), toolNames...)
 	sort.Strings(names)
@@ -82,7 +86,10 @@ func BuildAgentFingerprintPayload(
 	if mode == "" {
 		mode = string(types.AgentModeInteractive)
 	}
-
+	toolExecutionMode := agentToolExecutionMode
+	if toolExecutionMode == "" {
+		toolExecutionMode = types.AgentToolExecutionModeParallel
+	}
 	m := AgentFingerprintPayload{
 		Name:              spec.Name,
 		Description:       spec.Description,
@@ -164,6 +171,7 @@ func computeAgentFingerprintFromRuntimeConfig(c *TemporalRuntimeConfig) string {
 		c.AgentExecution.Limits,
 		c.MCPFingerprint,
 		c.AgentMode,
+		c.AgentToolExecutionMode,
 	)
 	return ComputeAgentFingerprint(mat)
 }
