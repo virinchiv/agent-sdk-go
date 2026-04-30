@@ -91,18 +91,19 @@ func BuildAgentFingerprintPayload(
 		toolExecutionMode = types.AgentToolExecutionModeParallel
 	}
 	m := AgentFingerprintPayload{
-		Name:              spec.Name,
-		Description:       spec.Description,
-		SystemPrompt:      spec.SystemPrompt,
-		ToolNames:         names,
-		PolicyFingerprint: policyFingerprint,
-		MCPFingerprint:    mcpFingerprint,
-		AgentMode:         mode,
-		Sampling:          cloneLLMSampling(sampling),
-		SessionSize:       sessionSize,
-		MaxIterations:     limits.MaxIterations,
-		TimeoutNs:         limits.Timeout.Nanoseconds(),
-		ApprovalTimeoutNs: limits.ApprovalTimeout.Nanoseconds(),
+		Name:                   spec.Name,
+		Description:            spec.Description,
+		SystemPrompt:           spec.SystemPrompt,
+		ToolNames:              names,
+		PolicyFingerprint:      policyFingerprint,
+		MCPFingerprint:         mcpFingerprint,
+		AgentMode:              mode,
+		AgentToolExecutionMode: string(toolExecutionMode),
+		Sampling:               cloneLLMSampling(sampling),
+		SessionSize:            sessionSize,
+		MaxIterations:          limits.MaxIterations,
+		TimeoutNs:              limits.Timeout.Nanoseconds(),
+		ApprovalTimeoutNs:      limits.ApprovalTimeout.Nanoseconds(),
 	}
 	if spec.ResponseFormat != nil {
 		rf := spec.ResponseFormat
