@@ -29,6 +29,7 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (runtime.Runtime
 		temporal.WithPolicyFingerprint(toolPolicyFingerprint(cfg.toolApprovalPolicy)),
 		temporal.WithMCPFingerprint(mcpConfigFingerprint(cfg.mcpServers, mcpExtraClientNames(cfg.mcpClients))),
 		temporal.WithAgentMode(string(cfg.agentMode)),
+		temporal.WithAgentToolExecutionMode(cfg.agentToolExecutionMode),
 		temporal.WithDisableLocalWorker(cfg.disableLocalWorker),
 		// Never allow fingerprint bypass on remote worker runtime.
 		temporal.WithDisableFingerprintCheck(cfg.disableFingerprintCheck && !remoteWorker),

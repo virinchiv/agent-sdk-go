@@ -41,6 +41,8 @@ type TemporalRuntimeConfig struct {
 	MCPFingerprint    string // from pkg/agent mcpConfigFingerprint; must match caller temporal.ComputeAgentFingerprint inputs
 	// AgentMode is the string form of [types.AgentMode] (e.g. "interactive", "autonomous"); must match pkg/agent WithAgentMode.
 	AgentMode string
+	// AgentToolExecutionMode is the [types.AgentToolExecutionMode] (e.g. "sequential", "parallel"); must match pkg/agent WithAgentToolExecutionMode.
+	AgentToolExecutionMode types.AgentToolExecutionMode
 	// DisableLocalWorker mirrors pkg/agent [DisableLocalWorker]: when false, the client embeds a worker
 	// so Execute/ExecuteStream skip DescribeTaskQueue poller checks. ([NewAgentWorker] never calls those methods.)
 	DisableLocalWorker bool
@@ -132,6 +134,14 @@ func WithAgentMode(mode string) Option {
 	}
 }
 
+// WithAgentToolExecutionMode sets the agent tool execution mode string used with [ComputeAgentFingerprint].
+// Must match pkg/agent [WithAgentToolExecutionMode] for the same agent (caller process and worker process).
+func WithAgentToolExecutionMode(mode types.AgentToolExecutionMode) Option {
+	return func(c *TemporalRuntimeConfig) {
+		c.AgentToolExecutionMode = mode
+	}
+}
+
 // WithDisableLocalWorker mirrors pkg/agent [DisableLocalWorker]. When false, the client embeds a worker
 // and the runtime skips DescribeTaskQueue poller checks before starting workflows.
 func WithDisableLocalWorker(disable bool) Option {
@@ -181,6 +191,8 @@ func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) 
 		slog.String("instanceId", c.instanceId),
 		slog.Int("maxIterations", c.AgentExecution.Limits.MaxIterations),
 		slog.Bool("remoteWorker", c.remoteWorker),
+		slog.String("agentMode", c.AgentMode),
+		slog.String("agentToolExecutionMode", string(c.AgentToolExecutionMode)),
 		slog.Bool("enableRemoteWorkers", c.enableRemoteWorkers),
 		slog.Bool("disableFingerprintCheck", c.DisableFingerprintCheck),
 		slog.Duration("timeout", c.AgentExecution.Limits.Timeout),

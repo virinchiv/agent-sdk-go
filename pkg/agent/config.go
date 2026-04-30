@@ -43,6 +43,14 @@ const (
 	AgentModeAutonomous  = types.AgentModeAutonomous
 )
 
+// AgentToolExecutionMode selects parallel (default) or sequential tool execution. Aliases [types.AgentToolExecutionMode].
+type AgentToolExecutionMode = types.AgentToolExecutionMode
+
+const (
+	AgentToolExecutionModeParallel   = types.AgentToolExecutionModeParallel
+	AgentToolExecutionModeSequential = types.AgentToolExecutionModeSequential
+)
+
 // MCPServers maps a stable server key (e.g. "github", "slack") to per-server MCP settings.
 // Registered tool names use prefix mcp_<serverKey>_<toolName> (see [MCPTool]).
 // nil or empty map means no MCP servers from configuration.
@@ -67,7 +75,7 @@ type MCPConfig struct {
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
-//     WithMCPConfig, WithMCPClients, WithAgentMode, WithDisableFingerprintCheck
+//     WithMCPConfig, WithMCPClients, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode
 type agentConfig struct {
 	ID                 string
 	Name               string
@@ -115,7 +123,8 @@ type agentConfig struct {
 	mcpClients []interfaces.MCPClient
 	mcpTools   []interfaces.Tool
 
-	agentMode AgentMode
+	agentMode              AgentMode
+	agentToolExecutionMode AgentToolExecutionMode
 }
 
 // Default Run/Stream deadlines when [WithTimeout] is unset: shorter for interactive sessions,
@@ -176,6 +185,12 @@ func WithInstanceId(id string) Option {
 // Default is [AgentModeInteractive]. Included in the Temporal agent fingerprint so caller and worker must agree.
 func WithAgentMode(mode AgentMode) Option {
 	return func(c *agentConfig) { c.agentMode = mode }
+}
+
+// WithAgentToolExecutionMode sets the tool execution mode. Applies to Agent and AgentWorker.
+// When this option is omitted, the agent uses [AgentToolExecutionModeParallel].
+func WithAgentToolExecutionMode(mode AgentToolExecutionMode) Option {
+	return func(c *agentConfig) { c.agentToolExecutionMode = mode }
 }
 
 // WithLLMClient sets the LLM client. Applies to Agent and AgentWorker.
@@ -381,6 +396,14 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	default:
 		return nil, fmt.Errorf("invalid agent mode %q: use %q or %q", c.agentMode, AgentModeInteractive, AgentModeAutonomous)
 	}
+	if c.agentToolExecutionMode == "" {
+		c.agentToolExecutionMode = AgentToolExecutionModeParallel
+	}
+	switch c.agentToolExecutionMode {
+	case AgentToolExecutionModeSequential, AgentToolExecutionModeParallel:
+	default:
+		return nil, fmt.Errorf("invalid tool execution mode %q: use %q or %q", c.agentToolExecutionMode, AgentToolExecutionModeSequential, AgentToolExecutionModeParallel)
+	}
 	if c.maxSubAgentDepth <= 0 {
 		c.maxSubAgentDepth = defaultMaxSubAgentDepth
 	}
@@ -441,6 +464,7 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Bool("remoteWorker", c.remoteWorker),
 		slog.Bool("disableFingerprintCheck", c.disableFingerprintCheck),
 		slog.String("agentMode", string(c.agentMode)),
+		slog.String("agentToolExecutionMode", string(c.agentToolExecutionMode)),
 		slog.Bool("hasApprovalHandler", c.approvalHandler != nil),
 		slog.Duration("timeout", c.timeout),
 		slog.Duration("approvalTimeout", c.approvalTimeout),
@@ -648,6 +672,7 @@ func (c *agentConfig) agentConfigFingerprint() string {
 		},
 		mcpConfigFingerprint(c.mcpServers, mcpExtraClientNames(c.mcpClients)),
 		string(c.agentMode),
+		c.agentToolExecutionMode,
 	)
 	return temporal.ComputeAgentFingerprint(mat)
 }

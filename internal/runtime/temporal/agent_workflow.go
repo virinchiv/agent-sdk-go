@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,24 @@ type ToolCallRequest struct {
 	NeedsApproval   bool           `json:"needs_approval"`
 }
 
+// agentToolCallInput bundles the workflow handle, per-iteration activity contexts, and emit plumbing for tool execution.
+// Built once per sequential LLM tool round, or once per parallel branch (unique parallelSlot activity IDs).
+type agentToolCallInput struct {
+	wfCtx        workflow.Context
+	input        AgentWorkflowInput
+	messageID    string
+	emitEvent    func(events.AgentEvent) error
+	authorizeCtx workflow.Context
+	approvalCtx  workflow.Context
+	execCtx      workflow.Context
+}
+
+// agentToolCallOutput is the output of executeAgentToolCall.
+type agentToolCallOutput struct {
+	msg                  interfaces.Message
+	streamingUnavailable bool
+}
+
 // AgentToolExecuteInput is the input to AgentToolExecuteActivity.
 type AgentToolExecuteInput struct {
 	ToolName         string               `json:"tool_name"`
@@ -239,30 +258,6 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		RetryPolicy:         retryPolicy(agentLLMActivityMaxAttempts),
 	})
 
-	approvalTaskTimeout := rt.AgentExecution.Limits.ApprovalTimeout
-	if approvalTaskTimeout == 0 {
-		approvalTaskTimeout = types.MaxApprovalTimeout
-	}
-	if approvalTaskTimeout > types.MaxApprovalTimeout {
-		approvalTaskTimeout = types.MaxApprovalTimeout
-	}
-
-	approvalCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "AgentToolApprovalActivity_" + activityIDSuffix,
-		StartToCloseTimeout: approvalTaskTimeout,
-		RetryPolicy:         retryPolicy(agentToolApprovalActivityMaxAttempts),
-	})
-	authorizeCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "AgentToolAuthorizeActivity_" + activityIDSuffix,
-		StartToCloseTimeout: agentToolAuthorizeActivityTaskTimeout,
-		RetryPolicy:         retryPolicy(agentToolAuthorizeActivityMaxAttempts),
-	})
-	execCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "AgentToolExecuteActivity_" + activityIDSuffix,
-		StartToCloseTimeout: agentToolExecuteActivityTaskTimeout,
-		HeartbeatTimeout:    agentLongActivityHeartbeatTimeout,
-		RetryPolicy:         retryPolicy(agentToolExecuteActivityMaxAttempts),
-	})
 	sendEventCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		ActivityID:          "SendAgentEventUpdateActivity_" + activityIDSuffix,
 		StartToCloseTimeout: sendEventActivityTaskTimeout,
@@ -275,7 +270,9 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	})
 
 	var streamingUnavailable bool
-	emitEvent := func(ev events.AgentEvent) error {
+	// emitAgentEvent must use wfCtx (the coroutine that calls Get) for ExecuteActivity().Get — not the root
+	// workflow ctx — or parallel tool branches panic: "wrong Context is used to do blocking call".
+	emitAgentEvent := func(wfCtx workflow.Context, ev events.AgentEvent) error {
 		if ev == nil {
 			return nil
 		}
@@ -313,7 +310,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			EventType:       ev.Type(),
 			Update:          upd,
 		}
-		if err := workflow.ExecuteActivity(sendEventCtx, rt.SendAgentEventUpdateActivity, actIn).Get(ctx, &res); err != nil {
+		if err := workflow.ExecuteActivity(sendEventCtx, rt.SendAgentEventUpdateActivity, actIn).Get(wfCtx, &res); err != nil {
 			return err
 		}
 		if res.StreamUnavailable {
@@ -386,7 +383,6 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			break
 		}
 
-		var toolResults []interfaces.Message
 		// Accumulate assistant message for next iteration
 		assistantMsg := interfaces.Message{
 			Role:      interfaces.MessageRoleAssistant,
@@ -402,144 +398,138 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		}
 		messages = append(messages, assistantMsg)
 
-		emitToolEndThenResult := func(toolCallID, content string) error {
-			if emitErr := emitEvent(events.NewAgentToolCallEndEvent(toolCallID)); emitErr != nil {
-				return emitErr
-			}
-			return emitEvent(events.NewAgentToolCallResultEvent(messageID, toolCallID, content, string(interfaces.MessageRoleTool)))
+		var toolResults []interfaces.Message
+
+		toolExecMode := rt.AgentToolExecutionMode
+		if toolExecMode == "" {
+			toolExecMode = types.AgentToolExecutionModeParallel
 		}
+		switch toolExecMode {
+		case types.AgentToolExecutionModeParallel:
+			{
+				logger.Info("workflow: tool execution (parallel)",
+					"scope", "workflow",
+					"executionMode", string(types.AgentToolExecutionModeParallel),
+					"toolCount", len(llmResult.ToolCalls))
 
-		// authorize / approve / execute, then TOOL_CALL_END + TOOL_CALL_RESULT.
-		for _, tc := range llmResult.ToolCalls {
-			//TOOL_CALL_START
-			if emitErr := emitEvent(events.NewAgentToolCallStartEvent(tc.ToolCallID, tc.ToolName, messageID)); emitErr != nil {
-				return nil, emitErr
-			}
-			//TOOL_CALL_ARGS
-			if argsJSON, err := json.Marshal(tc.Args); err == nil {
-				s := strings.TrimSpace(string(argsJSON))
-				if s != "" && s != "null" && s != "{}" {
-					if emitErr := emitEvent(events.NewAgentToolCallArgsEvent(tc.ToolCallID, s)); emitErr != nil {
-						return nil, emitErr
+				futures := make([]workflow.Future, len(llmResult.ToolCalls))
+				for i := range llmResult.ToolCalls {
+					i := i
+					tc := llmResult.ToolCalls[i]
+					logger.Debug("workflow: parallel tool branch scheduled",
+						"scope", "workflow",
+						"toolIndex", i,
+						"toolName", tc.ToolName,
+						"toolCallID", tc.ToolCallID)
+					fut, settable := workflow.NewFuture(ctx)
+					futures[i] = fut
+
+					workflow.Go(ctx, func(gCtx workflow.Context) {
+						gLog := workflow.GetLogger(gCtx)
+						gLog.Debug("workflow: parallel tool branch started",
+							"scope", "workflow",
+							"toolIndex", i,
+							"toolName", tc.ToolName,
+							"toolCallID", tc.ToolCallID)
+						slot := strconv.Itoa(i)
+						parallelInput := rt.newAgentToolCallInput(gCtx, input, activityIDSuffix, messageID, emitAgentEvent, slot)
+						toolOutput, runErr := rt.executeAgentToolCall(parallelInput, tc, streamingUnavailable)
+						if runErr != nil {
+							gLog.Debug("workflow: parallel tool branch finished with error",
+								"scope", "workflow",
+								"toolIndex", i,
+								"toolName", tc.ToolName,
+								"toolCallID", tc.ToolCallID,
+								"error", runErr)
+							settable.Set(nil, runErr)
+							return
+						}
+						// executeAgentToolCall returns (nil, err) or (non-nil *agentToolCallOutput, nil) only.
+						gLog.Debug("workflow: parallel tool branch finished ok",
+							"scope", "workflow",
+							"toolIndex", i,
+							"toolName", tc.ToolName,
+							"toolCallID", tc.ToolCallID)
+						settable.Set(toolOutput, nil)
+					})
+				}
+
+				toolResults = make([]interfaces.Message, len(futures))
+				for i, fut := range futures {
+					tc := llmResult.ToolCalls[i]
+					var v *agentToolCallOutput
+					err := fut.Get(ctx, &v)
+
+					if err != nil {
+						logger.Debug("workflow: parallel tool future collected (error → synthetic tool message)",
+							"scope", "workflow",
+							"toolIndex", i,
+							"toolName", tc.ToolName,
+							"toolCallID", tc.ToolCallID,
+							"error", err)
+						// Tool failed — send error as tool result so LLM can handle it
+						toolResults[i] = interfaces.Message{
+							Role:       interfaces.MessageRoleTool,
+							Content:    "Tool execution failed: " + err.Error(),
+							ToolName:   tc.ToolName,
+							ToolCallID: tc.ToolCallID,
+						}
+					} else {
+						// Success: branch always Set(non-nil *agentToolCallOutput, nil).
+						logger.Debug("workflow: parallel tool future collected (ok)",
+							"scope", "workflow",
+							"toolIndex", i,
+							"toolName", tc.ToolName,
+							"toolCallID", tc.ToolCallID,
+							"streamingUnavailable", v.streamingUnavailable)
+						toolResults[i] = v.msg
+						if v.streamingUnavailable {
+							streamingUnavailable = true
+						}
 					}
 				}
 			}
-
-			var authResult AgentToolAuthorizeResult
-			authInput := AgentToolAuthorizeInput{
-				ToolCallID:       tc.ToolCallID,
-				ToolName:         tc.ToolName,
-				Args:             tc.Args,
-				AgentFingerprint: input.AgentFingerprint,
-			}
-			if err := workflow.ExecuteActivity(authorizeCtx, rt.AgentToolAuthorizeActivity, authInput).Get(authorizeCtx, &authResult); err != nil {
-				return nil, err
-			}
-			if !authResult.Allowed {
-				logger.Info("workflow: tool authorization denied", "scope", "workflow", "toolName", tc.ToolName, "toolCallID", tc.ToolCallID)
-				content := msgToolUnauthorized
-				if strings.TrimSpace(authResult.Reason) != "" {
-					content = fmt.Sprintf("%s Reason: %s", content, authResult.Reason)
-				}
-				//TOOL_CALL_END + TOOL_CALL_RESULT
-				if emitErr := emitToolEndThenResult(tc.ToolCallID, content); emitErr != nil {
-					return nil, emitErr
-				}
-
-				toolResults = append(toolResults, interfaces.Message{
-					Role:       interfaces.MessageRoleTool,
-					Content:    content,
-					ToolName:   tc.ToolName,
-					ToolCallID: tc.ToolCallID,
-				})
-				continue
-			}
-
-			approvalStatus := types.ApprovalStatusApproved
-			if tc.NeedsApproval {
-				logger.Info("workflow: tool requires approval", "scope", "workflow", "toolName", tc.ToolName, "argCount", len(tc.Args))
-				if streamingUnavailable {
-					approvalStatus = types.ApprovalStatusUnavailable
-				} else {
-					var status types.ApprovalStatus
-					approvalInput := AgentToolApprovalInput{
-						AgentName:        agentName,
-						ToolCallID:       tc.ToolCallID,
-						ToolName:         tc.ToolName,
-						ToolDisplayName:  tc.ToolDisplayName,
-						Args:             tc.Args,
-						EventWorkflowID:  eventWorkflowID,
-						EventTaskQueue:   eventTaskQueue,
-						LocalChannelName: input.LocalChannelName,
-						AgentFingerprint: input.AgentFingerprint,
+		case types.AgentToolExecutionModeSequential:
+			{
+				logger.Info("workflow: tool execution (sequential)",
+					"scope", "workflow",
+					"executionMode", string(types.AgentToolExecutionModeSequential),
+					"toolCount", len(llmResult.ToolCalls))
+				toolInput := rt.newAgentToolCallInput(ctx, input, activityIDSuffix, messageID, emitAgentEvent, "")
+				// authorize / approve / execute, then TOOL_CALL_END + TOOL_CALL_RESULT.
+				for i, tc := range llmResult.ToolCalls {
+					logger.Debug("workflow: sequential tool executing",
+						"scope", "workflow",
+						"toolIndex", i,
+						"toolName", tc.ToolName,
+						"toolCallID", tc.ToolCallID,
+						"toolCount", len(llmResult.ToolCalls))
+					toolOutput, runErr := rt.executeAgentToolCall(toolInput, tc, streamingUnavailable)
+					if runErr != nil {
+						logger.Info("workflow: sequential tool failed",
+							"scope", "workflow",
+							"toolIndex", i,
+							"toolName", tc.ToolName,
+							"toolCallID", tc.ToolCallID,
+							"error", runErr)
+						return nil, runErr
 					}
-					if route, ok := input.SubAgentRoutes[tc.ToolName]; ok {
-						approvalInput.SubAgentName = route.Name
-					}
-					if err := workflow.ExecuteActivity(approvalCtx, rt.AgentToolApprovalActivity, approvalInput).Get(approvalCtx, &status); err != nil {
-						return nil, err
-					}
-					approvalStatus = status
-					if approvalStatus == types.ApprovalStatusUnavailable {
+					if toolOutput.streamingUnavailable {
 						streamingUnavailable = true
 					}
-				}
-			}
-
-			var content string
-			switch approvalStatus {
-			case types.ApprovalStatusApproved:
-				if route, ok := input.SubAgentRoutes[tc.ToolName]; ok {
-					logger.Info("workflow: executing sub-agent delegation",
+					logger.Debug("workflow: sequential tool completed",
 						"scope", "workflow",
-						"tool", tc.ToolName,
+						"toolIndex", i,
+						"toolName", tc.ToolName,
 						"toolCallID", tc.ToolCallID,
-						"childTaskQueue", strings.TrimSpace(route.TaskQueue),
-						"subAgentDepth", input.SubAgentDepth)
-					var subErr error
-					content, subErr = rt.delegateToSubAgent(ctx, input, tc, route, emitEvent)
-					if subErr != nil {
-						return nil, subErr
-					}
-				} else {
-					logger.Info("workflow: executing tool",
-						"scope", "workflow",
-						"tool", tc.ToolName,
-						"toolCallID", tc.ToolCallID)
-					var result string
-					execInput := AgentToolExecuteInput{
-						ToolName:         tc.ToolName,
-						Args:             tc.Args,
-						ConversationID:   input.ConversationID,
-						ToolCallID:       tc.ToolCallID,
-						AgentFingerprint: input.AgentFingerprint,
-					}
-					errExec := workflow.ExecuteActivity(execCtx, rt.AgentToolExecuteActivity, execInput).Get(execCtx, &result)
-					if errExec != nil {
-						content = "Tool execution failed: " + errExec.Error()
-					} else {
-						content = result
-					}
+						"streamingUnavailable", toolOutput.streamingUnavailable)
+					toolResults = append(toolResults, toolOutput.msg)
 				}
-			case types.ApprovalStatusRejected:
-				content = msgToolRejected
-			case types.ApprovalStatusUnavailable:
-				content = msgToolApprovalUnavailable
-			default:
-				return nil, fmt.Errorf("workflow: unexpected approval status %q for tool %q", approvalStatus, tc.ToolName)
 			}
-			//TOOL_CALL_END + TOOL_CALL_RESULT
-			if emitErr := emitToolEndThenResult(tc.ToolCallID, content); emitErr != nil {
-				return nil, emitErr
-			}
-
-			toolResults = append(toolResults, interfaces.Message{
-				Role:       interfaces.MessageRoleTool,
-				Content:    content,
-				ToolName:   tc.ToolName,
-				ToolCallID: tc.ToolCallID,
-			})
+		default:
+			return nil, fmt.Errorf("invalid tool execution mode %q: use %q or %q", toolExecMode, types.AgentToolExecutionModeParallel, types.AgentToolExecutionModeSequential)
 		}
+
 		messages = append(messages, toolResults...)
 	}
 
@@ -563,6 +553,198 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	logger.Info("workflow: agent run completed", "scope", "workflow", "contentLen", len(lastContent))
 	return &types.AgentRunResult{
 		Content: lastContent, AgentName: agentName, Model: model, Metadata: map[string]any{}, Usage: runUsage,
+	}, nil
+}
+
+// newAgentToolCallInput builds activity contexts for one tool-call branch.
+// parallelSlot must be unique across concurrent tools (e.g. index string); use empty when calls run sequentially.
+func (rt *TemporalRuntime) newAgentToolCallInput(
+	wfCtx workflow.Context,
+	input AgentWorkflowInput,
+	activityIDSuffix, messageID string,
+	emitAgentEvent func(workflow.Context, events.AgentEvent) error,
+	parallelSlot string,
+) agentToolCallInput {
+	approvalTaskTimeout := rt.AgentExecution.Limits.ApprovalTimeout
+	if approvalTaskTimeout == 0 {
+		approvalTaskTimeout = types.MaxApprovalTimeout
+	}
+	if approvalTaskTimeout > types.MaxApprovalTimeout {
+		approvalTaskTimeout = types.MaxApprovalTimeout
+	}
+	activityScope := activityIDSuffix
+	if parallelSlot != "" {
+		activityScope = activityIDSuffix + "_" + parallelSlot
+	}
+	return agentToolCallInput{
+		wfCtx:     wfCtx,
+		input:     input,
+		messageID: messageID,
+		emitEvent: func(ev events.AgentEvent) error {
+			return emitAgentEvent(wfCtx, ev)
+		},
+		authorizeCtx: workflow.WithActivityOptions(wfCtx, workflow.ActivityOptions{
+			ActivityID:          "AgentToolAuthorizeActivity_" + activityScope,
+			StartToCloseTimeout: agentToolAuthorizeActivityTaskTimeout,
+			RetryPolicy:         retryPolicy(agentToolAuthorizeActivityMaxAttempts),
+		}),
+		approvalCtx: workflow.WithActivityOptions(wfCtx, workflow.ActivityOptions{
+			ActivityID:          "AgentToolApprovalActivity_" + activityScope,
+			StartToCloseTimeout: approvalTaskTimeout,
+			RetryPolicy:         retryPolicy(agentToolApprovalActivityMaxAttempts),
+		}),
+		execCtx: workflow.WithActivityOptions(wfCtx, workflow.ActivityOptions{
+			ActivityID:          "AgentToolExecuteActivity_" + activityScope,
+			StartToCloseTimeout: agentToolExecuteActivityTaskTimeout,
+			HeartbeatTimeout:    agentLongActivityHeartbeatTimeout,
+			RetryPolicy:         retryPolicy(agentToolExecuteActivityMaxAttempts),
+		}),
+	}
+}
+
+// executeAgentToolCall runs authorize → approval → execute or sub-agent delegation for one tool call,
+// emits tool stream events, and returns the tool role message for the conversation.
+// The second return is true when approval returned ApprovalStatusUnavailable (caller should set streamingUnavailable).
+func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc ToolCallRequest, streamingUnavailable bool) (*agentToolCallOutput, error) {
+	logger := workflow.GetLogger(input.wfCtx)
+	agentName := rt.AgentSpec.Name
+	eventWorkflowID := input.input.EventWorkflowID
+	eventTaskQueue := input.input.EventTaskQueue
+
+	emitToolEndThenResult := func(toolCallID, content string) error {
+		if emitErr := input.emitEvent(events.NewAgentToolCallEndEvent(toolCallID)); emitErr != nil {
+			return emitErr
+		}
+		return input.emitEvent(events.NewAgentToolCallResultEvent(input.messageID, toolCallID, content, string(interfaces.MessageRoleTool)))
+	}
+
+	if emitErr := input.emitEvent(events.NewAgentToolCallStartEvent(tc.ToolCallID, tc.ToolName, input.messageID)); emitErr != nil {
+		return nil, emitErr
+	}
+	if argsJSON, err := json.Marshal(tc.Args); err == nil {
+		s := strings.TrimSpace(string(argsJSON))
+		if s != "" && s != "null" && s != "{}" {
+			if emitErr := input.emitEvent(events.NewAgentToolCallArgsEvent(tc.ToolCallID, s)); emitErr != nil {
+				return nil, emitErr
+			}
+		}
+	}
+
+	var authResult AgentToolAuthorizeResult
+	authInput := AgentToolAuthorizeInput{
+		ToolCallID:       tc.ToolCallID,
+		ToolName:         tc.ToolName,
+		Args:             tc.Args,
+		AgentFingerprint: input.input.AgentFingerprint,
+	}
+	if err := workflow.ExecuteActivity(input.authorizeCtx, rt.AgentToolAuthorizeActivity, authInput).Get(input.authorizeCtx, &authResult); err != nil {
+		return nil, err
+	}
+	if !authResult.Allowed {
+		logger.Info("workflow: tool authorization denied", "scope", "workflow", "toolName", tc.ToolName, "toolCallID", tc.ToolCallID)
+		content := msgToolUnauthorized
+		if strings.TrimSpace(authResult.Reason) != "" {
+			content = fmt.Sprintf("%s Reason: %s", content, authResult.Reason)
+		}
+		if emitErr := emitToolEndThenResult(tc.ToolCallID, content); emitErr != nil {
+			return nil, emitErr
+		}
+		return &agentToolCallOutput{
+			msg: interfaces.Message{
+				Role:       interfaces.MessageRoleTool,
+				Content:    content,
+				ToolName:   tc.ToolName,
+				ToolCallID: tc.ToolCallID,
+			},
+			streamingUnavailable: false,
+		}, nil
+	}
+
+	approvalStatus := types.ApprovalStatusApproved
+	markStreamingUnavailable := false
+	if tc.NeedsApproval {
+		logger.Info("workflow: tool requires approval", "scope", "workflow", "toolName", tc.ToolName, "argCount", len(tc.Args))
+		if streamingUnavailable {
+			approvalStatus = types.ApprovalStatusUnavailable
+		} else {
+			var status types.ApprovalStatus
+			approvalInput := AgentToolApprovalInput{
+				AgentName:        agentName,
+				ToolCallID:       tc.ToolCallID,
+				ToolName:         tc.ToolName,
+				ToolDisplayName:  tc.ToolDisplayName,
+				Args:             tc.Args,
+				EventWorkflowID:  eventWorkflowID,
+				EventTaskQueue:   eventTaskQueue,
+				LocalChannelName: input.input.LocalChannelName,
+				AgentFingerprint: input.input.AgentFingerprint,
+			}
+			if route, ok := input.input.SubAgentRoutes[tc.ToolName]; ok {
+				approvalInput.SubAgentName = route.Name
+			}
+			if err := workflow.ExecuteActivity(input.approvalCtx, rt.AgentToolApprovalActivity, approvalInput).Get(input.approvalCtx, &status); err != nil {
+				return nil, err
+			}
+			approvalStatus = status
+			if approvalStatus == types.ApprovalStatusUnavailable {
+				markStreamingUnavailable = true
+			}
+		}
+	}
+
+	var content string
+	switch approvalStatus {
+	case types.ApprovalStatusApproved:
+		if route, ok := input.input.SubAgentRoutes[tc.ToolName]; ok {
+			logger.Info("workflow: executing sub-agent delegation",
+				"scope", "workflow",
+				"tool", tc.ToolName,
+				"toolCallID", tc.ToolCallID,
+				"childTaskQueue", strings.TrimSpace(route.TaskQueue),
+				"subAgentDepth", input.input.SubAgentDepth)
+			var subErr error
+			content, subErr = rt.delegateToSubAgent(input.wfCtx, input.input, tc, route, input.emitEvent)
+			if subErr != nil {
+				return nil, subErr
+			}
+		} else {
+			logger.Info("workflow: executing tool",
+				"scope", "workflow",
+				"tool", tc.ToolName,
+				"toolCallID", tc.ToolCallID)
+			var result string
+			execInput := AgentToolExecuteInput{
+				ToolName:         tc.ToolName,
+				Args:             tc.Args,
+				ConversationID:   input.input.ConversationID,
+				ToolCallID:       tc.ToolCallID,
+				AgentFingerprint: input.input.AgentFingerprint,
+			}
+			errExec := workflow.ExecuteActivity(input.execCtx, rt.AgentToolExecuteActivity, execInput).Get(input.execCtx, &result)
+			if errExec != nil {
+				content = "Tool execution failed: " + errExec.Error()
+			} else {
+				content = result
+			}
+		}
+	case types.ApprovalStatusRejected:
+		content = msgToolRejected
+	case types.ApprovalStatusUnavailable:
+		content = msgToolApprovalUnavailable
+	default:
+		return nil, fmt.Errorf("workflow: unexpected approval status %q for tool %q", approvalStatus, tc.ToolName)
+	}
+	if emitErr := emitToolEndThenResult(tc.ToolCallID, content); emitErr != nil {
+		return nil, emitErr
+	}
+	return &agentToolCallOutput{
+		msg: interfaces.Message{
+			Role:       interfaces.MessageRoleTool,
+			Content:    content,
+			ToolName:   tc.ToolName,
+			ToolCallID: tc.ToolCallID,
+		},
+		streamingUnavailable: markStreamingUnavailable,
 	}, nil
 }
 
