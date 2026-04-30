@@ -28,7 +28,7 @@
 - **AG-UI** — Stream events conform to the [AG-UI protocol](https://docs.ag-ui.com); agents work out of the box with any AG-UI compatible frontend such as [CopilotKit](https://copilotkit.ai).
 - **Reasoning** — Extended thinking / chain-of-thought where supported (Anthropic, Gemini).
 - **Token usage** — Track input, output, and reasoning token counts per run.
-- **Tools** — Register built-in or custom tools via `interfaces.Tool`.
+- **Tools** — Register built-in or custom tools via `interfaces.Tool`; optional **parallel vs sequential** execution for multiple tool calls in one LLM round (`WithAgentToolExecutionMode`).
 - **MCP** — Extend agent capabilities by connecting any MCP server as a tool source via `WithMCPConfig` or `WithMCPClients`.
 - **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
 - **Sub-agents** — Delegate to specialist agents via `WithSubAgents`.
@@ -274,6 +274,13 @@ Examples: [examples/simple_agent](examples/simple_agent) (prints usage after `Ru
 
 Register tools and pass to the agent. Use `agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy())` to skip approval (or omit for default approval flow).
 
+**Tool execution mode.** When the model returns **several tool calls** in one assistant turn, you can run them **in parallel** (default) or **sequentially** (one completes before the next starts, in model order):
+
+- `agent.WithAgentToolExecutionMode(agent.AgentToolExecutionModeParallel)` — **default** if you omit the option; good when tool calls are independent and you want lower latency.
+- `agent.WithAgentToolExecutionMode(agent.AgentToolExecutionModeSequential)` — use when **order matters** or tools **must not run at the same time** (shared mutable state, rate limits, or similar).
+
+Use the **same** `WithAgentToolExecutionMode` value on **`NewAgent`** and **`NewAgentWorker`** (and on any **sub-agents** you register) for a given app or deployment so every process that runs that agent agrees on the option.
+
 Custom tools may also implement:
 
 - `interfaces.ToolApproval` — tool-level hint for **interactive human approval**. Use this when a person should decide whether the tool runs, and no agent-level approval policy is set.
@@ -289,6 +296,8 @@ a, _ := agent.NewAgent(
     agent.WithLLMClient(...),
     agent.WithToolRegistry(reg),
     agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+    // Optional: agent.AgentToolExecutionModeSequential for ordered tool batches; default is Parallel.
+    // agent.WithAgentToolExecutionMode(agent.AgentToolExecutionModeSequential),
 )
 defer a.Close()
 

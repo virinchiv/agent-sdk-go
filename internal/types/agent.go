@@ -29,3 +29,13 @@ const (
 	// for each step (subject to tool policy and limits).
 	AgentModeAutonomous AgentMode = "autonomous"
 )
+
+// ToolExecutionMode specifies how tools are executed in parallel or sequentially.
+type AgentToolExecutionMode string
+
+const (
+	// AgentToolExecutionModeParallel specifies that tools are executed in parallel.
+	AgentToolExecutionModeParallel AgentToolExecutionMode = "parallel"
+	// AgentToolExecutionModeSequential specifies that tools are executed sequentially.
+	AgentToolExecutionModeSequential AgentToolExecutionMode = "sequential"
+)

@@ -141,7 +141,7 @@ func printEvent(ev agent.AgentEvent, streamedContent bool) {
 		}
 	case agent.AgentEventTypeReasoningMessageContent:
 		if r, ok := ev.(*agent.AgentReasoningMessageContentEvent); ok && r.Delta != "" {
-			fmt.Printf("[thinking] %s", r.Delta)
+			fmt.Printf("\n[thinking] %s", r.Delta)
 		}
 	case agent.AgentEventTypeToolCallStart:
 		if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
@@ -149,7 +149,7 @@ func printEvent(ev agent.AgentEvent, streamedContent bool) {
 		}
 	case agent.AgentEventTypeToolCallArgs:
 		if t, ok := ev.(*agent.AgentToolCallArgsEvent); ok && t.Delta != "" {
-			fmt.Printf("[%s] %s %s\n", eventType, t.ToolCallID, t.Delta)
+			fmt.Printf("\n[%s] %s %s\n", eventType, t.ToolCallID, t.Delta)
 		}
 	case agent.AgentEventTypeToolCallResult:
 		if t, ok := ev.(*agent.AgentToolCallResultEvent); ok {
@@ -157,16 +157,16 @@ func printEvent(ev agent.AgentEvent, streamedContent bool) {
 		}
 	case agent.AgentEventTypeRunStarted:
 		if r, ok := ev.(*agent.AgentRunStartedEvent); ok {
-			fmt.Printf("[%s] threadID=%s runID=%s\n", eventType, r.ThreadID, r.RunID)
+			fmt.Printf("\n[%s] threadID=%s runID=%s\n", eventType, r.ThreadID, r.RunID)
 		}
 	case agent.AgentEventTypeRunError:
 		if re, ok := ev.(*agent.AgentRunErrorEvent); ok {
-			fmt.Printf("[%s] %s\n", eventType, re.Message)
+			fmt.Printf("\n[%s] %s\n", eventType, re.Message)
 		}
 	case agent.AgentEventTypeRunFinished:
 		res := shared.RunResultFromFinishedEvent(ev)
 		if res != nil && res.Content != "" && !streamedContent {
-			fmt.Printf("[%s] %s\n", eventType, res.Content)
+			fmt.Printf("\n[%s] %s\n", eventType, res.Content)
 		}
 		if u := shared.UsageFooter(res); u != "" {
 			fmt.Println()
