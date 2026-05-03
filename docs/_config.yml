@@ -1,0 +1,12 @@
+# GitHub Pages + Jekyll (https://pages.github.com)
+title: Agent SDK for Go
+description: Temporal-first Go SDK for durable, production-grade AI agents.
+theme: minima
+url: https://agenticenv.github.io
+baseurl: /agent-sdk-go
+
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
+markdown: kramdown
