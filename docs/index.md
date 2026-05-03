@@ -1,9 +1,6 @@
 ---
-title: Agent SDK for Go
-description: Temporal-first Go SDK for durable, production-grade AI agents.
+layout: default
 ---
-
-# Agent SDK for Go
 
 Build **durable, production-grade AI agents in Go** — tools, MCP, human approvals, and sub-agent delegation — on **[Temporal](https://temporal.io)** workflows end to end.
 
