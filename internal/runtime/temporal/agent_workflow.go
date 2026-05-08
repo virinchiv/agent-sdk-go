@@ -48,6 +48,12 @@ var (
 	// updateWorkflowApprovalRPCTimeout caps UpdateWorkflow when posting approval to the event pipeline (Completed).
 	// Only the "deliver to event workflow handler" phase; must be far below approval activity StartToClose.
 	updateWorkflowApprovalRPCTimeout = 30 * time.Second
+
+	// AgentWorkflow uses ContinueAsNew when Temporal execution history crosses these bounds (see loop below).
+	// Checked after each tool round (when tool results are appended). Not evaluated on the “LLM returned no tools”
+	// exit path in the same iteration. Byte limit is tighter than the event pipeline because LLM payloads are large.
+	agentWorkflowHistoryLength    = 10_000
+	agentWorkflowHistorySizeBytes = 20_000_000
 )
 
 // User-facing tool results when approval is required.
@@ -118,6 +124,14 @@ type AgentWorkflowInput struct {
 	SubAgentDepth    int                            `json:"sub_agent_depth,omitempty"`
 	SubAgentRoutes   map[string]types.SubAgentRoute `json:"sub_agent_routes,omitempty"`
 	MaxSubAgentDepth int                            `json:"max_sub_agent_depth,omitempty"`
+	State            *AgentWorkflowState            `json:"state,omitempty"`
+}
+
+// AgentWorkflowState is the state of the agent workflow.
+// It is used to store the state of the agent workflow on continue-as-new.
+type AgentWorkflowState struct {
+	Iteration int                  `json:"iteration"`
+	Messages  []interfaces.Message `json:"messages"`
 }
 
 // AgentLLMInput is the input to AgentLLMActivity and AgentLLMStreamActivity.
@@ -222,6 +236,8 @@ type AddConversationMessagesInput struct {
 // AgentWorkflow runs the agent loop: LLM → tool calls → approval/execute → feed results back to LLM → repeat.
 // Stops when LLM returns no tool calls, or max iterations reached.
 // When Input.EventWorkflowID is set, sends agent events and approval requests to the event workflow.
+// ContinueAsNew: when workflow history length or size (GetInfo) exceeds agentWorkflowHistory*, after tool
+// results are merged into messages for that iteration; carries AgentWorkflowState (iteration + messages) forward.
 func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkflowInput) (*types.AgentRunResult, error) {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("workflow: agent run started", "scope", "workflow")
@@ -321,12 +337,20 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 	useStreaming := input.StreamingEnabled && rt.AgentExecution.LLM.Client.IsStreamSupported()
 
-	messages := []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: input.UserPrompt}}
+	// State restored after ContinueAsNew (iteration + conversation messages).
+	if input.State == nil {
+		input.State = &AgentWorkflowState{
+			Iteration: 0,
+			Messages:  []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: input.UserPrompt}},
+		}
+	}
+
+	messages := input.State.Messages
 
 	lastContent := ""
 	var runUsage *interfaces.LLMUsage
 	var llmResult AgentLLMResult
-	for iter := 0; iter < maxIter; iter++ {
+	for iter := input.State.Iteration; iter < maxIter; iter++ {
 
 		messageID := uuid.New().String()
 
@@ -531,6 +555,25 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		}
 
 		messages = append(messages, toolResults...)
+
+		// History-driven ContinueAsNew (same iteration boundary as tool results). Skipped when the LLM
+		// returns no tools (final answer path breaks earlier in the loop).
+		info := workflow.GetInfo(ctx)
+		if info.GetCurrentHistoryLength() >= agentWorkflowHistoryLength || info.GetCurrentHistorySize() >= agentWorkflowHistorySizeBytes {
+			logger.Info("workflow: history budget exceeded, continuing as new", "scope", "workflow",
+				"iteration", iter+1,
+				"messagesCount", len(messages),
+				"historyLength", info.GetCurrentHistoryLength(),
+				"historyLengthLimit", agentWorkflowHistoryLength,
+				"historySizeBytes", info.GetCurrentHistorySize(),
+				"historySizeBytesLimit", agentWorkflowHistorySizeBytes,
+			)
+			input.State = &AgentWorkflowState{
+				Iteration: iter + 1,
+				Messages:  messages,
+			}
+			return nil, workflow.NewContinueAsNewError(ctx, rt.AgentWorkflow, input)
+		}
 	}
 
 	// Add all accumulated messages to conversation after execution completes (only when conversationID set)

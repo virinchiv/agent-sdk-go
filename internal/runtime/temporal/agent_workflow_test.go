@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
@@ -381,6 +382,76 @@ func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
 	var got AgentLLMResult
 	require.NoError(t, val.Get(&got))
 	require.Equal(t, "gen", got.Content)
+}
+
+// History CAN runs after a tool round (see agent_workflow.go); no-tool LLM completion exits the loop without that check.
+func TestAgentWorkflow_ContinueAsNewOnHistoryLengthAfterTools(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	env.SetCurrentHistoryLength(agentWorkflowHistoryLength)
+
+	env.RegisterWorkflow(rt.AgentWorkflow)
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
+		return &AgentLLMResult{
+			Content: "using tool",
+			ToolCalls: []ToolCallRequest{{
+				ToolCallID:      "tc-can",
+				ToolName:        "echo",
+				ToolDisplayName: "Echo",
+				Args:            map[string]any{"x": 1},
+			}},
+		}, nil
+	})
+	env.OnActivity(rt.AgentToolExecuteActivity, mock.Anything, mock.Anything).Return("echo ok", nil)
+	env.OnActivity(rt.AgentToolAuthorizeActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentToolAuthorizeInput) (AgentToolAuthorizeResult, error) {
+		return AgentToolAuthorizeResult{Allowed: true}, nil
+	})
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{
+		UserPrompt: "run",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	wfErr := env.GetWorkflowError()
+	require.Error(t, wfErr)
+	require.True(t, workflow.IsContinueAsNewError(wfErr), "expected continue-as-new, got: %v", wfErr)
+}
+
+func TestAgentWorkflow_ContinueAsNewOnHistorySizeAfterTools(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	env.SetCurrentHistoryLength(1)
+	env.SetCurrentHistorySize(agentWorkflowHistorySizeBytes + 1)
+
+	env.RegisterWorkflow(rt.AgentWorkflow)
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
+		return &AgentLLMResult{
+			Content: "using tool",
+			ToolCalls: []ToolCallRequest{{
+				ToolCallID:      "tc-can-size",
+				ToolName:        "echo",
+				ToolDisplayName: "Echo",
+				Args:            map[string]any{"x": 1},
+			}},
+		}, nil
+	})
+	env.OnActivity(rt.AgentToolExecuteActivity, mock.Anything, mock.Anything).Return("echo ok", nil)
+	env.OnActivity(rt.AgentToolAuthorizeActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentToolAuthorizeInput) (AgentToolAuthorizeResult, error) {
+		return AgentToolAuthorizeResult{Allowed: true}, nil
+	})
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{
+		UserPrompt: "run",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	wfErr := env.GetWorkflowError()
+	require.Error(t, wfErr)
+	require.True(t, workflow.IsContinueAsNewError(wfErr), "expected continue-as-new, got: %v", wfErr)
 }
 
 func TestMergeLLMUsage(t *testing.T) {

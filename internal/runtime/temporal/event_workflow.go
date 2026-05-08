@@ -22,10 +22,16 @@ var (
 	agentEventName              = "agent-event"
 	eventWorkflowCompleteSignal = "complete" // received when agent Close is called
 
-	// maxEventsPerWorkflow: continue-as-new threshold.
-	// overflowBuffer: extra events we accept while processing, to avoid losing events during continue-as-new.
-	maxEventsPerWorkflow int = 100
-	eventOverflowBuffer  int = 50 // accept up to 150 events; 101–150 can arrive while processing 1–100
+	// maxEventsPerWorkflow limits how many valid agent-event updates are accepted per workflow run
+	// (validator only). It is burst/backpressure: not used to decide ContinueAsNew. Callers that hit
+	// the limit get a synchronous validation error and should retry with backoff.
+	maxEventsPerWorkflow int = 500
+
+	// eventWorkflowHistory* are Temporal execution history limits (GetInfo). When either bound is
+	// reached, the workflow sets continueAsNewPending, drains pending publishes, then returns
+	// NewContinueAsNewError (same workflow ID, new run) so history stays bounded.
+	eventWorkflowHistoryLength    = 10_000
+	eventWorkflowHistorySizeBytes = 40_000_000
 )
 
 // eventChannelName returns the pub/sub channel name for agent events. runID is the run workflow ID.
@@ -45,30 +51,45 @@ type AgentEventUpdate struct {
 
 // AgentEventWorkflow is one per agent. Receives events and approval requests via workflow updates.
 // Each update includes runID so events are published to per-run channels (agent_event_{runID}, approval_{runID}).
-// Completes only when it receives the "complete" signal (on agent Close).
+// It completes with nil when it receives the "complete" signal (e.g. agent Close). It may
+// ContinueAsNew when workflow history (length or size) exceeds the configured caps, after draining
+// in-flight EventPublishActivity work; the burst validator (maxEventsPerWorkflow) is independent of that decision.
 func (rt *TemporalRuntime) AgentEventWorkflow(ctx workflow.Context) error {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("workflow: event pipeline started", "scope", "workflow")
 
-	var noOfEvents, processedCount int
+	var noOfEvents, pendingCount int
+
+	// continueAsNewPending: history budget exceeded; drain pendingCount then ContinueAsNew.
+	// Shared with the update validator so new updates are rejected until the new run starts.
+	var continueAsNewPending bool
+
 	var options workflow.UpdateHandlerOptions
 	options.Validator = func(ctx workflow.Context, upd *AgentEventUpdate) error {
-		if noOfEvents >= maxEventsPerWorkflow+eventOverflowBuffer {
-			return fmt.Errorf("max events per workflow reached (%d), continue as new", maxEventsPerWorkflow+eventOverflowBuffer)
+		// ContinueAsNew already decided (history budget hit) — drain in progress.
+		// Client should retry on the new workflow run.
+		if continueAsNewPending {
+			return fmt.Errorf("workflow continue-as-new pending, rejecting new events")
+		}
+		// Burst protection (counts accepted valid updates only). Independent of ContinueAsNew (history-driven).
+		if noOfEvents >= maxEventsPerWorkflow {
+			return fmt.Errorf("event burst limit reached (%d), retry shortly", maxEventsPerWorkflow)
 		}
 		return nil
 	}
 
 	eventCh := workflow.NewChannel(ctx)
+	doneCh := workflow.NewChannel(ctx)
 
 	// Handler only hands off to eventCh; it does not wait for EventPublishActivity. Client WaitForStage (Accepted vs Completed)
 	// applies when this handler returns, not when inmem publish succeeds (that runs in the goroutine below).
 	err := workflow.SetUpdateHandlerWithOptions(ctx, agentEventName, func(ctx workflow.Context, upd *AgentEventUpdate) error {
-		noOfEvents++
 		eventType, err := events.EventTypeFromJSON(upd.EventJSON)
 		if err != nil {
 			return fmt.Errorf("failed to get event type from JSON: %w", err)
 		}
+		noOfEvents++
+		pendingCount++
 		logger.Debug("workflow: event update received", "scope", "workflow", "agent", upd.AgentName, "eventType", eventType)
 		eventCh.Send(ctx, upd)
 		return nil
@@ -85,15 +106,26 @@ func (rt *TemporalRuntime) AgentEventWorkflow(ctx workflow.Context) error {
 	workflow.Go(ctx, func(ctx workflow.Context) {
 		for {
 			var upd *AgentEventUpdate
-			eventCh.Receive(ctx, &upd)
-			if upd == nil {
+			var done bool
+
+			sel := workflow.NewSelector(ctx)
+			sel.AddReceive(eventCh, func(c workflow.ReceiveChannel, _ bool) {
+				c.Receive(ctx, &upd)
+			})
+			sel.AddReceive(doneCh, func(c workflow.ReceiveChannel, _ bool) {
+				done = true
+			})
+			sel.Select(ctx)
+
+			if done {
 				return
 			}
+
 			if err := workflow.ExecuteActivity(actCtx, rt.EventPublishActivity, upd.LocalChannelName, upd.EventJSON).Get(ctx, nil); err != nil {
 				eventType, _ := events.EventTypeFromJSON(upd.EventJSON)
 				logger.Warn("workflow: event publish activity failed", "scope", "workflow", "error", err, "eventType", eventType, "agent", upd.AgentName)
 			}
-			processedCount++
+			pendingCount--
 		}
 	})
 
@@ -112,19 +144,48 @@ func (rt *TemporalRuntime) AgentEventWorkflow(ctx workflow.Context) error {
 		if completeReceived {
 			return true
 		}
-		return noOfEvents >= maxEventsPerWorkflow &&
-			processedCount == noOfEvents &&
-			workflow.AllHandlersFinished(ctx)
+
+		// History threshold crossed (length OR size): flag once, log once; validator rejects further updates while draining.
+		if !continueAsNewPending {
+			info := workflow.GetInfo(ctx)
+			if info.GetCurrentHistoryLength() >= eventWorkflowHistoryLength || info.GetCurrentHistorySize() >= eventWorkflowHistorySizeBytes {
+				continueAsNewPending = true
+				logger.Info("workflow: history budget exceeded, draining before continue-as-new", "scope", "workflow",
+					"historyLength", info.GetCurrentHistoryLength(),
+					"historyLengthLimit", eventWorkflowHistoryLength,
+					"historySizeBytes", info.GetCurrentHistorySize(),
+					"historySizeBytesLimit", eventWorkflowHistorySizeBytes,
+				)
+			}
+		}
+
+		// Wait until all in-flight events are drained and no handlers are running.
+		if pendingCount > 0 || !workflow.AllHandlersFinished(ctx) {
+			return false
+		}
+
+		return continueAsNewPending
 	})
 	if err != nil {
 		return err
 	}
 
+	// Stop the consumer goroutine cleanly before exiting.
+	doneCh.Send(ctx, struct{}{})
+
 	if completeReceived {
 		logger.Debug("workflow: event pipeline shutdown signal received", "scope", "workflow")
 		return nil
 	}
-	logger.Debug("workflow: event pipeline continue-as-new", "scope", "workflow")
+	if pendingCount != 0 {
+		logger.Warn("workflow: event pipeline continue-as-new with non-zero pendingCount (logic bug)", "scope", "workflow", "pendingCount", pendingCount)
+	}
+	info := workflow.GetInfo(ctx)
+	logger.Debug("workflow: event pipeline continue-as-new", "scope", "workflow",
+		"noOfEvents", noOfEvents,
+		"historyLength", info.GetCurrentHistoryLength(),
+		"historySizeBytes", info.GetCurrentHistorySize(),
+	)
 	return workflow.NewContinueAsNewError(ctx, rt.AgentEventWorkflow)
 }
 

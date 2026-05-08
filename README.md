@@ -42,6 +42,7 @@
 - **Activities** — **LLM calls**, **tool** execution (including **MCP tool** calls), **conversation** updates, approval steps—side effects and I/O. Retries, timeouts, and failure handling apply here.
 - **Child workflows** — **Sub-agent delegation** is modeled as **child workflows** so specialists can run on their own task queues with their own workers.
 - **Workers & task queues** — Processes **poll** a queue and run scheduled workflow and activity tasks; **scale horizontally** by adding workers. Each agent / sub-agent typically has its own **task queue** name.
+- **Long runs** — Very long agent sessions and high-volume event pipelines automatically trigger **continue-as-new** internally, starting a fresh run under the same **workflow ID** while preserving all state; retry transient update or delivery failures as usual.
 
 ```mermaid
 graph TD
