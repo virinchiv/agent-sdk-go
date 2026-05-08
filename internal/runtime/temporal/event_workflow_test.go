@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 )
 
 func TestEventPublishActivity_PublishesToEventBus(t *testing.T) {
@@ -184,4 +185,70 @@ func TestAgentEventWorkflow_UpdateTriggersEventPublishActivity(t *testing.T) {
 		t.Fatalf("decoded event = %+v", gotEvent)
 	}
 	require.Equal(t, "via-update", ev.Delta)
+}
+
+// Exercises history-length threshold: test env reports GetCurrentHistoryLength at or above the limit.
+func TestAgentEventWorkflow_ContinueAsNewOnHistoryLength(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	env.SetCurrentHistoryLength(eventWorkflowHistoryLength + 1)
+
+	env.RegisterWorkflow(rt.AgentEventWorkflow)
+	env.RegisterActivity(rt.EventPublishActivity)
+	env.OnActivity(rt.EventPublishActivity, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	env.RegisterDelayedCallback(func() {
+		ev := events.NewAgentTextMessageContentEvent("message-id", "history-can")
+		evJSON, err := ev.ToJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.UpdateWorkflowNoRejection(agentEventName, "upd-history-can", t, &AgentEventUpdate{
+			AgentName:        rt.AgentSpec.Name,
+			LocalChannelName: "agent_event_mock_run",
+			EventJSON:        evJSON,
+		})
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(rt.AgentEventWorkflow)
+
+	require.True(t, env.IsWorkflowCompleted())
+	wfErr := env.GetWorkflowError()
+	require.Error(t, wfErr)
+	require.True(t, workflow.IsContinueAsNewError(wfErr), "expected continue-as-new, got: %v", wfErr)
+}
+
+// Exercises history-size (bytes) threshold via SetCurrentHistorySize.
+func TestAgentEventWorkflow_ContinueAsNewOnHistorySize(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	env.SetCurrentHistorySize(eventWorkflowHistorySizeBytes + 1)
+
+	env.RegisterWorkflow(rt.AgentEventWorkflow)
+	env.RegisterActivity(rt.EventPublishActivity)
+	env.OnActivity(rt.EventPublishActivity, mock.Anything, mock.Anything, mock.Anything).Return(nil)
+
+	env.RegisterDelayedCallback(func() {
+		ev := events.NewAgentTextMessageContentEvent("message-id", "size-can")
+		evJSON, err := ev.ToJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.UpdateWorkflowNoRejection(agentEventName, "upd-size-can", t, &AgentEventUpdate{
+			AgentName:        rt.AgentSpec.Name,
+			LocalChannelName: "agent_event_mock_run",
+			EventJSON:        evJSON,
+		})
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(rt.AgentEventWorkflow)
+
+	require.True(t, env.IsWorkflowCompleted())
+	wfErr := env.GetWorkflowError()
+	require.Error(t, wfErr)
+	require.True(t, workflow.IsContinueAsNewError(wfErr), "expected continue-as-new, got: %v", wfErr)
 }
