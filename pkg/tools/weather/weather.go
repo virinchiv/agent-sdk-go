@@ -88,7 +88,7 @@ func (w *Weather) resolveLocation(ctx context.Context, location string) (lat, lo
 	if err != nil {
 		return 0, 0, fmt.Errorf("geocoding: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var geo geocodeResult
 	if err := json.NewDecoder(resp.Body).Decode(&geo); err != nil {
@@ -110,7 +110,7 @@ func (w *Weather) fetchWeather(ctx context.Context, lat, lon float64) (any, erro
 	if err != nil {
 		return nil, fmt.Errorf("weather fetch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var f forecastResult
 	if err := json.NewDecoder(resp.Body).Decode(&f); err != nil {

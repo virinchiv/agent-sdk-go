@@ -106,7 +106,7 @@ func (s *Search) Execute(ctx context.Context, args map[string]any) (any, error) 
 	if err != nil {
 		return nil, fmt.Errorf("search request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("search returned %s", resp.Status)
