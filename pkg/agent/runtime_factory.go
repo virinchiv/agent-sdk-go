@@ -28,6 +28,7 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (runtime.Runtime
 		temporal.WithAgentExecution(cfg.runtimeAgentExecution()),
 		temporal.WithPolicyFingerprint(toolPolicyFingerprint(cfg.toolApprovalPolicy)),
 		temporal.WithMCPFingerprint(mcpConfigFingerprint(cfg.mcpServers, mcpExtraClientNames(cfg.mcpClients))),
+		temporal.WithA2AFingerprint(a2aConfigFingerprint(cfg.a2aServers, a2aExtraClientNames(cfg.a2aClients))),
 		temporal.WithAgentMode(string(cfg.agentMode)),
 		temporal.WithAgentToolExecutionMode(cfg.agentToolExecutionMode),
 		temporal.WithDisableLocalWorker(cfg.disableLocalWorker),

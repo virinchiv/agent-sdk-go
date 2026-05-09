@@ -28,7 +28,7 @@ What actually happened.
 
 ## Environment
 
-- Go version: (e.g. 1.21)
+- Go version: (e.g. 1.25.x; must be ≥ the `go` line in `go.mod`)
 - OS: (e.g. macOS, Linux)
 - Temporal: (local dev server, Temporal Cloud, version)
 - LLM provider: (OpenAI, Anthropic, Gemini)

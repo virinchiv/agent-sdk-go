@@ -30,6 +30,7 @@
 - **Token usage** — Track input, output, and reasoning token counts per run.
 - **Tools** — Register built-in or custom tools via `interfaces.Tool`; optional **parallel vs sequential** execution for multiple tool calls in one LLM round (`WithAgentToolExecutionMode`).
 - **MCP** — Extend agent capabilities by connecting any MCP server as a tool source via `WithMCPConfig` or `WithMCPClients`.
+- **A2A** — Connect remote [Agent-to-Agent](https://github.com/a2aproject/A2A) agents as tool providers via `WithA2AConfig` or `WithA2AClients`.
 - **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
 - **Sub-agents** — Delegate to specialist agents via `WithSubAgents`.
 - **Scale** — Add Temporal workers to scale agent execution horizontally.
@@ -113,7 +114,7 @@ How to **use** the SDK—agents, LLMs, Temporal connection, examples.
 
 ### Prerequisites
 
-**agent-sdk-go** runs agents on the **[Temporal](https://temporal.io)** runtime (durable workflows and activities), so a **running Temporal server** is required. See **[Temporal setup](temporal-setup.md)**. Also **Go 1.24+** (see `go.mod`) and credentials for your LLM provider.
+**agent-sdk-go** runs agents on the **[Temporal](https://temporal.io)** runtime (durable workflows and activities), so a **running Temporal server** is required. See **[Temporal setup](temporal-setup.md)**. Also **Go 1.25+** (see `go.mod`) and credentials for your LLM provider.
 
 **Module:** `github.com/agenticenv/agent-sdk-go`
 
@@ -402,6 +403,89 @@ defer a.Close()
 You may use **Option 1** for some servers and **Option 2** for others on the same agent; keep server names unique across both.
 
 [examples/agent_with_mcp_config](examples/agent_with_mcp_config) and [examples/agent_with_mcp_client](examples/agent_with_mcp_client) show MCP from env (`stdio` or streamable HTTP, URL-only OK, optional bearer/OAuth); see [examples/env.sample](examples/env.sample) and [examples/README.md](examples/README.md).
+
+### A2A (Agent-to-Agent)
+
+#### A2A Client
+
+Remote [A2A](https://github.com/a2aproject/A2A) agents connect as tool providers: the SDK fetches the agent card, discovers skills, and registers each skill as a first-class tool available to the LLM across `Run`, `Stream`, `RunAsync`, and approval gates. Each server entry needs a **unique** name (the `WithA2AConfig` map key or the first argument to `a2aclient.NewClient`); tools are registered under stable names (`a2a_<server>_<skillId>`) that do not collide across multiple remote agents.
+
+At `NewAgent`, the SDK resolves the agent card, applies any **`SkillFilter`** (`AllowSkills`/`BlockSkills`), and registers the resulting tools — failing fast if a server is unreachable.
+
+Configure auth, timeout, and skill filtering per server entry. `SkipTLSVerify` is available for local HTTPS development only.
+
+Pass `WithA2AConfig` or `WithA2AClients` into `agent.NewAgent` alongside your other options.
+
+**Option 1 — `WithA2AConfig`**
+
+Declare each remote agent as one entry in `agent.A2AServers`: set `URL`, and optionally `Token`, `Headers`, `Timeout`, `SkillFilter`, and `SkipTLSVerify`. The map key is the connection name.
+
+```go
+import (
+    "time"
+
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    a2apkg "github.com/agenticenv/agent-sdk-go/pkg/a2a"
+)
+
+agent.WithA2AConfig(agent.A2AServers{
+    "assistant": {
+        URL:     "https://assistant.example.com",
+        Timeout: 30 * time.Second,
+    },
+    "researcher": {
+        URL:         "https://researcher.example.com",
+        Token:       "replace-with-bearer-token",
+        SkillFilter: a2apkg.A2ASkillFilter{AllowSkills: []string{"search", "summarize"}},
+        Timeout:     60 * time.Second,
+    },
+})
+```
+
+**Option 2 — `WithA2AClients`**
+
+Build one client per remote agent with `a2aclient.NewClient` (connection name, base URL, then options such as `WithTimeout`, `WithToken`, `WithSkillFilter`, `WithLogger`). Pass every client to `agent.WithA2AClients` in one call; each name must be unique.
+
+```go
+import (
+    "time"
+
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    a2apkg "github.com/agenticenv/agent-sdk-go/pkg/a2a"
+    a2aclient "github.com/agenticenv/agent-sdk-go/pkg/a2a/client"
+)
+
+assistantCl, err := a2aclient.NewClient("assistant", "https://assistant.example.com",
+    a2aclient.WithTimeout(30*time.Second),
+)
+if err != nil {
+    // handle
+}
+
+researcherCl, err := a2aclient.NewClient("researcher", "https://researcher.example.com",
+    a2aclient.WithToken("replace-with-bearer-token"),
+    a2aclient.WithTimeout(60*time.Second),
+    a2aclient.WithSkillFilter(a2apkg.A2ASkillFilter{AllowSkills: []string{"search", "summarize"}}),
+)
+if err != nil {
+    // handle
+}
+
+a, err := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(...),
+    agent.WithA2AClients(assistantCl, researcherCl),
+    agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+)
+if err != nil {
+    // handle
+}
+defer a.Close()
+```
+
+You may use **Option 1** for some remote agents and **Option 2** for others on the same agent; keep connection names unique across both.
+
+[examples/agent_with_a2a_config](examples/agent_with_a2a_config) and [examples/agent_with_a2a_client](examples/agent_with_a2a_client) show A2A from env (`A2A_URL`, optional bearer/headers/filter); see [examples/env.sample](examples/env.sample) and [examples/README.md](examples/README.md).
 
 ### Sub-agents
 
@@ -828,7 +912,7 @@ cp examples/env.sample examples/.env
 # Edit examples/.env: set LLM_APIKEY, LLM_MODEL
 ```
 
-See **[examples/README.md](examples/README.md)** for how to run examples, the CLI, and optional flows such as MCP streamable HTTP (including example-specific environment variables).
+See **[examples/README.md](examples/README.md)** for how to run examples, the CLI, and optional flows such as MCP streamable HTTP or A2A remote agents (including example-specific environment variables).
 
 ### CLI configuration
 

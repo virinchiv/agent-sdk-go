@@ -37,6 +37,10 @@ type AgentFingerprintPayload struct {
 	// pointing at a different endpoint or policy. Omitted when empty.
 	MCPFingerprint string `json:"mcp_fingerprint,omitempty"`
 
+	// A2AFingerprint is the pkg/agent A2A wiring digest over server URLs, auth type (no secrets),
+	// header keys, timeouts, skill filters, and extra A2A client names. Omitted when empty.
+	A2AFingerprint string `json:"a2a_fingerprint,omitempty"`
+
 	// AgentMode is the execution mode (e.g. interactive vs autonomous); must match pkg/agent WithAgentMode on caller and worker.
 	AgentMode string `json:"agent_mode"`
 
@@ -77,6 +81,7 @@ func BuildAgentFingerprintPayload(
 	sessionSize int,
 	limits sdkruntime.AgentLimits,
 	mcpFingerprint string,
+	a2aFingerprint string,
 	agentMode string,
 	agentToolExecutionMode types.AgentToolExecutionMode,
 ) AgentFingerprintPayload {
@@ -97,6 +102,7 @@ func BuildAgentFingerprintPayload(
 		ToolNames:              names,
 		PolicyFingerprint:      policyFingerprint,
 		MCPFingerprint:         mcpFingerprint,
+		A2AFingerprint:         a2aFingerprint,
 		AgentMode:              mode,
 		AgentToolExecutionMode: string(toolExecutionMode),
 		Sampling:               cloneLLMSampling(sampling),
@@ -171,6 +177,7 @@ func computeAgentFingerprintFromRuntimeConfig(c *TemporalRuntimeConfig) string {
 		c.AgentExecution.Session.ConversationSize,
 		c.AgentExecution.Limits,
 		c.MCPFingerprint,
+		c.A2AFingerprint,
 		c.AgentMode,
 		c.AgentToolExecutionMode,
 	)
