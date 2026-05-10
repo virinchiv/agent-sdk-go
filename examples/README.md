@@ -29,8 +29,11 @@ The examples use `TEMPORAL_HOST`, `TEMPORAL_PORT`, and `TEMPORAL_NAMESPACE` from
 | `agent_with_reasoning` | Generic `interfaces.LLMReasoning` via `WithLLMSampling` — `Stream` to observe `thinking_delta` (e.g. Anthropic) |
 | `agent_with_worker` | Agent and worker in separate processes — `DisableLocalWorker` + `NewAgentWorker`; agent uses **`Stream`** |
 | `durable_agent` | Same split-process layout — agent uses **`Stream`** (`WithStream`); durability scenarios: [`durable_agent/README.md`](durable_agent/README.md) |
-| `agent_with_mcp_config` | MCP via `WithMCPConfig` — transport from env: `mcp.MCPStdio` (command, JSON args/env) or `mcp.MCPStreamableHTTP` (URL, optional bearer/OAuth); see `examples/env.sample` |
-| `agent_with_mcp_client` | Same transports via `mcpclient.NewClient` + `WithMCPClients`; same env vars as `agent_with_mcp_config` |
+| `agent_with_mcp_config` | MCP via `WithMCPConfig` — transport from env; see **`env.sample`** — **[README](agent_with_mcp_config/README.md)** (testing & sample servers) |
+| `agent_with_mcp_client` | Same as above via `mcpclient.NewClient` + `WithMCPClients` — **[README](agent_with_mcp_client/README.md)** |
+| `agent_with_a2a_config` | Outbound A2A via `WithA2AConfig` — **`A2A_URL`** etc.; **[README](agent_with_a2a_config/README.md)** |
+| `agent_with_a2a_client` | Same env, explicit **`pkg/a2a/client`** — **[README](agent_with_a2a_client/README.md)** |
+| `agent_with_a2a_server` | **Inbound** A2A server — **`A2A_SERVER_*`**; **[README](agent_with_a2a_server/README.md)** (curl, **`a2a` CLI**, client example) |
 
 ## Setup
 
@@ -135,27 +138,41 @@ go run ./durable_agent/worker       # terminal 1
 go run ./durable_agent/agent "Hello from remote agent!"   # terminal 2
 ```
 
-### MCP (`WithMCPConfig` vs `WithMCPClients`)
+### MCP (`agent_with_mcp_config`, `agent_with_mcp_client`)
 
-Two examples use the **same env-driven transport** but wire the agent differently:
-
-- **`agent_with_mcp_config`** — `agent.WithMCPConfig(agent.MCPServers{<serverName>: mcpCfg})`. The SDK builds the default MCP client per server.
-- **`agent_with_mcp_client`** — `mcpclient.NewClient(<serverName>, transport, opts...)` then `agent.WithMCPClients(client)`.
-
-**Transport** must be set explicitly with **`MCP_TRANSPORT`**: `stdio` or `streamable_http` (see aliases in **`env.sample`**). See **`env.sample`** for every variable.
-
-- **Remote — `streamable_http`:** set **`MCP_STREAMABLE_HTTP_URL`**. Auth optional: **`MCP_BEARER_TOKEN`**, or OAuth trio **`MCP_CLIENT_ID`** + **`MCP_CLIENT_SECRET`** + **`MCP_TOKEN_URL`** (OAuth wins over bearer when all three are set). **`MCP_SKIP_TLS_VERIFY=true`** for dev TLS only.
-- **Local — `stdio`:** set **`MCP_STDIO_COMMAND`** and optional **`MCP_STDIO_ARGS`** (JSON string array) and **`MCP_STDIO_ENV`** (JSON string→string object).
-
-Shared optional knobs: **`MCP_SERVER_NAME`**, **`MCP_TIMEOUT_SECONDS`**, **`MCP_RETRY_ATTEMPTS`**, **`MCP_ALLOW_TOOLS`** / **`MCP_BLOCK_TOOLS`** (comma-separated; only one list type).
+Same **`MCP_*`** env (see **`env.sample`**); differs only in **`WithMCPConfig`** vs **`mcpclient.NewClient`** + **`WithMCPClients`**.
 
 ```bash
 go run ./agent_with_mcp_config
 go run ./agent_with_mcp_config "List tools you can call."
-
 go run ./agent_with_mcp_client
 go run ./agent_with_mcp_client "List tools you can call."
 ```
+
+**Configure transports, test against real MCP servers (streamable HTTP walkthrough, stdio, links):** **[agent_with_mcp_config/README.md](agent_with_mcp_config/README.md)**.
+
+### A2A client (`agent_with_a2a_config`, `agent_with_a2a_client`)
+
+Outbound A2A tools — set **`A2A_URL`** (and optional **`A2A_*`** in **`env.sample`**).
+
+```bash
+go run ./agent_with_a2a_config
+go run ./agent_with_a2a_config "What tools do you have available?"
+go run ./agent_with_a2a_client
+go run ./agent_with_a2a_client "What tools do you have available?"
+```
+
+**Run a sample remote agent (e.g. `a2a-samples` helloworld), curl checks:** **[agent_with_a2a_config/README.md](agent_with_a2a_config/README.md)**.
+
+### A2A server (`agent_with_a2a_server`)
+
+Inbound JSON-RPC server — **`A2A_SERVER_*`**, optional bearer tokens.
+
+```bash
+go run ./agent_with_a2a_server
+```
+
+**curl, `a2a` CLI, testing with `agent_with_a2a_config`:** **[agent_with_a2a_server/README.md](agent_with_a2a_server/README.md)**.
 
 ## Logging
 
@@ -197,3 +214,13 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 | `MCP_ALLOW_TOOLS`, `MCP_BLOCK_TOOLS` | Optional comma-separated allow/block tool lists (mutually exclusive) |
 | `MCP_CLIENT_ID`, `MCP_CLIENT_SECRET`, `MCP_TOKEN_URL` | Optional together: OAuth2 client credentials for MCP HTTP transport |
 | `MCP_SKIP_TLS_VERIFY` | Optional; set to `true` to skip TLS verify for MCP/token HTTP (dev only) |
+| `A2A_URL` | **Required** for A2A examples: remote agent base URL |
+| `A2A_SERVER_NAME` | Optional connection id (default: `remote`) — used in tool names |
+| `A2A_TIMEOUT_SECONDS` | Optional; positive seconds cap per A2A HTTP operation |
+| `A2A_TOKEN` | Optional static bearer for the A2A HTTP client |
+| `A2A_HEADERS` | Optional JSON object of extra HTTP headers |
+| `A2A_SKIP_TLS_VERIFY` | Optional; `true` skips TLS verification for A2A HTTP (dev only) |
+| `A2A_ALLOW_SKILLS`, `A2A_BLOCK_SKILLS` | Optional comma-separated allow/block skill ID lists (mutually exclusive) |
+| `A2A_SERVER_HOST` | Optional bind hostname for **`agent_with_a2a_server`** (empty → default **localhost**) |
+| `A2A_SERVER_PORT` | Optional TCP port for **`agent_with_a2a_server`** (0 → default **9999**) |
+| `A2A_SERVER_BEARER_TOKENS` | Optional comma-separated bearer secrets for inbound JSON-RPC on **`agent_with_a2a_server`** |

@@ -39,6 +39,7 @@ type TemporalRuntimeConfig struct {
 	AgentExecution    sdkruntime.AgentExecution
 	PolicyFingerprint string // from pkg/agent toolPolicyFingerprint; must match caller temporal.ComputeAgentFingerprint inputs
 	MCPFingerprint    string // from pkg/agent mcpConfigFingerprint; must match caller temporal.ComputeAgentFingerprint inputs
+	A2AFingerprint    string // from pkg/agent a2aConfigFingerprint; must match caller temporal.ComputeAgentFingerprint inputs
 	// AgentMode is the string form of [types.AgentMode] (e.g. "interactive", "autonomous"); must match pkg/agent WithAgentMode.
 	AgentMode string
 	// AgentToolExecutionMode is the [types.AgentToolExecutionMode] (e.g. "sequential", "parallel"); must match pkg/agent WithAgentToolExecutionMode.
@@ -123,6 +124,14 @@ func WithPolicyFingerprint(fp string) Option {
 func WithMCPFingerprint(fp string) Option {
 	return func(c *TemporalRuntimeConfig) {
 		c.MCPFingerprint = fp
+	}
+}
+
+// WithA2AFingerprint sets the A2A wiring digest used with [ComputeAgentFingerprint].
+// Must match pkg/agent's a2aConfigFingerprint for the same WithA2AConfig / WithA2AClients wiring.
+func WithA2AFingerprint(fp string) Option {
+	return func(c *TemporalRuntimeConfig) {
+		c.A2AFingerprint = fp
 	}
 }
 

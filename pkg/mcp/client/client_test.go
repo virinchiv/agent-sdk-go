@@ -86,7 +86,7 @@ func TestClient_CallTool_InvalidArgumentsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	c, err := NewClient("unit", types.MCPLoopback{Transport: t2})
 	if err != nil {
@@ -108,7 +108,7 @@ func TestClient_OperationAfterClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	c, err := NewClient("unit", types.MCPLoopback{Transport: t2})
 	if err != nil {
@@ -158,7 +158,7 @@ func TestClient_ping_inMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	c, err := NewClient("unit", types.MCPLoopback{Transport: t2})
 	if err != nil {
@@ -183,7 +183,7 @@ func TestClient_listTools_inMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	c, err := NewClient("unit", types.MCPLoopback{Transport: t2})
 	if err != nil {
@@ -215,7 +215,7 @@ func TestClient_listTools_withToolFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	c, err := NewClient("unit", types.MCPLoopback{Transport: t2},
 		WithToolFilter(mcp.MCPToolFilter{AllowTools: []string{"ping"}}))
@@ -245,7 +245,7 @@ func TestClient_callTool_inMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ss.Close()
+	defer func() { _ = ss.Close() }()
 
 	c, err := NewClient("unit", types.MCPLoopback{Transport: t2})
 	if err != nil {

@@ -2,12 +2,12 @@
 
 **Build durable, production-grade AI agents in Go** — tools, MCP, human approvals, and sub-agent delegation.
 
-[![CI](https://github.com/agenticenv/agent-sdk-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/agenticenv/agent-sdk-go/actions)
-[![Release](https://img.shields.io/github/v/release/agenticenv/agent-sdk-go?label=Release)](https://github.com/agenticenv/agent-sdk-go/releases)
-[![Go Reference](https://pkg.go.dev/badge/github.com/agenticenv/agent-sdk-go.svg)](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go)
-[![Go Report Card](https://goreportcard.com/badge/github.com/agenticenv/agent-sdk-go?v=0.1.2)](https://goreportcard.com/report/github.com/agenticenv/agent-sdk-go)
-[![License](https://img.shields.io/github/license/agenticenv/agent-sdk-go?label=License&cacheSeconds=0)](LICENSE)
-[![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go)
+[CI](https://github.com/agenticenv/agent-sdk-go/actions)
+[Release](https://github.com/agenticenv/agent-sdk-go/releases)
+[Go Reference](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go)
+[Go Report Card](https://goreportcard.com/report/github.com/agenticenv/agent-sdk-go)
+[License](LICENSE)
+[Mentioned in Awesome Go](https://github.com/avelino/awesome-go)
 
 > **Note:** Independent community library — **not** affiliated with Temporal Technologies.
 >
@@ -30,6 +30,7 @@
 - **Token usage** — Track input, output, and reasoning token counts per run.
 - **Tools** — Register built-in or custom tools via `interfaces.Tool`; optional **parallel vs sequential** execution for multiple tool calls in one LLM round (`WithAgentToolExecutionMode`).
 - **MCP** — Extend agent capabilities by connecting any MCP server as a tool source via `WithMCPConfig` or `WithMCPClients`.
+- **A2A** — Connect remote [Agent-to-Agent](https://github.com/a2aproject/A2A) agents as tool providers via `WithA2AConfig` or `WithA2AClients`; or expose the agent itself as an A2A server via `WithA2ADefaultServer` / `WithA2AServer` and `RunA2A`.
 - **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
 - **Sub-agents** — Delegate to specialist agents via `WithSubAgents`.
 - **Scale** — Add Temporal workers to scale agent execution horizontally.
@@ -58,6 +59,8 @@ graph TD
     Child --> Mem2[Activity: save memory]
 ```
 
+
+
 Details: [Temporal connection](#temporal-connection), [Sub-agents](#sub-agents), [Agent and worker in separate processes](#agent-and-worker-in-separate-processes).
 
 ### Durable agents: survive crashes, restarts, and deploys
@@ -82,7 +85,7 @@ Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), ma
 
 Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are emitted in the correct AG-UI sequence during every `Stream()` call. Serialize any event with `event.ToJSON()` and forward it over SSE, WebSocket, or Redis to a TypeScript/React frontend using the AG-UI client SDK.
 
-For a complete server + UI reference, see [`examples/agent_copilotkit`](examples/agent_copilotkit) (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
+For a complete server + UI reference, see `[examples/agent_copilotkit](examples/agent_copilotkit)` (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
 
 ```go
 ch, err := a.Stream(ctx, prompt, conversationID)
@@ -113,7 +116,7 @@ How to **use** the SDK—agents, LLMs, Temporal connection, examples.
 
 ### Prerequisites
 
-**agent-sdk-go** runs agents on the **[Temporal](https://temporal.io)** runtime (durable workflows and activities), so a **running Temporal server** is required. See **[Temporal setup](temporal-setup.md)**. Also **Go 1.24+** (see `go.mod`) and credentials for your LLM provider.
+**agent-sdk-go** runs agents on the **[Temporal](https://temporal.io)** runtime (durable workflows and activities), so a **running Temporal server** is required. See **[Temporal setup](temporal-setup.md)**. Also **Go 1.25+** (see `go.mod`) and credentials for your LLM provider.
 
 **Module:** `github.com/agenticenv/agent-sdk-go`
 
@@ -214,19 +217,21 @@ llmClient, err := gemini.NewClient(
 
 ### Supported LLMs
 
+
 | Provider      | Package             | Notes                     |
 | ------------- | ------------------- | ------------------------- |
 | **OpenAI**    | `pkg/llm/openai`    | GPT-4o, GPT-4o-mini, etc. |
 | **Anthropic** | `pkg/llm/anthropic` | Claude models             |
 | **Gemini**    | `pkg/llm/gemini`    | gemini-2.5-flash, etc.    |
 
-Other providers: implement [`interfaces.LLMClient`](pkg/interfaces/llm.go) (`Generate`, `GenerateStream`, metadata). Copy patterns from `pkg/llm/`.
+
+Other providers: implement `[interfaces.LLMClient](pkg/interfaces/llm.go)` (`Generate`, `GenerateStream`, metadata). Copy patterns from `pkg/llm/`.
 
 ### Stream events (Stream)
 
 `Stream` returns a channel of `AgentEvent`. Use `agent.WithStream(true)` for partial tokens as they arrive. For **AG-UI** clients, see [AG-UI Protocol](#ag-ui-protocol); for **Temporal** vs. live delivery, see [Streaming and approvals](#streaming-and-approvals).
 
-Lifecycle events include **`RUN_STARTED`**, **`RUN_FINISHED`**, **`RUN_ERROR`**, and (for some flows) **`STEP_STARTED`** / **`STEP_FINISHED`**. Step events bracket a sub-agent child workflow; see [Sub-agents](#sub-agents).
+Lifecycle events include `**RUN_STARTED`**, `**RUN_FINISHED**`, `**RUN_ERROR**`, and (for some flows) `**STEP_STARTED**` / `**STEP_FINISHED**`. Step events bracket a sub-agent child workflow; see [Sub-agents](#sub-agents).
 
 ```go
 a, _ := agent.NewAgent(
@@ -260,16 +265,16 @@ for ev := range eventCh {
 
 #### Displaying stream events
 
-Streaming text deltas (`TEXT_MESSAGE_*`) versus the **`RUN_FINISHED`** body often duplicate—don’t print both. Use `AgentName` on typed events / results to distinguish agents in delegation; several **`RUN_FINISHED`** events may appear before the root run completes. See [examples/agent_with_stream_conversation](examples/agent_with_stream_conversation).
+Streaming text deltas (`TEXT_MESSAGE_*`) versus the `**RUN_FINISHED**` body often duplicate—don’t print both. Use `AgentName` on typed events / results to distinguish agents in delegation; several `**RUN_FINISHED**` events may appear before the root run completes. See [examples/agent_with_stream_conversation](examples/agent_with_stream_conversation).
 
 ### Token usage (`LLMUsage`)
 
-Each LLM completion can report token counts via [`interfaces.LLMUsage`](pkg/interfaces/llm.go) on [`interfaces.LLMResponse.Usage`](pkg/interfaces/llm.go). OpenAI, Anthropic, and Gemini clients populate **`PromptTokens`**, **`CompletionTokens`**, **`TotalTokens`**, and optional **`CachedPromptTokens`** / **`ReasoningTokens`** when the provider returns them.
+Each LLM completion can report token counts via `[interfaces.LLMUsage](pkg/interfaces/llm.go)` on `[interfaces.LLMResponse.Usage](pkg/interfaces/llm.go)`. OpenAI, Anthropic, and Gemini clients populate `**PromptTokens**`, `**CompletionTokens**`, `**TotalTokens**`, and optional `**CachedPromptTokens**` / `**ReasoningTokens**` when the provider returns them.
 
-- **`Agent.Run` / `RunAsync`:** **`Usage`** on [*AgentRunResult](pkg/agent/agent.go) is the **sum** across all LLM calls in that run (including tool rounds). Use it for cost estimates, quotas, and logging.
-- **`Stream`:** the same aggregate appears as **`Usage`** on **`RUN_FINISHED`**: assert **`[*AgentRunFinishedEvent](pkg/agent/agent.go)`**, then **`Result`** as **`[*AgentRunResult](pkg/agent/agent.go)`**. OpenAI streaming **`include_usage`** surfaces totals there. Helpers: [examples/shared/utils.go](examples/shared/utils.go) (`UsageFooter`, `RunResultFromFinishedEvent`).
+- `**Agent.Run` / `RunAsync`:** `**Usage`** on [*AgentRunResult](pkg/agent/agent.go) is the **sum** across all LLM calls in that run (including tool rounds). Use it for cost estimates, quotas, and logging.
+- `**Stream`:** the same aggregate appears as `**Usage*`* on `**RUN_FINISHED**`: assert `**[*AgentRunFinishedEvent](pkg/agent/agent.go)**`, then `**Result**` as `**[*AgentRunResult](pkg/agent/agent.go)**`. OpenAI streaming `**include_usage**` surfaces totals there. Helpers: [examples/shared/utils.go](examples/shared/utils.go) (`UsageFooter`, `RunResultFromFinishedEvent`).
 
-Examples: [examples/simple_agent](examples/simple_agent) (prints usage after `Run`), [examples/agent_with_stream](examples/agent_with_stream) (prints usage on **`RUN_FINISHED`**).
+Examples: [examples/simple_agent](examples/simple_agent) (prints usage after `Run`), [examples/agent_with_stream](examples/agent_with_stream) (prints usage on `**RUN_FINISHED**`).
 
 ### Tools
 
@@ -280,7 +285,7 @@ Register tools and pass to the agent. Use `agent.WithToolApprovalPolicy(agent.Au
 - `agent.WithAgentToolExecutionMode(agent.AgentToolExecutionModeParallel)` — **default** if you omit the option; good when tool calls are independent and you want lower latency.
 - `agent.WithAgentToolExecutionMode(agent.AgentToolExecutionModeSequential)` — use when **order matters** or tools **must not run at the same time** (shared mutable state, rate limits, or similar).
 
-Use the **same** `WithAgentToolExecutionMode` value on **`NewAgent`** and **`NewAgentWorker`** (and on any **sub-agents** you register) for a given app or deployment so every process that runs that agent agrees on the option.
+Use the **same** `WithAgentToolExecutionMode` value on `**NewAgent`** and `**NewAgentWorker**` (and on any **sub-agents** you register) for a given app or deployment so every process that runs that agent agrees on the option.
 
 Custom tools may also implement:
 
@@ -311,7 +316,7 @@ result, _ := a.Run(ctx, "What's the weather in Tokyo?", "")
 
 MCP servers extend your agent with external tools that work identically to built-in tools across `Run`, `Stream`, `RunAsync`, and approval gates. Each server needs a **unique** name in config (the `WithMCPConfig` map key or the first argument to `mcpclient.NewClient`); tools are registered under stable names so they do not collide when several servers expose the same logical tool id.
 
-At `NewAgent`, the SDK connects to each server, discovers its tools, applies any **`ToolFilter`** (`AllowTools`/`BlockTools`), and registers the results — failing fast if a server is unreachable.
+At `NewAgent`, the SDK connects to each server, discovers its tools, applies any `**ToolFilter`** (`AllowTools`/`BlockTools`), and registers the results — failing fast if a server is unreachable.
 
 Use `mcp.MCPStdio` (local process) or `mcp.MCPStreamableHTTP` (remote) from `pkg/mcp` for transport. Streamable HTTP supports `Token`, `OAuthClientCreds`, custom `Headers`, and `SkipTLSVerify` for local HTTPS. You can register multiple servers per agent with different transports, timeouts, retries, and filters per server.
 
@@ -401,7 +406,136 @@ defer a.Close()
 
 You may use **Option 1** for some servers and **Option 2** for others on the same agent; keep server names unique across both.
 
-[examples/agent_with_mcp_config](examples/agent_with_mcp_config) and [examples/agent_with_mcp_client](examples/agent_with_mcp_client) show MCP from env (`stdio` or streamable HTTP, URL-only OK, optional bearer/OAuth); see [examples/env.sample](examples/env.sample) and [examples/README.md](examples/README.md).
+[examples/agent_with_mcp_config](examples/agent_with_mcp_config) and [examples/agent_with_mcp_client](examples/agent_with_mcp_client) show MCP from env (`stdio` or streamable HTTP, URL-only OK, optional bearer/OAuth). Variables: [examples/env.sample](examples/env.sample). Running examples from `examples/`: [examples/README.md](examples/README.md). **MCP transports and testing against real servers:** [examples/agent_with_mcp_config/README.md](examples/agent_with_mcp_config/README.md).
+
+### A2A (Agent-to-Agent)
+
+#### A2A Server
+
+Any agent can be exposed as a standards-compliant [A2A](https://github.com/a2aproject/A2A) HTTP server. Call `RunA2A(ctx)` after `NewAgent`; the server blocks until the context is cancelled then gracefully shuts down. It mounts:
+
+- `GET /.well-known/agent-card.json` — the agent card (name, description, skills, streaming capability, supported transports, optional auth schemes).
+- `POST /` — **JSON-RPC v2 only** (PascalCase methods per a2asrv, e.g. `SendMessage`, `SendStreamingMessage`, `GetTask`).
+
+The agent card advertises `TransportProtocolJSONRPC` for `POST /`. Clients must use v2 JSON-RPC method names and the JSON-RPC binding (not legacy slash-style method strings or HTTP+JSON REST paths on this server).
+
+**Supported authentication schemes:**
+
+- **Bearer token (static)** — one or more pre-shared tokens; declared in the agent card as an HTTP `Bearer` security scheme and enforced on every inbound call via `Authorization: Bearer <token>`.
+
+*Planned (not yet supported):* OAuth 2.0 / OIDC, API key, mTLS.
+
+Use `WithA2ADefaultServer` for zero-config local development (binds to `localhost:9999`) or `WithA2AServer` to set a custom hostname, port, and tokens:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithName("my-agent"),
+    agent.WithDescription("Helpful assistant exposed as an A2A server."),
+    agent.WithLLMClient(llmClient),
+    agent.WithStream(),                         // advertises streaming capability
+    agent.WithA2ADefaultServer(),               // localhost:9999, no auth
+    // agent.WithA2AServer(&agent.A2AServerConfig{
+    //     Hostname:     "0.0.0.0",
+    //     Port:         8080,
+    //     BearerTokens: []string{"secret-token"},
+    //     // Optional: AgentCard: &interfaces.A2AAgentCard{...} (same shape as ResolveCard); merged into the wire card.
+    // }),
+)
+if err != nil {
+    // handle
+}
+defer a.Close()
+
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+defer stop()
+
+if err := a.RunA2A(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+[examples/agent_with_a2a_server](examples/agent_with_a2a_server) shows a full server example with env-based config (`A2A_SERVER_HOST`, `A2A_SERVER_PORT`, `A2A_SERVER_BEARER_TOKENS`). Variables: [examples/env.sample](examples/env.sample). Running examples from `examples/`: [examples/README.md](examples/README.md). **Inbound server — curl, `a2a` CLI, bearer, cross-test with `agent_with_a2a_config`:** [examples/agent_with_a2a_server/README.md](examples/agent_with_a2a_server/README.md).
+
+#### A2A Client
+
+Remote [A2A](https://github.com/a2aproject/A2A) agents connect as tool providers: the SDK fetches the agent card, discovers skills, and registers each skill as a first-class tool available to the LLM across `Run`, `Stream`, `RunAsync`, and approval gates. Each server entry needs a **unique** name (the `WithA2AConfig` map key or the first argument to `a2aclient.NewClient`); tools are registered under stable names (`a2a_<server>_<skillId>`) that do not collide across multiple remote agents.
+
+At `NewAgent`, the SDK resolves the agent card, applies any `**SkillFilter`** (`AllowSkills`/`BlockSkills`), and registers the resulting tools — failing fast if a server is unreachable.
+
+Configure auth, timeout, and skill filtering per server entry. `SkipTLSVerify` is available for local HTTPS development only.
+
+Pass `WithA2AConfig` or `WithA2AClients` into `agent.NewAgent` alongside your other options.
+
+**Option 1 — `WithA2AConfig`**
+
+Declare each remote agent as one entry in `agent.A2AServers`: set `URL`, and optionally `Token`, `Headers`, `Timeout`, `SkillFilter`, and `SkipTLSVerify`. The map key is the connection name.
+
+```go
+import (
+    "time"
+
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    a2apkg "github.com/agenticenv/agent-sdk-go/pkg/a2a"
+)
+
+agent.WithA2AConfig(agent.A2AServers{
+    "assistant": {
+        URL:     "https://assistant.example.com",
+        Timeout: 30 * time.Second,
+    },
+    "researcher": {
+        URL:         "https://researcher.example.com",
+        Token:       "replace-with-bearer-token",
+        SkillFilter: a2apkg.A2ASkillFilter{AllowSkills: []string{"search", "summarize"}},
+        Timeout:     60 * time.Second,
+    },
+})
+```
+
+**Option 2 — `WithA2AClients`**
+
+Build one client per remote agent with `a2aclient.NewClient` (connection name, base URL, then options such as `WithTimeout`, `WithToken`, `WithSkillFilter`, `WithLogger`). Pass every client to `agent.WithA2AClients` in one call; each name must be unique.
+
+```go
+import (
+    "time"
+
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    a2apkg "github.com/agenticenv/agent-sdk-go/pkg/a2a"
+    a2aclient "github.com/agenticenv/agent-sdk-go/pkg/a2a/client"
+)
+
+assistantCl, err := a2aclient.NewClient("assistant", "https://assistant.example.com",
+    a2aclient.WithTimeout(30*time.Second),
+)
+if err != nil {
+    // handle
+}
+
+researcherCl, err := a2aclient.NewClient("researcher", "https://researcher.example.com",
+    a2aclient.WithToken("replace-with-bearer-token"),
+    a2aclient.WithTimeout(60*time.Second),
+    a2aclient.WithSkillFilter(a2apkg.A2ASkillFilter{AllowSkills: []string{"search", "summarize"}}),
+)
+if err != nil {
+    // handle
+}
+
+a, err := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(...),
+    agent.WithA2AClients(assistantCl, researcherCl),
+    agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+)
+if err != nil {
+    // handle
+}
+defer a.Close()
+```
+
+You may use **Option 1** for some remote agents and **Option 2** for others on the same agent; keep connection names unique across both.
+
+[examples/agent_with_a2a_config](examples/agent_with_a2a_config) and [examples/agent_with_a2a_client](examples/agent_with_a2a_client) show A2A from env (`A2A_URL`, optional bearer/headers/filter). Variables: [examples/env.sample](examples/env.sample). Running examples from `examples/`: [examples/README.md](examples/README.md). **Remote agent setup (e.g. `a2a-samples` helloworld), curl checks:** [examples/agent_with_a2a_config/README.md](examples/agent_with_a2a_config/README.md).
 
 ### Sub-agents
 
@@ -409,7 +543,7 @@ Build each specialist with `NewAgent` (its own `TaskQueue`, LLM, tools, and prom
 
 For streaming scenarios, the main agent is the single subscription point. When using `Stream`, events from all delegated sub-agents fan in to the same main-agent stream, including sub-agent tool approvals and tool call/result events.
 
-**`STEP_STARTED` / `STEP_FINISHED`:** When delegation actually runs a sub-agent **child workflow**, the parent run emits **`AgentEventTypeStepStarted`** then **`AgentEventTypeStepFinished`**, each with **`StepName`** set to the sub-agent’s route name (the `Name` in the `WithSubAgents` configuration). **`STEP_FINISHED`** is emitted when the child returns, whether the sub-run succeeded or failed (a failed run still surfaces as an error string in the following tool result). These are not emitted when delegation is skipped (e.g. empty sub-agent task queue or max depth).
+`**STEP_STARTED` / `STEP_FINISHED`:** When delegation actually runs a sub-agent **child workflow**, the parent run emits `**AgentEventTypeStepStarted`** then `**AgentEventTypeStepFinished**`, each with `**StepName**` set to the sub-agent’s route name (the `Name` in the `WithSubAgents` configuration). `**STEP_FINISHED**` is emitted when the child returns, whether the sub-run succeeded or failed (a failed run still surfaces as an error string in the following tool result). These are not emitted when delegation is skipped (e.g. empty sub-agent task queue or max depth).
 
 ```go
 mathAgent, _ := agent.NewAgent(
@@ -444,7 +578,7 @@ result, _ := mainAgent.Run(ctx, "What is 144 divided by 12?", "")
 
 [examples/agent_with_subagents](examples/agent_with_subagents)
 
-**Stream event fan-in:** Subscribe once on the main agent; the stream includes the full tree (tool events, **`AgentEventTypeCustom`** for approvals/delegation, optional **`AgentEventTypeStepStarted` / `AgentEventTypeStepFinished`** around sub-agent runs, **`AgentEventTypeRunFinished`**, etc.). For each event, use **`ev.Type()`** and type-assert to the concrete struct (see [examples/agent_with_stream](examples/agent_with_stream), [examples/agent_with_subagents](examples/agent_with_subagents)). For **`CUSTOM`**, assert **`*AgentCustomEvent`**, then [`ParseCustomEventApproval`](pkg/agent/event.go) or [`ParseCustomEventDelegation`](pkg/agent/event.go) to read **`AgentName`**, **`ApprovalToken`**, **`ToolName`** or **`SubAgentName`**, and call [`OnApproval`](pkg/agent/approval.go) with the token.
+**Stream event fan-in:** Subscribe once on the main agent; the stream includes the full tree (tool events, `**AgentEventTypeCustom`** for approvals/delegation, optional `**AgentEventTypeStepStarted` / `AgentEventTypeStepFinished**` around sub-agent runs, `**AgentEventTypeRunFinished**`, etc.). For each event, use `**ev.Type()**` and type-assert to the concrete struct (see [examples/agent_with_stream](examples/agent_with_stream), [examples/agent_with_subagents](examples/agent_with_subagents)). For `**CUSTOM**`, assert `***AgentCustomEvent**`, then `[ParseCustomEventApproval](pkg/agent/event.go)` or `[ParseCustomEventDelegation](pkg/agent/event.go)` to read `**AgentName**`, `**ApprovalToken**`, `**ToolName**` or `**SubAgentName**`, and call `[OnApproval](pkg/agent/approval.go)` with the token.
 
 ### Approvals
 
@@ -454,10 +588,9 @@ The model can trigger registry tools (`WithTools` / registry), MCP tools, and de
 
 These three types are provided by the `agent` package. For anything else, implement `interfaces.AgentToolApprovalPolicy` (`RequiresApproval`) and pass that value to `WithToolApprovalPolicy`.
 
-- **`RequireAllToolApprovalPolicy`** (default when you omit `WithToolApprovalPolicy`) — every registry tool call, MCP call, and delegation to a sub-agent goes through your approval handler before it runs.
-- **`AutoToolApprovalPolicy()`** — nothing requires approval; use only when you fully trust the agent and its tools.
-- **`AllowlistToolApprovalPolicy`** — only the tools, specialists, and MCP tool ids you list skip approval; everything else still requires approval. Build the policy from `agent.AllowlistToolApprovalConfig` (`ToolNames`, `SubAgentNames`, optional `MCPTools`), check the error, then pass the result to `WithToolApprovalPolicy`.
-
+- `**RequireAllToolApprovalPolicy`** (default when you omit `WithToolApprovalPolicy`) — every registry tool call, MCP call, and delegation to a sub-agent goes through your approval handler before it runs.
+- `**AutoToolApprovalPolicy()**` — nothing requires approval; use only when you fully trust the agent and its tools.
+- `**AllowlistToolApprovalPolicy**` — only the tools, specialists, and MCP tool ids you list skip approval; everything else still requires approval. Build the policy from `agent.AllowlistToolApprovalConfig` (`ToolNames`, `SubAgentNames`, optional `MCPTools`), check the error, then pass the result to `WithToolApprovalPolicy`.
   ```go
   approvalPol, err := agent.AllowlistToolApprovalPolicy(agent.AllowlistToolApprovalConfig{
       ToolNames:     []string{"calculator"},
@@ -476,13 +609,12 @@ These three types are provided by the `agent` package. For anything else, implem
       log.Fatal(err)
   }
   ```
-
 - Custom tools may implement `interfaces.ToolApproval`; in a standard `NewAgent` configuration, the configured `WithToolApprovalPolicy` is the approval gate used by that agent.
 
 #### Sub-agents (approval behavior)
 
-- **`ApprovalRequest`** (Run / RunAsync): `Name` is [`ApprovalRequestNameTool`](pkg/agent/approval.go) or [`ApprovalRequestNameSubAgent`](pkg/agent/approval.go); decode **`Value`** with [`ParseToolApproval`](pkg/agent/approval.go) (**`ToolName`**, **`AgentName`**) or [`ParseDelegationApproval`](pkg/agent/approval.go) (**`SubAgentName`**, **`AgentName`**).
-- **Stream:** match **`AgentEventTypeCustom`**, parse with **`ParseCustomEventApproval`** / **`ParseCustomEventDelegation`**, then **`OnApproval(ctx, token, status)`** with **`ApprovalToken`** from the parsed value (same payload shape as **`ApprovalRequest.Value`** on Run).
+- `**ApprovalRequest**` (Run / RunAsync): `Name` is `[ApprovalRequestNameTool](pkg/agent/approval.go)` or `[ApprovalRequestNameSubAgent](pkg/agent/approval.go)`; decode `**Value**` with `[ParseToolApproval](pkg/agent/approval.go)` (`**ToolName**`, `**AgentName**`) or `[ParseDelegationApproval](pkg/agent/approval.go)` (`**SubAgentName**`, `**AgentName**`).
+- **Stream:** match `**AgentEventTypeCustom`**, parse with `**ParseCustomEventApproval**` / `**ParseCustomEventDelegation**`, then `**OnApproval(ctx, token, status)**` with `**ApprovalToken**` from the parsed value (same payload shape as `**ApprovalRequest.Value**` on Run).
 - **Parent (main agent):** one policy for its whole list—e.g. `RequireAll` → approving delegation to MathSpecialist is the same flow as approving `calculator` on that agent. `AutoToolApprovalPolicy()` → no approval for delegation or other tools on that agent.
 - **Specialist:** separate agent, **its own** `WithToolApprovalPolicy`. Calculator calls inside the specialist use **that** policy, not the parent’s.
 
@@ -505,7 +637,7 @@ a, _ := agent.NewAgent(
 a.Run(ctx, prompt, "")
 ```
 
-**Stream** — approval and delegation requests are **`CUSTOM`** events (`[AgentEventTypeCustom](pkg/agent/event.go)`). Parse with [`ParseCustomEventApproval`](pkg/agent/event.go) / [`ParseCustomEventDelegation`](pkg/agent/event.go), then call [`OnApproval`](pkg/agent/approval.go) with the token from the value field (see [examples/durable_agent/agent/main.go](examples/durable_agent/agent/main.go)):
+**Stream** — approval and delegation requests are `**CUSTOM`** events (`[AgentEventTypeCustom](pkg/agent/event.go)`). Parse with `[ParseCustomEventApproval](pkg/agent/event.go)` / `[ParseCustomEventDelegation](pkg/agent/event.go)`, then call `[OnApproval](pkg/agent/approval.go)` with the token from the value field (see [examples/durable_agent/agent/main.go](examples/durable_agent/agent/main.go)):
 
 ```go
 for ev := range eventCh {
@@ -541,7 +673,7 @@ if res.Err != nil { /* handle */ }
 // res.Response.Content
 ```
 
-For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use **`OnApproval`** as in the snippet above—the activity token string is **`ApprovalToken`** from **`ParseCustomEventApproval`** / **`ParseCustomEventDelegation`** (not a field on the **`AgentEvent`** interface).
+For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use `**OnApproval`** as in the snippet above—the activity token string is `**ApprovalToken**` from `**ParseCustomEventApproval**` / `**ParseCustomEventDelegation**` (not a field on the `**AgentEvent**` interface).
 
 [examples/agent_with_tools_approval](examples/agent_with_tools_approval)
 
@@ -579,7 +711,7 @@ result, err := a.Run(context.Background(), "Hello", "")
 
 - ctx deadline always wins. If ctx has 2 min but agent has `WithTimeout(10 min)`, the run ends at 2 min.
 - approvalTimeout (per-approval limit) comes from agent config. If ctx has 1 hour and you use neither option, approval still expires at ~4.5 min (default). Set `WithTimeout` or `WithApprovalTimeout` for longer approvals.
-- **Agent mode default timeout:** If neither `ctx` nor `WithTimeout` is set, the default timeout follows `WithAgentMode`: **`AgentModeInteractive`** → **5 minutes**; **`AgentModeAutonomous`** → **60 minutes**.
+- **Agent mode default timeout:** If neither `ctx` nor `WithTimeout` is set, the default timeout follows `WithAgentMode`: `**AgentModeInteractive`** → **5 minutes**; `**AgentModeAutonomous`** → **60 minutes**.
 
 ### Custom tools
 
@@ -635,13 +767,13 @@ agent.WithResponseFormat(&interfaces.ResponseFormat{Type: interfaces.ResponseFor
 
 ### Reasoning / extended thinking
 
-Use **`Reasoning: &interfaces.LLMReasoning{...}`** on **`WithLLMSampling`** (same struct on **`interfaces.LLMRequest`**). Fields are **generic**; each provider maps them:
+Use `**Reasoning: &interfaces.LLMReasoning{...}`** on `**WithLLMSampling**` (same struct on `**interfaces.LLMRequest**`). Fields are **generic**; each provider maps them:
 
-- **`Enabled`** — **OpenAI**: does not infer `reasoning_effort` from **`Enabled`** alone (standard chat models reject that parameter). **Anthropic**: if **`BudgetTokens`** is 0, uses **1024** tokens minimum for extended thinking. **Gemini**: helps turn on thought output (`IncludeThoughts`).
-- **`Effort`** — **OpenAI** → `reasoning_effort` only when non-empty (use with reasoning-capable models). **Gemini** → `ThinkingLevel` for `low` / `medium` / `high` / `minimal` (only when **`BudgetTokens`** is 0; Gemini forbids budget and level together). **Anthropic** does not use **`Effort`** for its thinking API.
-- **`BudgetTokens`** — **Anthropic** extended-thinking budget (≥1024 when non-zero; smaller values are clamped). **Gemini** → `ThinkingBudget` (wins over **`Effort`** → level). **OpenAI** does not use this field.
+- `**Enabled`** — **OpenAI**: does not infer `reasoning_effort` from `**Enabled`** alone (standard chat models reject that parameter). **Anthropic**: if `**BudgetTokens`** is 0, uses **1024** tokens minimum for extended thinking. **Gemini**: helps turn on thought output (`IncludeThoughts`).
+- `**Effort`** — **OpenAI** → `reasoning_effort` only when non-empty (use with reasoning-capable models). **Gemini** → `ThinkingLevel` for `low` / `medium` / `high` / `minimal` (only when `**BudgetTokens`** is 0; Gemini forbids budget and level together). **Anthropic** does not use `**Effort`** for its thinking API.
+- `**BudgetTokens**` — **Anthropic** extended-thinking budget (≥1024 when non-zero; smaller values are clamped). **Gemini** → `ThinkingBudget` (wins over `**Effort`** → level). **OpenAI** does not use this field.
 
-Streaming still emits **`AgentEventThinkingDelta`** from Anthropic when the API returns thinking deltas.
+Streaming still emits `**AgentEventThinkingDelta`** from Anthropic when the API returns thinking deltas.
 
 Runnable example: [examples/agent_with_reasoning](examples/agent_with_reasoning) (`go run ./examples/agent_with_reasoning/` from the repo root; Temporal + `.env` as in [examples/README.md](examples/README.md)).
 
@@ -688,7 +820,7 @@ result, _ := a.Run(ctx, "Hello", "")
 > **Interactive vs autonomous:** By default the agent uses `AgentModeInteractive`
 > (5-minute timeout, worker check enabled). For long-running background agents, set
 > `agent.WithAgentMode(agent.AgentModeAutonomous)` to skip the worker check and use a
-> 60-minute default timeout. See [`WithAgentMode`](#configuration) for full detail.
+> 60-minute default timeout. See `[WithAgentMode](#configuration)` for full detail.
 
 ### Conversation (message history)
 
@@ -698,10 +830,12 @@ Pass `agent.WithConversation(conv)` to persist message history for multi-turn co
 
 Choose implementation by deployment:
 
+
 | Deployment                                                           | Use                                                       |
 | -------------------------------------------------------------------- | --------------------------------------------------------- |
 | **Single process** (agent and worker in same process)                | `inmem.NewInMemoryConversation`                           |
 | **Remote workers** (`DisableLocalWorker` or `EnableRemoteWorkers()`) | `redis.NewRedisConversation` or another distributed store |
+
 
 To add a new conversation store (e.g., Postgres, MongoDB), implement the `interfaces.Conversation` interface in `[pkg/interfaces/conversation.go](pkg/interfaces/conversation.go)`. The interface requires `AddMessage`, `ListMessages`, `Clear`, and `IsDistributed`. See `pkg/conversation/inmem` and `pkg/conversation/redis` for reference.
 
@@ -785,20 +919,20 @@ A Temporal connection is **required** — one of `WithTemporalConfig` or `WithTe
 - **WithMaxSubAgentDepth**: Maximum delegation hops from this agent (default 2). See [Sub-agents](#sub-agents).
 - **WithMaxIterations**: Max LLM rounds (default 5).
 - **WithStream**: Enable `Stream` partial content streaming.
-- **Token usage:** Not a separate option. On **`Run`**, read **`Usage`** on **`[*AgentRunResult](pkg/agent/agent.go)`** when set. On **`Stream`**, assert **`[*AgentRunFinishedEvent](pkg/agent/agent.go)`** with **`[*AgentRunResult](pkg/agent/agent.go)`** in **`Result`** (aggregate across LLM/tool rounds when the provider reports it). See [Token usage](#token-usage-llmusage).
+- **Token usage:** Not a separate option. On `**Run`**, read `**Usage**` on `**[*AgentRunResult](pkg/agent/agent.go)**` when set. On `**Stream**`, assert `**[*AgentRunFinishedEvent](pkg/agent/agent.go)**` with `**[*AgentRunResult](pkg/agent/agent.go)**` in `**Result**` (aggregate across LLM/tool rounds when the provider reports it). See [Token usage](#token-usage-llmusage).
 - **WithLLMSampling**: Pass `&agent.LLMSampling{...}`; nil or zero fields leave that knob to the provider default. Which fields apply where:
-  - **`Temperature`** — OpenAI, Anthropic, Gemini.
-  - **`MaxTokens`** — OpenAI, Anthropic, Gemini (max output / completion tokens).
-  - **`TopP`** — OpenAI, Gemini only (not sent to Anthropic).
-  - **`TopK`** — Anthropic only (not sent to OpenAI or Gemini).
-  - **`Reasoning`** (`*interfaces.LLMReasoning`) — optional generic controls; each LLM client maps them:
-    - **`Enabled`** — requests reasoning/thinking on providers that support it (see below).
-    - **`Effort`** — `"none"` … `"xhigh"`; **OpenAI** → `reasoning_effort` when non-empty; **Gemini** → `ThinkingLevel` when `low` / `medium` / `high` / `minimal`; **Anthropic** ignores (use **`BudgetTokens`** for extended thinking).
-    - **`BudgetTokens`** — **Anthropic** extended-thinking budget (non-zero; SDK clamps below 1024 to 1024); **Gemini** `thinkingBudget` (if set, **`Effort`** is not sent as `ThinkingLevel`—Gemini allows only one of budget or level); **OpenAI** ignores.
+  - `**Temperature`** — OpenAI, Anthropic, Gemini.
+  - `**MaxTokens**` — OpenAI, Anthropic, Gemini (max output / completion tokens).
+  - `**TopP**` — OpenAI, Gemini only (not sent to Anthropic).
+  - `**TopK**` — Anthropic only (not sent to OpenAI or Gemini).
+  - `**Reasoning**` (`*interfaces.LLMReasoning`) — optional generic controls; each LLM client maps them:
+    - `**Enabled**` — requests reasoning/thinking on providers that support it (see below).
+    - `**Effort**` — `"none"` … `"xhigh"`; **OpenAI** → `reasoning_effort` when non-empty; **Gemini** → `ThinkingLevel` when `low` / `medium` / `high` / `minimal`; **Anthropic** ignores (use `**BudgetTokens`** for extended thinking).
+    - `**BudgetTokens**` — **Anthropic** extended-thinking budget (non-zero; SDK clamps below 1024 to 1024); **Gemini** `thinkingBudget` (if set, `**Effort`** is not sent as `ThinkingLevel`—Gemini allows only one of budget or level); **OpenAI** ignores.
 - **WithApprovalTimeout**: Max wait per tool approval; must be less than agent timeout. Defaults to timeout−30s when tools require approval. Capped at 31 days.
 - **WithAgentMode**: Sets the agent mode. Default timeout when neither `ctx` nor `WithTimeout` is set follows the mode (**5 minutes** / **60 minutes**). Worker-check and queueing behaviour below are **mostly relevant to the Temporal runtime** (this SDK’s execution backend).
-  - **`AgentModeInteractive` (default)** — Optimised for chat, REPL, and web apps where a human is waiting. When `DisableLocalWorker` is set, the agent checks for available external workers before submitting work — if no worker is ready within the check window, it returns a clear error immediately rather than leaving the user with a hanging prompt. Default timeout is **5 minutes**.
-  - **`AgentModeAutonomous`** — Optimised for background jobs, pipelines, and long-running tasks where no human is watching. The worker check is skipped entirely — if no worker is available, Temporal queues the workflow and waits for one naturally. Default timeout is **60 minutes**.
+  - `**AgentModeInteractive` (default)** — Optimised for chat, REPL, and web apps where a human is waiting. When `DisableLocalWorker` is set, the agent checks for available external workers before submitting work — if no worker is ready within the check window, it returns a clear error immediately rather than leaving the user with a hanging prompt. Default timeout is **5 minutes**.
+  - `**AgentModeAutonomous`** — Optimised for background jobs, pipelines, and long-running tasks where no human is watching. The worker check is skipped entirely — if no worker is available, Temporal queues the workflow and waits for one naturally. Default timeout is **60 minutes**.
 
 **Env config:** [examples/README.md](examples/README.md) for examples; [cmd/README.md](cmd/README.md) for CLI.
 
@@ -828,7 +962,7 @@ cp examples/env.sample examples/.env
 # Edit examples/.env: set LLM_APIKEY, LLM_MODEL
 ```
 
-See **[examples/README.md](examples/README.md)** for how to run examples, the CLI, and optional flows such as MCP streamable HTTP (including example-specific environment variables).
+See **[examples/README.md](examples/README.md)** for how to run examples, env vars ([examples/env.sample](examples/env.sample)), and optional **README.md** files inside specific example directories.
 
 ### CLI configuration
 
