@@ -13,6 +13,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/temporal"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	a2aclient "github.com/agenticenv/agent-sdk-go/pkg/a2a/client"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
@@ -66,6 +67,60 @@ type MCPConfig struct {
 	RetryAttempts int
 }
 
+// A2AServers maps a stable server key (e.g. "planner", "coder") to per-server A2A settings.
+// Registered tool names use prefix a2a_<serverKey>_<skillID> (see [A2ATool]).
+// nil or empty map means no A2A servers from configuration.
+type A2AServers map[string]A2AConfig
+
+// A2AConfig describes one A2A agent server: base URL, optional authentication, timeout, and
+// optional skill filter. Zero [A2AConfig.Timeout] falls back to [defaultA2AToolTimeout] in
+// the fingerprint; the actual client applies its own default from [pkg/a2a/client.BuildConfig].
+type A2AConfig struct {
+	// URL is the base URL used for card resolution (e.g. "https://agent.example.com").
+	URL string
+	// Timeout is the per-call HTTP timeout. Zero means the client default (30 s).
+	Timeout time.Duration
+	// Token is a bearer token injected as "Authorization: Bearer <token>".
+	// Ignored (silently) when the value is whitespace-only.
+	// Prefer [A2AConfig.Headers] for non-bearer schemes.
+	Token string
+	// Headers are extra HTTP request headers sent on every call (e.g. "X-Tenant: acme").
+	// Header keys are included in the fingerprint; values are not.
+	Headers map[string]string
+	// SkillFilter restricts which skills from [interfaces.A2AClient.ListSkills] are registered.
+	// Set either [types.A2ASkillFilter.AllowSkills] or [types.A2ASkillFilter.BlockSkills], not both.
+	// Use [github.com/agenticenv/agent-sdk-go/pkg/a2a.A2ASkillFilter] for the same type in application code.
+	SkillFilter types.A2ASkillFilter
+	// SkipTLSVerify disables TLS certificate verification for the A2A HTTP client. Use only in development.
+	SkipTLSVerify bool
+}
+
+// A2AServerConfig holds the listen address and optional authentication for the built-in A2A HTTP server.
+//
+// Use [WithA2ADefaultServer] to accept the defaults (localhost:9999) or
+// [WithA2AServer] to supply your own values. Zero-value fields are replaced
+// with their defaults when the option is applied.
+type A2AServerConfig struct {
+	// Hostname is the network interface the A2A HTTP server binds to.
+	// Defaults to "localhost". Set to "0.0.0.0" to accept external connections.
+	Hostname string
+	// Port is the TCP port the A2A HTTP server listens on. Defaults to 9999.
+	Port int
+	// BearerTokens is an optional list of accepted static Bearer tokens.
+	// When non-empty every inbound JSON-RPC request must carry an
+	// "Authorization: Bearer <token>" header whose value matches at least one
+	// entry; requests without a valid token are rejected with ErrUnauthenticated.
+	// The well-known agent-card endpoint is always public (no auth required).
+	// Tokens are compared with constant-time equality to prevent timing attacks.
+	// Leave empty to run with no authentication (development / trusted networks only).
+	BearerTokens []string
+	// AgentCard, when non-nil, supplies optional overrides using [interfaces.A2AAgentCard]
+	// (the same shape as [interfaces.A2AClient.ResolveCard]). Non-empty fields replace defaults;
+	// omitted fields use agent name/description/version, tool-derived skills, and listen URL.
+	// See [Agent.buildSDKAgentCard].
+	AgentCard *interfaces.A2AAgentCard
+}
+
 // agentConfig holds shared configuration for Agent and AgentWorker.
 //
 // Option applicability:
@@ -75,7 +130,7 @@ type MCPConfig struct {
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
-//     WithMCPConfig, WithMCPClients, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode
+//     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode
 type agentConfig struct {
 	ID                 string
 	Name               string
@@ -122,6 +177,14 @@ type agentConfig struct {
 	mcpServers MCPServers
 	mcpClients []interfaces.MCPClient
 	mcpTools   []interfaces.Tool
+
+	// A2A: optional server configs and/or explicit clients; merged at build into a2aTools (see buildA2ATools).
+	a2aServers A2AServers
+	a2aClients []interfaces.A2AClient
+	a2aTools   []interfaces.Tool
+
+	//A2A Server: optional server config; merged at build into a2aServer (see RunA2A).
+	a2aServerConfig *A2AServerConfig
 
 	agentMode              AgentMode
 	agentToolExecutionMode AgentToolExecutionMode
@@ -347,6 +410,61 @@ func WithMCPClients(clients ...interfaces.MCPClient) Option {
 	}
 }
 
+// WithA2AConfig registers A2A agent servers by stable key (used in tool names and default client naming).
+// Each [A2AConfig] must set [A2AConfig.URL]; the agent wires a default A2A client internally
+// (no a2aproject/a2a-go/v2 usage in application code).
+// Skills are discovered and merged with [WithA2AClients]. Applies to Agent and AgentWorker.
+func WithA2AConfig(servers A2AServers) Option {
+	return func(c *agentConfig) { c.a2aServers = servers }
+}
+
+// WithA2AClients adds caller-supplied A2A clients (e.g. for custom transports or pre-built agents).
+// Each client's [interfaces.A2AClient.Name] must be non-empty and unique among all A2A clients,
+// including those created from [WithA2AConfig].
+// Applies to Agent and AgentWorker.
+func WithA2AClients(clients ...interfaces.A2AClient) Option {
+	return func(c *agentConfig) {
+		if len(clients) == 0 {
+			c.a2aClients = nil
+			return
+		}
+		c.a2aClients = append([]interfaces.A2AClient(nil), clients...)
+	}
+}
+
+// WithA2ADefaultServer enables the built-in A2A HTTP server with default
+// settings (hostname "localhost", port 9999). Use this when you want to
+// expose the agent as an A2A server without customising the listen address.
+func WithA2ADefaultServer() Option {
+	return func(c *agentConfig) {
+		c.a2aServerConfig = &A2AServerConfig{
+			Hostname: defaultA2AHostname,
+			Port:     defaultA2APort,
+		}
+	}
+}
+
+// WithA2AServer enables the built-in A2A HTTP server with the provided
+// [A2AServerConfig]. A nil config or zero-value fields fall back to the
+// same defaults as [WithA2ADefaultServer] (localhost:9999).
+func WithA2AServer(config *A2AServerConfig) Option {
+	return func(c *agentConfig) {
+		if config == nil {
+			config = &A2AServerConfig{
+				Hostname: defaultA2AHostname,
+				Port:     defaultA2APort,
+			}
+		}
+		c.a2aServerConfig = config
+		if c.a2aServerConfig.Hostname == "" {
+			c.a2aServerConfig.Hostname = defaultA2AHostname
+		}
+		if c.a2aServerConfig.Port == 0 {
+			c.a2aServerConfig.Port = defaultA2APort
+		}
+	}
+}
+
 // buildAgentConfig applies options, validates, and sets defaults (logger, timeouts, iterations).
 // WithTemporalConfig lets the runtime create a Temporal client from host settings; WithTemporalClient supplies a caller-owned client.
 // remoteWorker is false for Agent; NewAgentWorker sets it to true for worker-side activities.
@@ -359,6 +477,20 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	c.Name = strings.TrimSpace(c.Name)
 	if c.Name == "" {
 		return nil, errors.New("name is required")
+	}
+
+	if c.logLevel == "" {
+		c.logLevel = "error"
+	}
+	if c.logger == nil {
+		c.logger = logger.DefaultLogger(c.logLevel)
+	}
+
+	if c.Description == "" {
+		// auto-generate a minimal one rather than failing
+		c.Description = fmt.Sprintf("%s is an AI agent.", c.Name)
+		c.logger.Warn(context.Background(), "no description provided — using default for agent card; "+
+			"set WithDescription() for better agent discoverability")
 	}
 
 	if c.toolApprovalPolicy == nil {
@@ -407,13 +539,10 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	if c.maxSubAgentDepth <= 0 {
 		c.maxSubAgentDepth = defaultMaxSubAgentDepth
 	}
-	if c.logLevel == "" {
-		c.logLevel = "error"
-	}
-	if c.logger == nil {
-		c.logger = logger.DefaultLogger(c.logLevel)
-	}
 	if err := c.buildMCPTools(); err != nil {
+		return nil, err
+	}
+	if err := c.buildA2ATools(); err != nil {
 		return nil, err
 	}
 	if err := c.buildSubAgentTools(); err != nil {
@@ -472,11 +601,12 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Int("toolCount", len(c.toolsList())),
 		slog.Int("subAgentToolCount", len(c.subAgentTools)),
 		slog.Int("mcpToolCount", len(c.mcpTools)),
+		slog.Int("a2aToolCount", len(c.a2aTools)),
 		slog.Bool("hasConversation", c.conversation != nil))
 	return c, nil
 }
 
-// toolsList returns WithTools or registry tools, merged MCP tools ([mcpTools]), then [subAgentTools] from [buildSubAgentTools].
+// toolsList returns WithTools or registry tools, merged MCP tools ([mcpTools]), A2A tools ([a2aTools]), then [subAgentTools] from [buildSubAgentTools].
 func (c *agentConfig) toolsList() []interfaces.Tool {
 	var base []interfaces.Tool
 	if c.toolRegistry != nil {
@@ -488,6 +618,12 @@ func (c *agentConfig) toolsList() []interfaces.Tool {
 		merged := make([]interfaces.Tool, len(base)+len(c.mcpTools))
 		copy(merged, base)
 		copy(merged[len(base):], c.mcpTools)
+		base = merged
+	}
+	if len(c.a2aTools) > 0 {
+		merged := make([]interfaces.Tool, len(base)+len(c.a2aTools))
+		copy(merged, base)
+		copy(merged[len(base):], c.a2aTools)
 		base = merged
 	}
 	if len(c.subAgentTools) > 0 {
@@ -563,7 +699,7 @@ func dfsSubAgentDepth(a *Agent, path map[*Agent]struct{}, depth, maxDepth int) e
 	return nil
 }
 
-// validateToolNames ensures tool names are unique across WithTools/registry, MCP tools, and [subAgentTools].
+// validateToolNames ensures tool names are unique across WithTools/registry, MCP tools, A2A tools, and [subAgentTools].
 func (c *agentConfig) validateToolNames() error {
 	var base []interfaces.Tool
 	if c.toolRegistry != nil {
@@ -586,6 +722,16 @@ func (c *agentConfig) validateToolNames() error {
 		n := t.Name()
 		if _, ok := names[n]; ok {
 			return fmt.Errorf("duplicate tool name %q: MCP tool conflicts with an existing tool", n)
+		}
+		names[n] = struct{}{}
+	}
+	for _, t := range c.a2aTools {
+		if t == nil {
+			return fmt.Errorf("a2a tool must not be nil")
+		}
+		n := t.Name()
+		if _, ok := names[n]; ok {
+			return fmt.Errorf("duplicate tool name %q: A2A tool conflicts with an existing tool", n)
 		}
 		names[n] = struct{}{}
 	}
@@ -656,8 +802,13 @@ func (c *agentConfig) runtimeAgentExecution() runtime.AgentExecution {
 }
 
 // agentConfigFingerprint hashes identity, prompts, tools, sampling, limits, approval policy,
-// and MCP wiring digest (transports, timeouts, filters, extra MCP client names) for SubAgentRoute.AgentFingerprint;
-// same inputs as temporal.NewTemporalRuntime agent fingerprint.
+// MCP wiring digest (transports, timeouts, filters, extra MCP client names), and A2A wiring digest
+// for outbound clients only ([WithA2AConfig] / [WithA2AClients] via [a2aConfigFingerprint]).
+// Same inputs as temporal.NewTemporalRuntime agent fingerprint.
+//
+// Inbound [A2AServerConfig] from [WithA2AServer] / [WithA2ADefaultServer] (listen address,
+// [A2AServerConfig.BearerTokens], [A2AServerConfig.AgentCard] overrides for RunA2A) is omitted:
+// it does not change worker-side tool wiring or activity semantics and is typically deployment-specific.
 func (c *agentConfig) agentConfigFingerprint() string {
 	mat := temporal.BuildAgentFingerprintPayload(
 		c.runtimeAgentSpec(),
@@ -671,6 +822,7 @@ func (c *agentConfig) agentConfigFingerprint() string {
 			ApprovalTimeout: c.approvalTimeout,
 		},
 		mcpConfigFingerprint(c.mcpServers, mcpExtraClientNames(c.mcpClients)),
+		a2aConfigFingerprint(c.a2aServers, a2aExtraClientNames(c.a2aClients)),
 		string(c.agentMode),
 		c.agentToolExecutionMode,
 	)
@@ -814,5 +966,86 @@ func (c *agentConfig) buildMCPTools() error {
 		}
 	}
 	c.mcpTools = tools
+	return nil
+}
+
+// validateA2AClients checks for nil clients, empty names, and duplicate [interfaces.A2AClient.Name] values.
+func validateA2AClients(clients []interfaces.A2AClient) error {
+	seen := make(map[string]struct{}, len(clients))
+	for _, cl := range clients {
+		if cl == nil {
+			return fmt.Errorf("a2a client must not be nil")
+		}
+		n := strings.TrimSpace(cl.Name())
+		if n == "" {
+			return fmt.Errorf("a2a client name must not be empty")
+		}
+		if _, dup := seen[n]; dup {
+			return fmt.Errorf("duplicate a2a client name %q", n)
+		}
+		seen[n] = struct{}{}
+	}
+	return nil
+}
+
+// buildA2ATools merges [agentConfig.a2aServers] (default SDK client per key) with [agentConfig.a2aClients],
+// validates names, lists skills from each client (skill allow/block filtering runs inside
+// [a2aclient.Client.ListSkills] when [WithSkillFilter] is configured), and appends [A2ATool] to [agentConfig.a2aTools].
+func (c *agentConfig) buildA2ATools() error {
+	c.a2aTools = []interfaces.Tool{}
+	if len(c.a2aServers) == 0 && len(c.a2aClients) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(c.a2aServers))
+	for k := range c.a2aServers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	clients := make([]interfaces.A2AClient, 0, len(keys)+len(c.a2aClients))
+	for _, k := range keys {
+		cfg := c.a2aServers[k]
+		if strings.TrimSpace(cfg.URL) == "" {
+			return fmt.Errorf("a2a %q: URL is required", k)
+		}
+		a2aOpts := []a2aclient.Option{
+			a2aclient.WithLogger(c.logger),
+			a2aclient.WithTimeout(cfg.Timeout),
+			a2aclient.WithToken(cfg.Token),
+			a2aclient.WithHeaders(cfg.Headers),
+			a2aclient.WithSkillFilter(cfg.SkillFilter),
+		}
+		if cfg.SkipTLSVerify {
+			a2aOpts = append(a2aOpts, a2aclient.WithSkipTLSVerify(true))
+		}
+		cl, err := a2aclient.NewClient(k, cfg.URL, a2aOpts...)
+		if err != nil {
+			return fmt.Errorf("a2a %q: new client: %w", k, err)
+		}
+		clients = append(clients, cl)
+	}
+	clients = append(clients, c.a2aClients...)
+
+	if err := validateA2AClients(clients); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	var tools []interfaces.Tool
+	for _, cl := range clients {
+		sk := strings.TrimSpace(cl.Name())
+		skills, err := cl.ListSkills(ctx)
+		if err != nil {
+			return fmt.Errorf("a2a %q: list skills: %w", sk, err)
+		}
+		for _, sp := range skills {
+			tools = append(tools, NewA2ATool(sk, interfaces.ToolSpec{
+				Name:        sp.ID,
+				Description: sp.Description,
+			}, sp, cl))
+		}
+	}
+	c.a2aTools = tools
 	return nil
 }

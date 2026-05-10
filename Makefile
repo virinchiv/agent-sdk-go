@@ -3,6 +3,11 @@
 BIN_DIR := cmd/bin
 BINARY := $(BIN_DIR)/agentctl
 GOPATH_BIN := $(shell go env GOPATH)/bin
+# Go 1.25+: coverage merges via covdata; with GOTOOLCHAIN=auto the fetched toolchain can fail on
+# packages with no tests ("go: no such tool covdata"). Pin minimum toolchain to module go line.
+# https://github.com/golang/go/issues/75031
+GO_MOD_VERSION := $(shell awk '/^go / { print $$2; exit }' go.mod)
+GOTOOLCHAIN_COVERAGE := go$(GO_MOD_VERSION)+auto
 # Embedded in agentctl -version (git describe, or "dev" outside a repo)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -34,7 +39,7 @@ check: fmt test lint secrets-scan
 # Run tests with coverage
 test-coverage:
 	@echo "==> Running tests with coverage..."
-	go test ./... -count=1 -coverprofile=coverage.out
+	GOTOOLCHAIN=$(GOTOOLCHAIN_COVERAGE) go test ./... -count=1 -coverprofile=coverage.out
 	@echo "==> Total coverage:"
 	@go tool cover -func=coverage.out | grep '^total:'
 	go tool cover -html=coverage.out -o coverage.html
@@ -62,7 +67,8 @@ spell:
 	@echo "==> misspell"
 	go run github.com/client9/misspell/cmd/misspell@latest -error .
 
-# Run linters (gofmt -s, misspell, go vet + golangci-lint). golangci-lint must be built with Go >= go.mod (see CONTRIBUTING.md).
+# Run linters (gofmt -s, misspell, go vet + golangci-lint).
+# Use golangci-lint v2 when go.mod is 1.25+ — v1.x was built with Go 1.24 and errors on newer language targets.
 lint: fmt-check spell
 	@echo "==> Checking lints (go vet + golangci-lint)..."
 	go vet ./...

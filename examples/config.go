@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm/anthropic"
@@ -64,6 +65,43 @@ type Config struct {
 	BaseURL string
 
 	MCP MCPSettings
+
+	// A2A holds A2A_* environment values for agent_with_a2a_* examples.
+	A2A A2ASettings
+
+	// A2AServer holds A2A_SERVER_* values for agent_with_a2a_server (inbound HTTP server).
+	A2AServer A2AServerEnv
+}
+
+// A2AServerEnv configures the built-in A2A HTTP server (listen address and optional bearer tokens).
+// Used by [A2AInboundServerOption] and [A2AServerDisplayURL].
+type A2AServerEnv struct {
+	// Hostname is the bind address (empty with Port 0 and no tokens → use SDK defaults via [agent.WithA2ADefaultServer]).
+	Hostname string
+	// Port is the TCP listen port (0 means default 9999 when combined with [agent.WithA2AServer]).
+	Port int
+	// BearerTokens are accepted static Bearer tokens for JSON-RPC (comma-separated in env).
+	BearerTokens []string
+}
+
+// A2ASettings holds env-driven settings for wiring [agent.WithA2AConfig] or [pkg/a2a/client.NewClient].
+type A2ASettings struct {
+	// URL is the A2A agent base URL for card resolution (required for the A2A examples).
+	URL string
+	// Name is the stable connection id used as the server key in tool names (default: remote).
+	Name string
+	// TimeoutSeconds caps each A2A HTTP operation when > 0; zero uses the SDK default.
+	TimeoutSeconds int
+	// Token is an optional bearer token (Authorization: Bearer ...).
+	Token string
+	// HeadersRaw is optional JSON object of extra HTTP headers, e.g. {"X-Api-Key":"..."}.
+	HeadersRaw string
+	// SkipTLSVerify disables TLS verification for the A2A client (development only).
+	SkipTLSVerify bool
+	// AllowSkills is comma-separated skill IDs to expose (mutually exclusive with BlockSkills).
+	AllowSkills string
+	// BlockSkills is comma-separated skill IDs to hide (mutually exclusive with AllowSkills).
+	BlockSkills string
 }
 
 func getEnv(key, def string) string {
@@ -170,8 +208,105 @@ func LoadFromEnv() *Config {
 			BlockTools:        strings.TrimSpace(getEnv("MCP_BLOCK_TOOLS", "")),
 			TimeoutSeconds:    getEnvInt("MCP_TIMEOUT_SECONDS", 0),
 		},
+		A2A: A2ASettings{
+			URL:            strings.TrimSpace(getEnv("A2A_URL", "")),
+			Name:           strings.TrimSpace(getEnv("A2A_SERVER_NAME", "")),
+			TimeoutSeconds: getEnvInt("A2A_TIMEOUT_SECONDS", 0),
+			Token:          strings.TrimSpace(getEnv("A2A_TOKEN", "")),
+			HeadersRaw:     strings.TrimSpace(getEnv("A2A_HEADERS", "")),
+			SkipTLSVerify:  strings.TrimSpace(getEnv("A2A_SKIP_TLS_VERIFY", "")) == "true",
+			AllowSkills:    strings.TrimSpace(getEnv("A2A_ALLOW_SKILLS", "")),
+			BlockSkills:    strings.TrimSpace(getEnv("A2A_BLOCK_SKILLS", "")),
+		},
+		A2AServer: A2AServerEnv{
+			Hostname:     strings.TrimSpace(getEnv("A2A_SERVER_HOST", "")),
+			Port:         getEnvInt("A2A_SERVER_PORT", 0),
+			BearerTokens: splitCommaNonEmpty(strings.TrimSpace(getEnv("A2A_SERVER_BEARER_TOKENS", ""))),
+		},
 	}
 	return cfg
+}
+
+const (
+	defaultA2AServerDisplayHost = "localhost"
+	defaultA2AServerDisplayPort = 9999
+)
+
+// A2AInboundServerOption returns [agent.WithA2ADefaultServer] when no custom listen address or
+// tokens are set; otherwise [agent.WithA2AServer] with hostname/port defaults applied by the agent.
+func A2AInboundServerOption(cfg *Config) agent.Option {
+	if cfg == nil {
+		return agent.WithA2ADefaultServer()
+	}
+	h := strings.TrimSpace(cfg.A2AServer.Hostname)
+	p := cfg.A2AServer.Port
+	toks := cfg.A2AServer.BearerTokens
+	if h == "" && p == 0 && len(toks) == 0 {
+		return agent.WithA2ADefaultServer()
+	}
+	return agent.WithA2AServer(&agent.A2AServerConfig{
+		Hostname:     h,
+		Port:         p,
+		BearerTokens: toks,
+	})
+}
+
+// A2AServerDisplayURL returns the agent base URL (scheme + host + port) for logs and docs,
+// using the same defaults as the SDK when env leaves host/port unset.
+func A2AServerDisplayURL(cfg *Config) string {
+	host := defaultA2AServerDisplayHost
+	port := defaultA2AServerDisplayPort
+	if cfg != nil {
+		if x := strings.TrimSpace(cfg.A2AServer.Hostname); x != "" {
+			host = x
+		}
+		if cfg.A2AServer.Port != 0 {
+			port = cfg.A2AServer.Port
+		}
+	}
+	return fmt.Sprintf("http://%s:%d", host, port)
+}
+
+// A2ATimeout returns cfg.A2A.TimeoutSeconds as a duration, or zero if unset.
+func (cfg *Config) A2ATimeout() time.Duration {
+	if cfg == nil || cfg.A2A.TimeoutSeconds <= 0 {
+		return 0
+	}
+	return time.Duration(cfg.A2A.TimeoutSeconds) * time.Second
+}
+
+// A2ADefaultServerName returns A2A_SERVER_NAME or "remote".
+func A2ADefaultServerName(cfg *Config) string {
+	if cfg != nil && cfg.A2A.Name != "" {
+		return cfg.A2A.Name
+	}
+	return "remote"
+}
+
+// A2ABuildAgentConfig builds [agent.A2AConfig] from env. Requires non-empty A2A_URL.
+func A2ABuildAgentConfig(cfg *Config) (agent.A2AConfig, error) {
+	if cfg == nil || strings.TrimSpace(cfg.A2A.URL) == "" {
+		return agent.A2AConfig{}, fmt.Errorf("a2a: A2A_URL is required; see examples/env.sample")
+	}
+	hdrs, err := parseMCPJSONStringMap(cfg.A2A.HeadersRaw)
+	if err != nil {
+		return agent.A2AConfig{}, fmt.Errorf("a2a: A2A_HEADERS must be a JSON object with string values: %w", err)
+	}
+	sf := types.A2ASkillFilter{
+		AllowSkills: splitCommaNonEmpty(cfg.A2A.AllowSkills),
+		BlockSkills: splitCommaNonEmpty(cfg.A2A.BlockSkills),
+	}
+	if err := sf.Validate(); err != nil {
+		return agent.A2AConfig{}, err
+	}
+	return agent.A2AConfig{
+		URL:           strings.TrimSpace(cfg.A2A.URL),
+		Timeout:       cfg.A2ATimeout(),
+		Token:         strings.TrimSpace(cfg.A2A.Token),
+		Headers:       hdrs,
+		SkillFilter:   sf,
+		SkipTLSVerify: cfg.A2A.SkipTLSVerify,
+	}, nil
 }
 
 // MCPUsesOAuthFromEnv reports whether OAuth2 client-credentials env vars are all non-empty.
