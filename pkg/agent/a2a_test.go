@@ -33,7 +33,7 @@ func TestA2AToolName(t *testing.T) {
 }
 
 func TestA2AToolName_ViaStruct(t *testing.T) {
-	tool := NewA2ATool("  srv  ", interfaces.ToolSpec{Name: "  tid  ", Description: "d"}, nil)
+	tool := NewA2ATool("  srv  ", interfaces.ToolSpec{Name: "  tid  ", Description: "d"}, interfaces.A2ASkillSpec{}, nil)
 	want := "a2a_srv_tid"
 	if tool.Name() != want {
 		t.Fatalf("A2ATool.Name = %q, want %q", tool.Name(), want)
@@ -71,7 +71,7 @@ func TestA2ATool_NilReceiver(t *testing.T) {
 }
 
 func TestA2ATool_Parameters_NilSpec(t *testing.T) {
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t", Parameters: nil}, nil)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t", Parameters: nil}, interfaces.A2ASkillSpec{}, nil)
 	p := tool.Parameters()
 	if p["type"] != "object" {
 		t.Fatalf("expected default schema, got %v", p)
@@ -80,7 +80,7 @@ func TestA2ATool_Parameters_NilSpec(t *testing.T) {
 
 func TestA2ATool_Parameters_CustomSpec(t *testing.T) {
 	schema := interfaces.JSONSchema{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t", Parameters: schema}, nil)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t", Parameters: schema}, interfaces.A2ASkillSpec{}, nil)
 	p := tool.Parameters()
 	if _, ok := p["properties"]; !ok {
 		t.Fatalf("expected custom schema to be returned, got %v", p)
@@ -88,7 +88,7 @@ func TestA2ATool_Parameters_CustomSpec(t *testing.T) {
 }
 
 func TestA2ATool_Description(t *testing.T) {
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t", Description: "does stuff"}, nil)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t", Description: "does stuff"}, interfaces.A2ASkillSpec{}, nil)
 	if tool.Description() != "does stuff" {
 		t.Fatalf("got %q", tool.Description())
 	}
@@ -187,7 +187,7 @@ func TestA2ATool_Execute_MessageResult_SinglePart(t *testing.T) {
 			Parts: []interfaces.A2APart{{Kind: "text", Text: "hello world"}},
 		},
 	}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, stub)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, stub)
 	out, err := tool.Execute(context.Background(), map[string]any{"q": "hi"})
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestA2ATool_Execute_MessageResult_MultiPart(t *testing.T) {
 			},
 		},
 	}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, stub)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, stub)
 	out, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +222,7 @@ func TestA2ATool_Execute_MessageResult_EmptyParts(t *testing.T) {
 	stub := a2aMessageStub{
 		reply: interfaces.A2AMessage{Role: "agent", Parts: []interfaces.A2APart{}},
 	}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, stub)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, stub)
 	out, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +239,7 @@ func TestA2ATool_Execute_TaskResult(t *testing.T) {
 			Status: interfaces.A2ATaskStatusCompleted,
 		},
 	}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, stub)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, stub)
 	out, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestA2ATool_Execute_TaskResult_IsValidJSON(t *testing.T) {
 			Status: interfaces.A2ATaskStatusWorking,
 		},
 	}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, stub)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, stub)
 	out, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +273,7 @@ func TestA2ATool_Execute_TaskResult_IsValidJSON(t *testing.T) {
 }
 
 func TestA2ATool_Execute_EmptyResult(t *testing.T) {
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, a2aEmptyStub{})
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, a2aEmptyStub{})
 	out, err := tool.Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +285,7 @@ func TestA2ATool_Execute_EmptyResult(t *testing.T) {
 
 func TestA2ATool_Execute_ClientError(t *testing.T) {
 	stub := a2aMessageStub{err: errors.New("network error")}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, stub)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, stub)
 	_, err := tool.Execute(context.Background(), map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "network error") {
 		t.Fatalf("got %v", err)
@@ -296,7 +296,7 @@ func TestA2ATool_Execute_SendsArgsAsJSONText(t *testing.T) {
 	var capturedText string
 	// Use a closure-capturing stub via a custom interface impl.
 	capturing := &capturingA2AClient{captureText: &capturedText}
-	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, capturing)
+	tool := NewA2ATool("s", interfaces.ToolSpec{Name: "t"}, interfaces.A2ASkillSpec{}, capturing)
 	args := map[string]any{"key": "value", "n": 42}
 	_, _ = tool.Execute(context.Background(), args)
 
@@ -527,6 +527,14 @@ func TestA2AConfigFingerprint_HeaderValueIgnored(t *testing.T) {
 	b := A2AServers{"agent": A2AConfig{URL: "https://x.example", Headers: map[string]string{"X-Key": "v2"}}}
 	if a2aConfigFingerprint(a, nil) != a2aConfigFingerprint(b, nil) {
 		t.Fatal("header values should not affect fingerprint")
+	}
+}
+
+func TestA2AConfigFingerprint_SkipTLSVerify(t *testing.T) {
+	on := A2AServers{"agent": A2AConfig{URL: "https://x.example", SkipTLSVerify: true}}
+	off := A2AServers{"agent": A2AConfig{URL: "https://x.example", SkipTLSVerify: false}}
+	if a2aConfigFingerprint(on, nil) == a2aConfigFingerprint(off, nil) {
+		t.Fatal("expected different fingerprints when SkipTLSVerify differs")
 	}
 }
 

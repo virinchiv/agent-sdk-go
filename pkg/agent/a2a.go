@@ -36,6 +36,11 @@ type A2ATool struct {
 	ServerName string
 	// Spec carries the skill ID (Spec.Name), human-readable description, and optional parameter schema.
 	Spec interfaces.ToolSpec
+	// SkillSpec is the original A2A skill spec from the remote agent card.
+	// It preserves protocol-level fields (Tags, InputModes, OutputModes, Examples) that are not
+	// captured by [interfaces.ToolSpec], and is used when re-advertising delegated skills in the
+	// server's own agent card via [Agent.deriveSDKSkills].
+	SkillSpec interfaces.A2ASkillSpec
 	// Client is the A2A client used to invoke the remote agent.
 	Client interfaces.A2AClient
 }
@@ -63,9 +68,11 @@ func a2aToolDisplayName(serverName, skillID string) string {
 }
 
 // NewA2ATool builds an A2ATool from a server key, skill spec, and client.
+// The full [interfaces.A2ASkillSpec] is stored on SkillSpec to preserve protocol-level
+// fields (Tags, InputModes, OutputModes, Examples) for server-side card building.
 // When spec.Parameters is nil, [A2ATool.Parameters] returns a default {"type":"object"} schema.
-func NewA2ATool(serverName string, spec interfaces.ToolSpec, client interfaces.A2AClient) *A2ATool {
-	return &A2ATool{ServerName: serverName, Spec: spec, Client: client}
+func NewA2ATool(serverName string, spec interfaces.ToolSpec, skillSpec interfaces.A2ASkillSpec, client interfaces.A2AClient) *A2ATool {
+	return &A2ATool{ServerName: serverName, Spec: spec, SkillSpec: skillSpec, Client: client}
 }
 
 // Name implements [interfaces.Tool].

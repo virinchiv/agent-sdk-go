@@ -532,6 +532,145 @@ func TestBuildAgentConfig_WithA2AClients(t *testing.T) {
 	}
 }
 
+func TestBuildAgentConfig_WithA2ADefaultServer(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithA2ADefaultServer(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.a2aServerConfig == nil {
+		t.Fatal("expected a2aServerConfig")
+	}
+	if cfg.a2aServerConfig.Hostname != defaultA2AHostname || cfg.a2aServerConfig.Port != defaultA2APort {
+		t.Fatalf("defaults: got %+v, want hostname=%q port=%d", cfg.a2aServerConfig, defaultA2AHostname, defaultA2APort)
+	}
+	if len(cfg.a2aServerConfig.BearerTokens) != 0 {
+		t.Fatalf("BearerTokens should be empty by default, got %v", cfg.a2aServerConfig.BearerTokens)
+	}
+}
+
+func TestBuildAgentConfig_WithA2AServer(t *testing.T) {
+	t.Run("custom_host_port_and_bearer_tokens", func(t *testing.T) {
+		cfg, err := buildAgentConfig([]Option{
+			WithName("test"),
+			WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+			WithLLMClient(stubLLM{}),
+			WithA2AServer(&A2AServerConfig{
+				Hostname:     "0.0.0.0",
+				Port:         8080,
+				BearerTokens: []string{"alpha", "beta"},
+			}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := cfg.a2aServerConfig
+		if s == nil || s.Hostname != "0.0.0.0" || s.Port != 8080 || len(s.BearerTokens) != 2 {
+			t.Fatalf("got %+v", s)
+		}
+		if s.BearerTokens[0] != "alpha" || s.BearerTokens[1] != "beta" {
+			t.Fatalf("BearerTokens = %v", s.BearerTokens)
+		}
+	})
+
+	t.Run("nil_config_same_as_defaults", func(t *testing.T) {
+		cfg, err := buildAgentConfig([]Option{
+			WithName("test"),
+			WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+			WithLLMClient(stubLLM{}),
+			WithA2AServer(nil),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.a2aServerConfig == nil {
+			t.Fatal("expected a2aServerConfig")
+		}
+		if cfg.a2aServerConfig.Hostname != defaultA2AHostname || cfg.a2aServerConfig.Port != defaultA2APort {
+			t.Fatalf("nil config should default hostname/port: got %+v", cfg.a2aServerConfig)
+		}
+	})
+
+	t.Run("empty_hostname_gets_default", func(t *testing.T) {
+		cfg, err := buildAgentConfig([]Option{
+			WithName("test"),
+			WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+			WithLLMClient(stubLLM{}),
+			WithA2AServer(&A2AServerConfig{Hostname: "", Port: 4000}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.a2aServerConfig.Hostname != defaultA2AHostname || cfg.a2aServerConfig.Port != 4000 {
+			t.Fatalf("got %+v", cfg.a2aServerConfig)
+		}
+	})
+
+	t.Run("zero_port_gets_default", func(t *testing.T) {
+		cfg, err := buildAgentConfig([]Option{
+			WithName("test"),
+			WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+			WithLLMClient(stubLLM{}),
+			WithA2AServer(&A2AServerConfig{Hostname: "127.0.0.1", Port: 0}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.a2aServerConfig.Hostname != "127.0.0.1" || cfg.a2aServerConfig.Port != defaultA2APort {
+			t.Fatalf("got %+v", cfg.a2aServerConfig)
+		}
+	})
+
+	t.Run("later_WithA2AServer_overrides_WithA2ADefaultServer", func(t *testing.T) {
+		cfg, err := buildAgentConfig([]Option{
+			WithName("test"),
+			WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+			WithLLMClient(stubLLM{}),
+			WithA2ADefaultServer(),
+			WithA2AServer(&A2AServerConfig{Hostname: "custom.example", Port: 1111}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.a2aServerConfig.Hostname != "custom.example" || cfg.a2aServerConfig.Port != 1111 {
+			t.Fatalf("got %+v", cfg.a2aServerConfig)
+		}
+	})
+}
+
+// TestAgentConfigFingerprint_InboundA2AServerIgnored documents that Temporal agent fingerprint
+// hashes outbound A2A client wiring only; inbound RunA2A listen config (including BearerTokens)
+// must not affect caller/worker digest comparison.
+func TestAgentConfigFingerprint_InboundA2AServerIgnored(t *testing.T) {
+	base := []Option{
+		WithName("fp-test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+	}
+	cfgNoInbound, err := buildAgentConfig(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgWithInbound, err := buildAgentConfig(append(base,
+		WithA2AServer(&A2AServerConfig{
+			Hostname:     "0.0.0.0",
+			Port:         7777,
+			BearerTokens: []string{"secret-one", "secret-two"},
+		}),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgNoInbound.agentConfigFingerprint() != cfgWithInbound.agentConfigFingerprint() {
+		t.Fatalf("inbound A2AServerConfig should not change agent fingerprint: %q vs %q",
+			cfgNoInbound.agentConfigFingerprint(), cfgWithInbound.agentConfigFingerprint())
+	}
+}
+
 func TestBuildAgentConfig_WithA2AConfig_URLRequired(t *testing.T) {
 	_, err := buildAgentConfig([]Option{
 		WithName("test"),
@@ -562,7 +701,7 @@ func TestBuildAgentConfig_A2A_duplicateClientName(t *testing.T) {
 
 func TestAgentConfig_toolsList_includesA2ATools(t *testing.T) {
 	echo := mockTool{name: "echo"}
-	a2aTool := NewA2ATool("agent1", interfaces.ToolSpec{Name: "search", Description: "d"}, nil)
+	a2aTool := NewA2ATool("agent1", interfaces.ToolSpec{Name: "search", Description: "d"}, interfaces.A2ASkillSpec{}, nil)
 	c := &agentConfig{
 		tools:    []interfaces.Tool{echo},
 		a2aTools: []interfaces.Tool{a2aTool},
@@ -580,7 +719,7 @@ func TestAgentConfig_toolsList_includesA2ATools(t *testing.T) {
 }
 
 func TestAgentConfig_validateToolNames_A2AConflict(t *testing.T) {
-	a2aTool := NewA2ATool("srv", interfaces.ToolSpec{Name: "s", Description: "d"}, nil)
+	a2aTool := NewA2ATool("srv", interfaces.ToolSpec{Name: "s", Description: "d"}, interfaces.A2ASkillSpec{}, nil)
 	c := &agentConfig{
 		tools:    []interfaces.Tool{mockTool{name: a2aTool.Name()}},
 		a2aTools: []interfaces.Tool{a2aTool},

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"iter"
 	"log/slog"
 	"strings"
 	"sync"
@@ -220,7 +219,7 @@ func (c *Client) SendMessage(ctx context.Context, req interfaces.A2ASendMessageR
 //
 // When the server does not support streaming, the SDK falls back to a single non-streaming
 // SendMessage call and wraps the result as a single event.
-func (c *Client) SendStreamingMessage(ctx context.Context, req interfaces.A2ASendMessageRequest) (iter.Seq2[interfaces.A2AStreamEvent, error], error) {
+func (c *Client) SendStreamingMessage(ctx context.Context, req interfaces.A2ASendMessageRequest) (interfaces.A2AStreamSeq, error) {
 	if c == nil {
 		return nil, errors.New("a2a client: nil")
 	}
@@ -244,7 +243,7 @@ func (c *Client) SendStreamingMessage(ctx context.Context, req interfaces.A2ASen
 			}
 		}
 	}
-	return seq, nil
+	return interfaces.A2AStreamSeq(seq), nil
 }
 
 // GetTask implements [interfaces.A2ATaskClient]: retrieves the current state of an async task.

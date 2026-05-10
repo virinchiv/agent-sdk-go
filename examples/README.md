@@ -29,10 +29,11 @@ The examples use `TEMPORAL_HOST`, `TEMPORAL_PORT`, and `TEMPORAL_NAMESPACE` from
 | `agent_with_reasoning` | Generic `interfaces.LLMReasoning` via `WithLLMSampling` — `Stream` to observe `thinking_delta` (e.g. Anthropic) |
 | `agent_with_worker` | Agent and worker in separate processes — `DisableLocalWorker` + `NewAgentWorker`; agent uses **`Stream`** |
 | `durable_agent` | Same split-process layout — agent uses **`Stream`** (`WithStream`); durability scenarios: [`durable_agent/README.md`](durable_agent/README.md) |
-| `agent_with_mcp_config` | MCP via `WithMCPConfig` — transport from env: `mcp.MCPStdio` (command, JSON args/env) or `mcp.MCPStreamableHTTP` (URL, optional bearer/OAuth); see `examples/env.sample` |
-| `agent_with_mcp_client` | Same transports via `mcpclient.NewClient` + `WithMCPClients`; same env vars as `agent_with_mcp_config` |
-| `agent_with_a2a_config` | A2A via `WithA2AConfig` — SDK builds the default A2A client from **`A2A_URL`** (and optional auth/filter); see **`env.sample`** |
-| `agent_with_a2a_client` | Same env as `agent_with_a2a_config`, but wires **`pkg/a2a/client.NewClient`** + `WithA2AClients` |
+| `agent_with_mcp_config` | MCP via `WithMCPConfig` — transport from env; see **`env.sample`** — **[README](agent_with_mcp_config/README.md)** (testing & sample servers) |
+| `agent_with_mcp_client` | Same as above via `mcpclient.NewClient` + `WithMCPClients` — **[README](agent_with_mcp_client/README.md)** |
+| `agent_with_a2a_config` | Outbound A2A via `WithA2AConfig` — **`A2A_URL`** etc.; **[README](agent_with_a2a_config/README.md)** |
+| `agent_with_a2a_client` | Same env, explicit **`pkg/a2a/client`** — **[README](agent_with_a2a_client/README.md)** |
+| `agent_with_a2a_server` | **Inbound** A2A server — **`A2A_SERVER_*`**; **[README](agent_with_a2a_server/README.md)** (curl, **`a2a` CLI**, client example) |
 
 ## Setup
 
@@ -137,125 +138,41 @@ go run ./durable_agent/worker       # terminal 1
 go run ./durable_agent/agent "Hello from remote agent!"   # terminal 2
 ```
 
-### MCP (`WithMCPConfig` vs `WithMCPClients`)
+### MCP (`agent_with_mcp_config`, `agent_with_mcp_client`)
 
-Two examples use the **same env-driven transport** but wire the agent differently:
-
-- **`agent_with_mcp_config`** — `agent.WithMCPConfig(agent.MCPServers{<serverName>: mcpCfg})`. The SDK builds the default MCP client per server.
-- **`agent_with_mcp_client`** — `mcpclient.NewClient(<serverName>, transport, opts...)` then `agent.WithMCPClients(client)`.
-
-**Transport** must be set explicitly with **`MCP_TRANSPORT`**: `stdio` or `streamable_http` (see aliases in **`env.sample`**). See **`env.sample`** for every variable.
-
-- **Remote — `streamable_http`:** set **`MCP_STREAMABLE_HTTP_URL`**. Auth optional: **`MCP_BEARER_TOKEN`**, or OAuth trio **`MCP_CLIENT_ID`** + **`MCP_CLIENT_SECRET`** + **`MCP_TOKEN_URL`** (OAuth wins over bearer when all three are set). **`MCP_SKIP_TLS_VERIFY=true`** for dev TLS only.
-- **Local — `stdio`:** set **`MCP_STDIO_COMMAND`** and optional **`MCP_STDIO_ARGS`** (JSON string array) and **`MCP_STDIO_ENV`** (JSON string→string object).
-
-Shared optional knobs: **`MCP_SERVER_NAME`**, **`MCP_TIMEOUT_SECONDS`**, **`MCP_RETRY_ATTEMPTS`**, **`MCP_ALLOW_TOOLS`** / **`MCP_BLOCK_TOOLS`** (comma-separated; only one list type).
+Same **`MCP_*`** env (see **`env.sample`**); differs only in **`WithMCPConfig`** vs **`mcpclient.NewClient`** + **`WithMCPClients`**.
 
 ```bash
 go run ./agent_with_mcp_config
 go run ./agent_with_mcp_config "List tools you can call."
-
 go run ./agent_with_mcp_client
 go run ./agent_with_mcp_client "List tools you can call."
 ```
 
-**Testing against real MCP servers:** This repo does **not** start an MCP server for you—you configure **`examples/.env`** so the examples connect to **your** server(s). Pick **stdio** (local subprocess) or **streamable_http** (remote URL), set **`MCP_TRANSPORT`** accordingly, then fill in **`env.sample`** under **MCP**.
+**Configure transports, test against real MCP servers (streamable HTTP walkthrough, stdio, links):** **[agent_with_mcp_config/README.md](agent_with_mcp_config/README.md)**.
 
-**Worked example — TypeScript streamable HTTP (`mcp-streamable-http`):** This flow works with **`agent_with_mcp_*`** when **`examples/.env`** uses **`streamable_http`** and points at the server’s MCP endpoint (Temporal + LLM as usual):
+### A2A client (`agent_with_a2a_config`, `agent_with_a2a_client`)
 
-```bash
-git clone https://github.com/invariantlabs-ai/mcp-streamable-http
-cd mcp-streamable-http/typescript-example/server
-npm install && npm run build
-node build/index.js
-```
-
-The upstream server listens on **port 8123** by default and serves MCP at **`/mcp`** (override with **`node build/index.js --port=XXXX`**). Set:
-
-- **`MCP_TRANSPORT=streamable_http`**
-- **`MCP_STREAMABLE_HTTP_URL=http://localhost:8123/mcp`**
-
-Then run e.g. **`go run ./agent_with_mcp_config`** or **`go run ./agent_with_mcp_client`**.
-
-Quick check (while the server is running):
-
-```bash
-curl -sS -o /dev/null -w "%{http_code}\n" "http://localhost:8123/mcp"
-```
-
-**Modes:**
-
-| Mode | What you need |
-|------|----------------|
-| **`stdio`** | A runnable MCP server binary or script (often **Node**, **Python**, or **Go**) launched as a subprocess. Set **`MCP_STDIO_COMMAND`** and, if needed, **`MCP_STDIO_ARGS`** (JSON array) and **`MCP_STDIO_ENV`**. The SDK spawns the process and speaks MCP over stdin/stdout. |
-| **`streamable_http`** | An MCP server already listening with the **streamable HTTP** transport. Set **`MCP_STREAMABLE_HTTP_URL`** to the MCP endpoint URL that server documents (often includes a path such as **`/mcp`**). Optional **`MCP_BEARER_TOKEN`** or OAuth (**`MCP_CLIENT_ID`** / **`MCP_CLIENT_SECRET`** / **`MCP_TOKEN_URL`**). Use **`MCP_SKIP_TLS_VERIFY=true`** only for local/dev HTTPS. |
-
-Where to find servers and docs:
-
-| Source | Notes |
-|--------|--------|
-| **[invariantlabs-ai/mcp-streamable-http](https://github.com/invariantlabs-ai/mcp-streamable-http)** | Reference **streamable HTTP** server (TypeScript example above). Default **8123**, path **`/mcp`**; set **`MCP_STREAMABLE_HTTP_URL`** to the full endpoint URL. |
-| **[modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers)** | Reference implementations (filesystem, git, fetch, etc.). Often run with **`npx`** / **`uvx`** / **`docker`** per each server’s README; map that into **`MCP_STDIO_COMMAND`** + **`MCP_STDIO_ARGS`**. |
-| **[Model Context Protocol](https://modelcontextprotocol.io)** | Protocol docs; third-party hosts and catalogs list streamable-HTTP endpoints you can point **`MCP_STREAMABLE_HTTP_URL`** at (verify TLS and auth with your provider). |
-| **Your own MCP server** | Any compliant MCP implementation—the examples only need a working **`stdio`** or **`streamable_http`** transport as wired in **`env.sample`**. |
-
-Quick checks before running **`agent_with_mcp_*`**:
-
-- **`streamable_http`:** From the machine running the example, confirm the URL is reachable (TLS, VPN, firewall). Example: `curl -sS -o /dev/null -w "%{http_code}\n" "$MCP_STREAMABLE_HTTP_URL"` — expect a plausible HTTP response from **your** server (exact status depends on the implementation).
-- **`stdio`:** Run the same command line you put in **`MCP_STDIO_COMMAND`** / **`MCP_STDIO_ARGS`** in a terminal once to ensure the binary starts and does not exit immediately.
-
-You still need **Temporal** and **LLM** credentials in **`examples/.env`** like other examples.
-
-### A2A (`WithA2AConfig` vs `WithA2AClients`)
-
-Two examples use the **same env-driven settings** but register A2A tools differently:
-
-- **`agent_with_a2a_config`** — `agent.WithA2AConfig(agent.A2AServers{<serverName>: cfg})`. The SDK constructs the default **[pkg/a2a/client](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/a2a/client)** client per server entry.
-- **`agent_with_a2a_client`** — `a2aclient.NewClient(<serverName>, url, opts...)` then `agent.WithA2AClients(client)` for the same URL and options.
-
-**Required:** **`A2A_URL`** — base URL of the remote A2A agent (well-known agent card + protocol endpoint per the card). See **`env.sample`** for optional **`A2A_SERVER_NAME`**, **`A2A_TOKEN`**, **`A2A_HEADERS`** (JSON object), **`A2A_TIMEOUT_SECONDS`**, **`A2A_SKIP_TLS_VERIFY`** (dev only), and **`A2A_ALLOW_SKILLS`** / **`A2A_BLOCK_SKILLS`** (comma-separated; mutually exclusive lists).
+Outbound A2A tools — set **`A2A_URL`** (and optional **`A2A_*`** in **`env.sample`**).
 
 ```bash
 go run ./agent_with_a2a_config
 go run ./agent_with_a2a_config "What tools do you have available?"
-
 go run ./agent_with_a2a_client
 go run ./agent_with_a2a_client "What tools do you have available?"
 ```
 
-**Testing against a real A2A server:** There is no fixed “demo URL” shipped with this repo—you run an A2A-compatible HTTP server locally (or use your own deployment), point **`A2A_URL`** at its **base URL** (scheme + host + port, no path). The SDK resolves the agent card from the well-known path (same as [a2aproject/a2a-go](https://github.com/a2aproject/a2a-go) `a2asrv.WellKnownAgentCardPath`) and uses the JSON-RPC endpoint advertised on the card.
+**Run a sample remote agent (e.g. `a2a-samples` helloworld), curl checks:** **[agent_with_a2a_config/README.md](agent_with_a2a_config/README.md)**.
 
-**Worked example — Python helloworld (`a2a-samples`):** This flow is known to work with **`agent_with_a2a_*`** when **`examples/.env`** sets **`A2A_URL=http://localhost:9999`** (and Temporal + LLM as usual):
+### A2A server (`agent_with_a2a_server`)
 
-```bash
-git clone https://github.com/a2aproject/a2a-samples
-cd a2a-samples/samples/python/agents/helloworld
-uv run .   # starts the server on port 9999
-```
-
-In another terminal, confirm the agent card is served:
+Inbound JSON-RPC server — **`A2A_SERVER_*`**, optional bearer tokens.
 
 ```bash
-curl -sS "http://localhost:9999/.well-known/agent-card.json" | head
+go run ./agent_with_a2a_server
 ```
 
-Then in **`examples/`**, ensure **`A2A_URL=http://localhost:9999`** (or **`http://127.0.0.1:9999`**) and run e.g. **`go run ./agent_with_a2a_config`** or **`go run ./agent_with_a2a_client`**.
-
-Other ways to get a sample server:
-
-| Source | Notes |
-|--------|--------|
-| **[a2aproject/a2a-samples](https://github.com/a2aproject/a2a-samples)** | Official protocol samples (several languages). The Python **`agents/helloworld`** sample above listens on **9999** by default; other samples may use different ports—set **`A2A_URL`** to match. |
-| **[a2aproject/a2a-go](https://github.com/a2aproject/a2a-go)** | The same **`a2asrv`** stack used in **`pkg/a2a/client`** tests: static card handler + JSON-RPC handler. Use their README / examples to run an HTTP server; our examples treat **`A2A_URL`** like **`testA2AServer`** in **`client_test.go`** (base URL where both card and RPC are mounted). |
-| **Your own agent** | Any deployment that exposes a valid agent card and the protocol endpoint the card references. |
-
-Quick sanity check for any local server (replace the host/port if yours differs):
-
-```bash
-curl -sS "http://localhost:9999/.well-known/agent-card.json" | head
-```
-
-You still need **Temporal** and **LLM** credentials in **`examples/.env`** as for other examples.
+**curl, `a2a` CLI, testing with `agent_with_a2a_config`:** **[agent_with_a2a_server/README.md](agent_with_a2a_server/README.md)**.
 
 ## Logging
 
@@ -304,3 +221,6 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 | `A2A_HEADERS` | Optional JSON object of extra HTTP headers |
 | `A2A_SKIP_TLS_VERIFY` | Optional; `true` skips TLS verification for A2A HTTP (dev only) |
 | `A2A_ALLOW_SKILLS`, `A2A_BLOCK_SKILLS` | Optional comma-separated allow/block skill ID lists (mutually exclusive) |
+| `A2A_SERVER_HOST` | Optional bind hostname for **`agent_with_a2a_server`** (empty → default **localhost**) |
+| `A2A_SERVER_PORT` | Optional TCP port for **`agent_with_a2a_server`** (0 → default **9999**) |
+| `A2A_SERVER_BEARER_TOKENS` | Optional comma-separated bearer secrets for inbound JSON-RPC on **`agent_with_a2a_server`** |
