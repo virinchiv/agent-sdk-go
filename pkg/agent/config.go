@@ -95,6 +95,32 @@ type A2AConfig struct {
 	SkipTLSVerify bool
 }
 
+// A2AServerConfig holds the listen address and optional authentication for the built-in A2A HTTP server.
+//
+// Use [WithA2ADefaultServer] to accept the defaults (localhost:9999) or
+// [WithA2AServer] to supply your own values. Zero-value fields are replaced
+// with their defaults when the option is applied.
+type A2AServerConfig struct {
+	// Hostname is the network interface the A2A HTTP server binds to.
+	// Defaults to "localhost". Set to "0.0.0.0" to accept external connections.
+	Hostname string
+	// Port is the TCP port the A2A HTTP server listens on. Defaults to 9999.
+	Port int
+	// BearerTokens is an optional list of accepted static Bearer tokens.
+	// When non-empty every inbound JSON-RPC request must carry an
+	// "Authorization: Bearer <token>" header whose value matches at least one
+	// entry; requests without a valid token are rejected with ErrUnauthenticated.
+	// The well-known agent-card endpoint is always public (no auth required).
+	// Tokens are compared with constant-time equality to prevent timing attacks.
+	// Leave empty to run with no authentication (development / trusted networks only).
+	BearerTokens []string
+	// AgentCard, when non-nil, supplies optional overrides using [interfaces.A2AAgentCard]
+	// (the same shape as [interfaces.A2AClient.ResolveCard]). Non-empty fields replace defaults;
+	// omitted fields use agent name/description/version, tool-derived skills, and listen URL.
+	// See [Agent.buildSDKAgentCard].
+	AgentCard *interfaces.A2AAgentCard
+}
+
 // agentConfig holds shared configuration for Agent and AgentWorker.
 //
 // Option applicability:
@@ -156,6 +182,9 @@ type agentConfig struct {
 	a2aServers A2AServers
 	a2aClients []interfaces.A2AClient
 	a2aTools   []interfaces.Tool
+
+	//A2A Server: optional server config; merged at build into a2aServer (see RunA2A).
+	a2aServerConfig *A2AServerConfig
 
 	agentMode              AgentMode
 	agentToolExecutionMode AgentToolExecutionMode
@@ -403,6 +432,39 @@ func WithA2AClients(clients ...interfaces.A2AClient) Option {
 	}
 }
 
+// WithA2ADefaultServer enables the built-in A2A HTTP server with default
+// settings (hostname "localhost", port 9999). Use this when you want to
+// expose the agent as an A2A server without customising the listen address.
+func WithA2ADefaultServer() Option {
+	return func(c *agentConfig) {
+		c.a2aServerConfig = &A2AServerConfig{
+			Hostname: defaultA2AHostname,
+			Port:     defaultA2APort,
+		}
+	}
+}
+
+// WithA2AServer enables the built-in A2A HTTP server with the provided
+// [A2AServerConfig]. A nil config or zero-value fields fall back to the
+// same defaults as [WithA2ADefaultServer] (localhost:9999).
+func WithA2AServer(config *A2AServerConfig) Option {
+	return func(c *agentConfig) {
+		if config == nil {
+			config = &A2AServerConfig{
+				Hostname: defaultA2AHostname,
+				Port:     defaultA2APort,
+			}
+		}
+		c.a2aServerConfig = config
+		if c.a2aServerConfig.Hostname == "" {
+			c.a2aServerConfig.Hostname = defaultA2AHostname
+		}
+		if c.a2aServerConfig.Port == 0 {
+			c.a2aServerConfig.Port = defaultA2APort
+		}
+	}
+}
+
 // buildAgentConfig applies options, validates, and sets defaults (logger, timeouts, iterations).
 // WithTemporalConfig lets the runtime create a Temporal client from host settings; WithTemporalClient supplies a caller-owned client.
 // remoteWorker is false for Agent; NewAgentWorker sets it to true for worker-side activities.
@@ -415,6 +477,20 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	c.Name = strings.TrimSpace(c.Name)
 	if c.Name == "" {
 		return nil, errors.New("name is required")
+	}
+
+	if c.logLevel == "" {
+		c.logLevel = "error"
+	}
+	if c.logger == nil {
+		c.logger = logger.DefaultLogger(c.logLevel)
+	}
+
+	if c.Description == "" {
+		// auto-generate a minimal one rather than failing
+		c.Description = fmt.Sprintf("%s is an AI agent.", c.Name)
+		c.logger.Warn(context.Background(), "no description provided — using default for agent card; "+
+			"set WithDescription() for better agent discoverability")
 	}
 
 	if c.toolApprovalPolicy == nil {
@@ -462,12 +538,6 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	}
 	if c.maxSubAgentDepth <= 0 {
 		c.maxSubAgentDepth = defaultMaxSubAgentDepth
-	}
-	if c.logLevel == "" {
-		c.logLevel = "error"
-	}
-	if c.logger == nil {
-		c.logger = logger.DefaultLogger(c.logLevel)
 	}
 	if err := c.buildMCPTools(); err != nil {
 		return nil, err
@@ -733,7 +803,12 @@ func (c *agentConfig) runtimeAgentExecution() runtime.AgentExecution {
 
 // agentConfigFingerprint hashes identity, prompts, tools, sampling, limits, approval policy,
 // MCP wiring digest (transports, timeouts, filters, extra MCP client names), and A2A wiring digest
-// for SubAgentRoute.AgentFingerprint; same inputs as temporal.NewTemporalRuntime agent fingerprint.
+// for outbound clients only ([WithA2AConfig] / [WithA2AClients] via [a2aConfigFingerprint]).
+// Same inputs as temporal.NewTemporalRuntime agent fingerprint.
+//
+// Inbound [A2AServerConfig] from [WithA2AServer] / [WithA2ADefaultServer] (listen address,
+// [A2AServerConfig.BearerTokens], [A2AServerConfig.AgentCard] overrides for RunA2A) is omitted:
+// it does not change worker-side tool wiring or activity semantics and is typically deployment-specific.
 func (c *agentConfig) agentConfigFingerprint() string {
 	mat := temporal.BuildAgentFingerprintPayload(
 		c.runtimeAgentSpec(),
@@ -968,7 +1043,7 @@ func (c *agentConfig) buildA2ATools() error {
 			tools = append(tools, NewA2ATool(sk, interfaces.ToolSpec{
 				Name:        sp.ID,
 				Description: sp.Description,
-			}, cl))
+			}, sp, cl))
 		}
 	}
 	c.a2aTools = tools

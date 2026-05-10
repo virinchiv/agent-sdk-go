@@ -70,6 +70,19 @@ func TestComputeAgentFingerprint_mcpFingerprintChangesDigest(t *testing.T) {
 	}
 }
 
+func TestComputeAgentFingerprint_a2aFingerprintChangesDigest(t *testing.T) {
+	spec := sdkruntime.AgentSpec{Name: "a", SystemPrompt: "p"}
+	lim := sdkruntime.AgentLimits{MaxIterations: 3}
+	tools := []string{"a2a_remote_echo"}
+	base := BuildAgentFingerprintPayload(spec, tools, "auto", nil, 0, lim, "", "", "", "")
+	withA2A := BuildAgentFingerprintPayload(spec, tools, "auto", nil, 0, lim, "", "a2afp_deadbeef", "", "")
+	h0 := ComputeAgentFingerprint(base)
+	h1 := ComputeAgentFingerprint(withA2A)
+	if h0 == h1 {
+		t.Fatalf("expected different digests when a2a fingerprint set: %q vs %q", h0, h1)
+	}
+}
+
 func TestVerifyAgentFingerprint_mismatch(t *testing.T) {
 	cfg := &TemporalRuntimeConfig{
 		AgentSpec: sdkruntime.AgentSpec{Name: "x"},

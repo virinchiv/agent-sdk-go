@@ -3,12 +3,16 @@ package interfaces
 import (
 	"context"
 	"encoding/json"
-	"iter"
 
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 )
 
 //go:generate mockgen -destination=./mocks/mock_a2a.go -package=mocks github.com/agenticenv/agent-sdk-go/pkg/interfaces A2AClient,A2AStreamingClient,A2ATaskClient
+
+// A2AStreamSeq is the iterator returned by [A2AStreamingClient.SendStreamingMessage].
+// Spelled as a plain func type (same underlying type as [iter.Seq2]) so mockgen does not emit
+// invalid generic syntax like iter.Seq2[github.com/.../A2AStreamEvent, error].
+type A2AStreamSeq func(yield func(A2AStreamEvent, error) bool)
 
 // A2AClient is a client to one A2A agent server: discovery, skill invocation, and optional close.
 // Implementations may wrap github.com/a2aproject/a2a-go/v2/a2aclient or other transports.
@@ -40,7 +44,7 @@ type A2AStreamingClient interface {
 	// SendStreamingMessage sends a message and returns an iterator over events streamed back by
 	// the agent. Each event is either a message delta, a task status update, or an artifact update.
 	// The caller must consume or break the iterator to release server-side resources.
-	SendStreamingMessage(ctx context.Context, req A2ASendMessageRequest) (iter.Seq2[A2AStreamEvent, error], error)
+	SendStreamingMessage(ctx context.Context, req A2ASendMessageRequest) (A2AStreamSeq, error)
 }
 
 // A2ATaskClient extends A2AClient with async task management.
@@ -60,6 +64,7 @@ type A2ATaskClient interface {
 
 // A2AAgentCard describes a remote A2A agent: its identity, reachability, and declared skills.
 // Returned by ResolveCard; mirrors the agent card defined in the A2A protocol spec.
+// The agent package also accepts this type as A2AServerConfig.AgentCard when exposing an inbound server.
 type A2AAgentCard struct {
 	// Name is the human-readable agent name.
 	Name string `json:"name"`

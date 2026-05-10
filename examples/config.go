@@ -68,6 +68,20 @@ type Config struct {
 
 	// A2A holds A2A_* environment values for agent_with_a2a_* examples.
 	A2A A2ASettings
+
+	// A2AServer holds A2A_SERVER_* values for agent_with_a2a_server (inbound HTTP server).
+	A2AServer A2AServerEnv
+}
+
+// A2AServerEnv configures the built-in A2A HTTP server (listen address and optional bearer tokens).
+// Used by [A2AInboundServerOption] and [A2AServerDisplayURL].
+type A2AServerEnv struct {
+	// Hostname is the bind address (empty with Port 0 and no tokens → use SDK defaults via [agent.WithA2ADefaultServer]).
+	Hostname string
+	// Port is the TCP listen port (0 means default 9999 when combined with [agent.WithA2AServer]).
+	Port int
+	// BearerTokens are accepted static Bearer tokens for JSON-RPC (comma-separated in env).
+	BearerTokens []string
 }
 
 // A2ASettings holds env-driven settings for wiring [agent.WithA2AConfig] or [pkg/a2a/client.NewClient].
@@ -204,8 +218,53 @@ func LoadFromEnv() *Config {
 			AllowSkills:    strings.TrimSpace(getEnv("A2A_ALLOW_SKILLS", "")),
 			BlockSkills:    strings.TrimSpace(getEnv("A2A_BLOCK_SKILLS", "")),
 		},
+		A2AServer: A2AServerEnv{
+			Hostname:     strings.TrimSpace(getEnv("A2A_SERVER_HOST", "")),
+			Port:         getEnvInt("A2A_SERVER_PORT", 0),
+			BearerTokens: splitCommaNonEmpty(strings.TrimSpace(getEnv("A2A_SERVER_BEARER_TOKENS", ""))),
+		},
 	}
 	return cfg
+}
+
+const (
+	defaultA2AServerDisplayHost = "localhost"
+	defaultA2AServerDisplayPort = 9999
+)
+
+// A2AInboundServerOption returns [agent.WithA2ADefaultServer] when no custom listen address or
+// tokens are set; otherwise [agent.WithA2AServer] with hostname/port defaults applied by the agent.
+func A2AInboundServerOption(cfg *Config) agent.Option {
+	if cfg == nil {
+		return agent.WithA2ADefaultServer()
+	}
+	h := strings.TrimSpace(cfg.A2AServer.Hostname)
+	p := cfg.A2AServer.Port
+	toks := cfg.A2AServer.BearerTokens
+	if h == "" && p == 0 && len(toks) == 0 {
+		return agent.WithA2ADefaultServer()
+	}
+	return agent.WithA2AServer(&agent.A2AServerConfig{
+		Hostname:     h,
+		Port:         p,
+		BearerTokens: toks,
+	})
+}
+
+// A2AServerDisplayURL returns the agent base URL (scheme + host + port) for logs and docs,
+// using the same defaults as the SDK when env leaves host/port unset.
+func A2AServerDisplayURL(cfg *Config) string {
+	host := defaultA2AServerDisplayHost
+	port := defaultA2AServerDisplayPort
+	if cfg != nil {
+		if x := strings.TrimSpace(cfg.A2AServer.Hostname); x != "" {
+			host = x
+		}
+		if cfg.A2AServer.Port != 0 {
+			port = cfg.A2AServer.Port
+		}
+	}
+	return fmt.Sprintf("http://%s:%d", host, port)
 }
 
 // A2ATimeout returns cfg.A2A.TimeoutSeconds as a duration, or zero if unset.
