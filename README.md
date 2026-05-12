@@ -1,6 +1,6 @@
 # Agent SDK for Go - Temporal-first
 
-**Build durable, production-grade AI agents in Go** — tools, MCP, human approvals, and sub-agent delegation.
+**Build durable, production-grade AI agents in Go** — Temporal-backed workflows that survive crashes and deploys. OpenAI, Anthropic, Gemini, MCP, A2A, AG-UI, observability, streaming, sub-agents, and human-in-the-loop approvals.
 
 [CI](https://github.com/agenticenv/agent-sdk-go/actions)
 [Release](https://github.com/agenticenv/agent-sdk-go/releases)
@@ -9,8 +9,6 @@
 [License](LICENSE)
 [Mentioned in Awesome Go](https://github.com/avelino/awesome-go)
 
-> **Note:** Independent community library — **not** affiliated with Temporal Technologies.
->
 > **Versioning:** [Semantic versioning](https://semver.org/); published lines are **git tags** (e.g. `v0.1.2`). See the **[latest release](https://github.com/agenticenv/agent-sdk-go/releases/latest)** — the README does not pin a patch number so it stays accurate after each tag.
 
 ## Overview
@@ -21,7 +19,11 @@
 
 `pkg/agent` exposes three entry points — `Run`, `Stream`, and `RunAsync` — each mapped directly to a Temporal workflow. Connect via `WithTemporalConfig` or `WithTemporalClient` to your cluster. See [Getting Started](#getting-started) to set up, or [Temporal Runtime](#temporal-runtime) for deeper detail on workers, queues, and streaming.
 
+> **Note:** Independent community library — **not** affiliated with Temporal Technologies.
+
 ## Capabilities
+
+> Every run is a Temporal workflow — with full replay, retry, A2A protocol support, AG-UI event streaming, and built-in observability. No in-memory execution path.
 
 - **LLM providers** — OpenAI, Anthropic, and Gemini out of the box; bring your own via `interfaces.LLMClient`.
 - **Streaming** — Partial tokens and events via `Stream` and `WithStream`.
