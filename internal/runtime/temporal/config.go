@@ -9,7 +9,9 @@ import (
 
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"go.temporal.io/sdk/client"
 )
 
@@ -40,6 +42,8 @@ type TemporalRuntimeConfig struct {
 	PolicyFingerprint string // from pkg/agent toolPolicyFingerprint; must match caller temporal.ComputeAgentFingerprint inputs
 	MCPFingerprint    string // from pkg/agent mcpConfigFingerprint; must match caller temporal.ComputeAgentFingerprint inputs
 	A2AFingerprint    string // from pkg/agent a2aConfigFingerprint; must match caller temporal.ComputeAgentFingerprint inputs
+	// ObservabilityFingerprint is from pkg/agent observabilityConfigFingerprint; must match caller temporal.ComputeAgentFingerprint inputs.
+	ObservabilityFingerprint string
 	// AgentMode is the string form of [types.AgentMode] (e.g. "interactive", "autonomous"); must match pkg/agent WithAgentMode.
 	AgentMode string
 	// AgentToolExecutionMode is the [types.AgentToolExecutionMode] (e.g. "sequential", "parallel"); must match pkg/agent WithAgentToolExecutionMode.
@@ -50,6 +54,11 @@ type TemporalRuntimeConfig struct {
 	// DisableFingerprintCheck disables caller-vs-worker agent fingerprint verification at activity entry.
 	// Break-glass only: keep false in production for rollout/config safety.
 	DisableFingerprintCheck bool
+
+	// Tracer and Metrics are optional clients from pkg/agent (WithObservabilityConfig / WithTracer / WithMetrics).
+	// They are stored for future instrumentation; nothing in the runtime uses them yet.
+	Tracer  interfaces.Tracer
+	Metrics interfaces.Metrics
 }
 
 // Option configures a TemporalRuntime.
@@ -135,6 +144,14 @@ func WithA2AFingerprint(fp string) Option {
 	}
 }
 
+// WithObservabilityFingerprint sets the OTLP observability digest used with [ComputeAgentFingerprint].
+// Must match pkg/agent observabilityConfigFingerprint for the same WithObservabilityConfig wiring.
+func WithObservabilityFingerprint(fp string) Option {
+	return func(c *TemporalRuntimeConfig) {
+		c.ObservabilityFingerprint = fp
+	}
+}
+
 // WithAgentMode sets the agent mode string used with [ComputeAgentFingerprint].
 // Must match pkg/agent [WithAgentMode] for the same agent (caller process and worker process).
 func WithAgentMode(mode string) Option {
@@ -167,6 +184,22 @@ func WithDisableFingerprintCheck(disable bool) Option {
 	}
 }
 
+// WithTracer sets the optional [interfaces.Tracer] for this runtime (from pkg/agent build).
+// Reserved for future instrumentation; the runtime does not call it yet.
+func WithTracer(t interfaces.Tracer) Option {
+	return func(c *TemporalRuntimeConfig) {
+		c.Tracer = t
+	}
+}
+
+// WithMetrics sets the optional [interfaces.Metrics] for this runtime (from pkg/agent build).
+// Reserved for future instrumentation; the runtime does not call it yet.
+func WithMetrics(m interfaces.Metrics) Option {
+	return func(c *TemporalRuntimeConfig) {
+		c.Metrics = m
+	}
+}
+
 func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) {
 	c := &TemporalRuntimeConfig{logger: logger.NoopLogger()}
 	for _, opt := range opts {
@@ -193,6 +226,13 @@ func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) 
 		return nil, fmt.Errorf("llm client is required")
 	}
 
+	if c.Tracer == nil {
+		c.Tracer = observability.DefaultNoopTracer
+	}
+	if c.Metrics == nil {
+		c.Metrics = observability.DefaultNoopMetrics
+	}
+
 	c.logger.Debug(context.Background(), "runtime config resolved",
 		slog.String("scope", "runtime"),
 		slog.String("agentName", c.AgentSpec.Name),
@@ -206,7 +246,9 @@ func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) 
 		slog.Bool("disableFingerprintCheck", c.DisableFingerprintCheck),
 		slog.Duration("timeout", c.AgentExecution.Limits.Timeout),
 		slog.Duration("approvalTimeout", c.AgentExecution.Limits.ApprovalTimeout),
-		slog.Bool("hasConversation", c.AgentExecution.Session.Conversation != nil))
+		slog.Bool("hasConversation", c.AgentExecution.Session.Conversation != nil),
+		slog.Bool("hasTracer", c.Tracer != nil),
+		slog.Bool("hasMetrics", c.Metrics != nil))
 
 	return c, nil
 }

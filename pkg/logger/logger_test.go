@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
+
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
 func TestNewWriterLogger_AddSource_UsesCallSiteNotWrapper(t *testing.T) {
@@ -219,6 +222,55 @@ func TestNoopLogger_and_NewDiscardLogger(t *testing.T) {
 		l.Info(ctx, "i")
 		l.Warn(ctx, "w")
 		l.Error(ctx, "e")
+	}
+}
+
+type countingLogExporter struct {
+	mu      sync.Mutex
+	exports int
+}
+
+func (c *countingLogExporter) Export(_ context.Context, records []sdklog.Record) error {
+	c.mu.Lock()
+	c.exports += len(records)
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *countingLogExporter) Shutdown(context.Context) error { return nil }
+
+func (c *countingLogExporter) ForceFlush(context.Context) error { return nil }
+
+func TestDefaultLoggerWithOtelProvider_nilUsesPlainLogger(t *testing.T) {
+	l := DefaultLoggerWithOtelProvider("error", nil)
+	if l == nil {
+		t.Fatal("expected non-nil logger")
+	}
+	ctx := context.Background()
+	l.Error(ctx, "err-line", "k", "v")
+}
+
+func TestDefaultLoggerWithOtelProvider_routesThroughLoggerProvider(t *testing.T) {
+	exp := &countingLogExporter{}
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewSimpleProcessor(exp)),
+	)
+	defer func() {
+		_ = lp.Shutdown(context.Background())
+	}()
+
+	log := DefaultLoggerWithOtelProvider("info", lp)
+	ctx := context.Background()
+	log.Info(ctx, "hello-otel", "rid", 42)
+
+	if err := lp.ForceFlush(ctx); err != nil {
+		t.Fatalf("ForceFlush: %v", err)
+	}
+	exp.mu.Lock()
+	n := exp.exports
+	exp.mu.Unlock()
+	if n < 1 {
+		t.Fatalf("expected at least one exported log record, got exports=%d", n)
 	}
 }
 

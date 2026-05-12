@@ -41,6 +41,10 @@ type AgentFingerprintPayload struct {
 	// header keys, timeouts, skill filters, and extra A2A client names. Omitted when empty.
 	A2AFingerprint string `json:"a2a_fingerprint,omitempty"`
 
+	// ObservabilityFingerprint is the pkg/agent digest from [WithObservabilityConfig] (OTLP endpoint
+	// and trace/metrics disable flags). Omitted when empty.
+	ObservabilityFingerprint string `json:"observability_fingerprint,omitempty"`
+
 	// AgentMode is the execution mode (e.g. interactive vs autonomous); must match pkg/agent WithAgentMode on caller and worker.
 	AgentMode string `json:"agent_mode"`
 
@@ -57,8 +61,8 @@ type AgentFingerprintPayload struct {
 }
 
 // ComputeAgentFingerprint returns a stable SHA-256 hex digest of the payload (identity, prompts, tools,
-// sampling, limits, policy, optional MCP wiring). Use the same toolPolicyFingerprint and MCP fingerprint
-// inputs from pkg/agent on both the process that issues runs and the worker process.
+// sampling, limits, policy, optional MCP, A2A, and observability wiring). Use the same digests
+// from pkg/agent on both the process that issues runs and the worker process.
 func ComputeAgentFingerprint(m AgentFingerprintPayload) string {
 	m.Version = agentFingerprintVersion
 	if m.ToolNames != nil {
@@ -82,6 +86,7 @@ func BuildAgentFingerprintPayload(
 	limits sdkruntime.AgentLimits,
 	mcpFingerprint string,
 	a2aFingerprint string,
+	observabilityFingerprint string,
 	agentMode string,
 	agentToolExecutionMode types.AgentToolExecutionMode,
 ) AgentFingerprintPayload {
@@ -96,20 +101,21 @@ func BuildAgentFingerprintPayload(
 		toolExecutionMode = types.AgentToolExecutionModeParallel
 	}
 	m := AgentFingerprintPayload{
-		Name:                   spec.Name,
-		Description:            spec.Description,
-		SystemPrompt:           spec.SystemPrompt,
-		ToolNames:              names,
-		PolicyFingerprint:      policyFingerprint,
-		MCPFingerprint:         mcpFingerprint,
-		A2AFingerprint:         a2aFingerprint,
-		AgentMode:              mode,
-		AgentToolExecutionMode: string(toolExecutionMode),
-		Sampling:               cloneLLMSampling(sampling),
-		SessionSize:            sessionSize,
-		MaxIterations:          limits.MaxIterations,
-		TimeoutNs:              limits.Timeout.Nanoseconds(),
-		ApprovalTimeoutNs:      limits.ApprovalTimeout.Nanoseconds(),
+		Name:                     spec.Name,
+		Description:              spec.Description,
+		SystemPrompt:             spec.SystemPrompt,
+		ToolNames:                names,
+		PolicyFingerprint:        policyFingerprint,
+		MCPFingerprint:           mcpFingerprint,
+		A2AFingerprint:           a2aFingerprint,
+		ObservabilityFingerprint: observabilityFingerprint,
+		AgentMode:                mode,
+		AgentToolExecutionMode:   string(toolExecutionMode),
+		Sampling:                 cloneLLMSampling(sampling),
+		SessionSize:              sessionSize,
+		MaxIterations:            limits.MaxIterations,
+		TimeoutNs:                limits.Timeout.Nanoseconds(),
+		ApprovalTimeoutNs:        limits.ApprovalTimeout.Nanoseconds(),
 	}
 	if spec.ResponseFormat != nil {
 		rf := spec.ResponseFormat
@@ -178,6 +184,7 @@ func computeAgentFingerprintFromRuntimeConfig(c *TemporalRuntimeConfig) string {
 		c.AgentExecution.Limits,
 		c.MCPFingerprint,
 		c.A2AFingerprint,
+		c.ObservabilityFingerprint,
 		c.AgentMode,
 		c.AgentToolExecutionMode,
 	)
