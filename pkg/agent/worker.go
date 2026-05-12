@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"log/slog"
 
@@ -49,5 +50,13 @@ func (aw *AgentWorker) Stop() {
 	aw.logger.Info(context.Background(), "agent worker stopping", slog.String("scope", "agent"), slog.String("taskQueue", aw.taskQueue))
 	if wr, ok := aw.runtime.(runtime.WorkerRuntime); ok {
 		wr.Stop()
+	}
+	// Standalone remote worker process: flush OTLP (embedded local worker uses [Agent.Close] only).
+	if aw.remoteWorker {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = aw.tracer.Shutdown(shutdownCtx)
+		_ = aw.metrics.Shutdown(shutdownCtx)
+		_ = aw.logs.Shutdown(shutdownCtx)
+		cancel()
 	}
 }

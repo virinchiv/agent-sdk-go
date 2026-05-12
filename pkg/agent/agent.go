@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"log/slog"
 
@@ -121,6 +122,13 @@ func (a *Agent) Close() {
 	}
 
 	a.runtime.Close()
+
+	// Flush OTLP when built via [WithObservabilityConfig] (batched exporters need Shutdown). No-ops for noop.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_ = a.tracer.Shutdown(shutdownCtx)
+	_ = a.metrics.Shutdown(shutdownCtx)
+	_ = a.logs.Shutdown(shutdownCtx)
+	cancel()
 
 	a.logger.Info(ctx, "agent closed", slog.String("scope", "agent"), slog.String("name", a.Name))
 }

@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -17,6 +20,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
+	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 )
@@ -121,6 +125,50 @@ type A2AServerConfig struct {
 	AgentCard *interfaces.A2AAgentCard
 }
 
+// OTLPProtocol is an alias for [types.OTLPProtocol] re-exported from pkg/agent so callers
+// do not need to import internal/types when constructing an [ObservabilityConfig].
+type OTLPProtocol = types.OTLPProtocol
+
+const (
+	// OTLPProtocolGRPC selects gRPC transport for OTLP export (default).
+	OTLPProtocolGRPC OTLPProtocol = types.OTLPProtocolGRPC
+	// OTLPProtocolHTTP selects HTTP/protobuf transport for OTLP export.
+	OTLPProtocolHTTP OTLPProtocol = types.OTLPProtocolHTTP
+)
+
+// ObservabilityConfig selects OTLP export for traces, metrics, and logs on both the client [Agent] and
+// [AgentWorker] when merged at [buildAgentConfig]. It is included in [agentConfigFingerprint] so
+// caller and worker processes agree on collector wiring (see [observabilityConfigFingerprint]).
+//
+// Use [WithObservabilityConfig] together with identical values on the process that runs workflows
+// and the process that hosts activities.
+//
+// Timing fields (export timeout, batch timeout, metrics interval) are intentionally omitted here;
+// the SDK uses [types.DefaultOTLP*] constants automatically. Use the [pkg/observability] package
+// directly with [observability.BuildConfig] if you need per-field control.
+type ObservabilityConfig struct {
+	// Endpoint is the OTLP collector URL, e.g. "collector:4317" (gRPC) or
+	// "http://collector:4318" (HTTP). Required when ObservabilityConfig is non-nil.
+	Endpoint string
+
+	// Protocol selects the OTLP wire transport. Defaults to [OTLPProtocolGRPC].
+	// Must match on both the agent caller process and the worker process.
+	Protocol OTLPProtocol
+
+	// Insecure disables TLS for the OTLP connection. Use only in development or
+	// on networks where the collector sits on the same trusted host.
+	Insecure bool
+
+	// DisableTraces when true skips constructing a [interfaces.Tracer] from this config during build.
+	DisableTraces bool
+	// DisableMetrics when true skips constructing [interfaces.Metrics] from this config during build.
+	DisableMetrics bool
+	// DisableLogs when true skips constructing [*observability.Logs] from this config and skips
+	// OTLP log wiring tied to this config. A prior [WithLogs] injection is preserved; if it is
+	// [*observability.Logs] and the default SDK logger is used, the logger is still bridged to that client.
+	DisableLogs bool
+}
+
 // agentConfig holds shared configuration for Agent and AgentWorker.
 //
 // Option applicability:
@@ -130,7 +178,11 @@ type A2AServerConfig struct {
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
-//     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode
+//     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
+//     WithObservabilityConfig, WithTracer, WithMetrics, WithLogs
+//
+// When [WithObservabilityConfig] is set and a signal is not disabled, [buildAgentConfig] replaces
+// [WithTracer], [WithMetrics], and [WithLogs] for that signal with OTLP clients built from the config.
 type agentConfig struct {
 	ID                 string
 	Name               string
@@ -188,6 +240,21 @@ type agentConfig struct {
 
 	agentMode              AgentMode
 	agentToolExecutionMode AgentToolExecutionMode
+
+	// Observability: optional OTLP config and/or injected clients. When [observabilityConfig] is
+	// non-nil, [buildAgentConfig] may construct [tracer], [metrics], and [logs] via
+	// [observability.NewTracer] / [observability.NewMetrics] / [observability.NewLogs]
+	// unless the corresponding Disable* flag is set. The built client always overwrites any
+	// prior [WithTracer] / [WithMetrics] / [WithLogs] injection (same precedence for all
+	// three). When logs are enabled and no custom logger was supplied via [WithLogger], the logger
+	// is rebuilt with the explicit log provider so records reach the OTLP backend without
+	// relying on the global OTel LoggerProvider (typically unset in short-lived processes).
+	// When [WithObservabilityConfig] is nil and the caller set [WithLogs] to [*observability.Logs]
+	// alone, the same wiring runs after options (see unified OTLP logger wiring below).
+	observabilityConfig *ObservabilityConfig
+	tracer              interfaces.Tracer
+	metrics             interfaces.Metrics
+	logs                interfaces.Logs
 }
 
 // Default Run/Stream deadlines when [WithTimeout] is unset: shorter for interactive sessions,
@@ -465,6 +532,68 @@ func WithA2AServer(config *A2AServerConfig) Option {
 	}
 }
 
+// WithObservabilityConfig sets OTLP export settings shared by the interactive/autonomous client and
+// the worker. The digest of this struct participates in [agentConfigFingerprint] so Temporal
+// caller and worker agree before executing activities.
+//
+// When non-nil, [buildAgentConfig] builds OTLP [interfaces.Tracer], [interfaces.Metrics], and
+// (unless [ObservabilityConfig.DisableLogs] is true) [*observability.Logs] from this config whenever
+// the corresponding Disable* flag is false. Those built clients always replace any values from
+// [WithTracer], [WithMetrics], or [WithLogs] for the same signal; warnings are logged if an
+// injection would be discarded. Use either observability-driven OTLP from this struct or manual
+// injection — not both for the same signal.
+func WithObservabilityConfig(config *ObservabilityConfig) Option {
+	return func(c *agentConfig) { c.observabilityConfig = config }
+}
+
+// WithTracer supplies a [interfaces.Tracer] for use without [WithObservabilityConfig], or when
+// [ObservabilityConfig.DisableTraces] is true (no OTLP tracer is built from config).
+//
+// When [WithObservabilityConfig] is non-nil and [ObservabilityConfig.DisableTraces] is false, any
+// [WithTracer] value is ineffective: [buildAgentConfig] always replaces it with the OTLP tracer
+// built from the observability config (same precedence as [WithMetrics] / [WithLogs]). A warning is
+// logged if [WithTracer] had been set.
+func WithTracer(tracer interfaces.Tracer) Option {
+	return func(c *agentConfig) { c.tracer = tracer }
+}
+
+// WithMetrics supplies a [interfaces.Metrics] for use without [WithObservabilityConfig], or when
+// [ObservabilityConfig.DisableMetrics] is true (no OTLP metrics client is built from config).
+//
+// When [WithObservabilityConfig] is non-nil and [ObservabilityConfig.DisableMetrics] is false, any
+// [WithMetrics] value is ineffective: [buildAgentConfig] always replaces it with the OTLP metrics
+// client built from the observability config (same precedence as [WithTracer] / [WithLogs]). A
+// warning is logged if [WithMetrics] had been set.
+func WithMetrics(metrics interfaces.Metrics) Option {
+	return func(c *agentConfig) { c.metrics = metrics }
+}
+
+// WithLogs supplies an [interfaces.Logs] for OTel log export lifecycle management
+// (flush on [Agent.Close] / [AgentWorker.Stop]).
+//
+// When [WithObservabilityConfig] is nil and the default SDK logger is used (no [WithLogger]),
+// if this value is a concrete [*observability.Logs] from [observability.NewLogs], [buildAgentConfig]
+// wires [logger.DefaultLoggerWithOtelProvider] to the same OpenTelemetry LoggerProvider so SDK log lines
+// reach OTLP without an extra [WithLogger] call.
+//
+// When [WithObservabilityConfig] is non-nil and [ObservabilityConfig.DisableLogs] is false, any
+// [WithLogs] value is ineffective: [buildAgentConfig] always replaces it with [*observability.Logs]
+// built from the observability config (same precedence as [WithTracer] / [WithMetrics]). A warning is
+// logged if [WithLogs] had been set.
+func WithLogs(l interfaces.Logs) Option {
+	return func(c *agentConfig) { c.logs = l }
+}
+
+// otlpLogsClientConfigured reports whether logs holds a concrete OTLP [*observability.Logs] client
+// (built by the SDK or injected after [observability.NewLogs]), before [DefaultNoopLogs] fallback.
+func otlpLogsClientConfigured(logs interfaces.Logs) bool {
+	if logs == nil {
+		return false
+	}
+	_, ok := logs.(*observability.Logs)
+	return ok
+}
+
 // buildAgentConfig applies options, validates, and sets defaults (logger, timeouts, iterations).
 // WithTemporalConfig lets the runtime create a Temporal client from host settings; WithTemporalClient supplies a caller-owned client.
 // remoteWorker is false for Agent; NewAgentWorker sets it to true for worker-side activities.
@@ -482,7 +611,12 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	if c.logLevel == "" {
 		c.logLevel = "error"
 	}
-	if c.logger == nil {
+
+	// userProvidedLogger is true when the caller passed WithLogger; we never replace it.
+	// When false we build a tentative plain stderr logger here for validation messages, then
+	// replace it with an OTLP-aware one below once the log provider is available.
+	userProvidedLogger := c.logger != nil
+	if !userProvidedLogger {
 		c.logger = logger.DefaultLogger(c.logLevel)
 	}
 
@@ -578,6 +712,63 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		c.maxIterations = defaultMaxIterations
 	}
 
+	// Snapshot injected OTLP clients before observability may replace them (WithTracer / WithMetrics / WithLogs).
+	injectedTracerBeforeObs := c.tracer
+	injectedMetricsBeforeObs := c.metrics
+	injectedLogsBeforeObs := c.logs
+	otelLoggerWired := false
+
+	if c.observabilityConfig != nil {
+		obsOpts := observabilityOptions(c)
+		if !c.observabilityConfig.DisableLogs {
+			if userProvidedLogger {
+				// OTLP Logs client would be orphaned: SDK log lines never reach it unless the custom
+				// logger bridges to the same LoggerProvider (e.g. DefaultLoggerWithOtelProvider).
+				c.logger.Warn(context.Background(), "WithObservabilityConfig OTLP logs are not wired to a custom WithLogger — use logger.DefaultLoggerWithOtelProvider with the same LoggerProvider as your OTLP Logs client, or omit WithLogger to use the default SDK logger")
+			} else {
+				if injectedLogsBeforeObs != nil {
+					c.logger.Warn(context.Background(), "WithLogs is ignored when WithObservabilityConfig enables OTLP logs — the SDK builds [*observability.Logs] from the observability config; remove WithLogs to silence this warning")
+				}
+				lp, err := observability.NewLogs(obsOpts...)
+				if err != nil {
+					return nil, err
+				}
+				c.logs = lp
+				c.logger = logger.DefaultLoggerWithOtelProvider(c.logLevel, lp.Provider())
+				otelLoggerWired = true
+			}
+		}
+		if !c.observabilityConfig.DisableTraces {
+			if injectedTracerBeforeObs != nil {
+				c.logger.Warn(context.Background(), "WithTracer is ignored when WithObservabilityConfig enables traces — the SDK builds an OTLP tracer from the observability config; remove WithTracer to silence this warning")
+			}
+			tracer, err := observability.NewTracer(obsOpts...)
+			if err != nil {
+				return nil, err
+			}
+			c.tracer = tracer
+		}
+		if !c.observabilityConfig.DisableMetrics {
+			if injectedMetricsBeforeObs != nil {
+				c.logger.Warn(context.Background(), "WithMetrics is ignored when WithObservabilityConfig enables metrics — the SDK builds an OTLP metrics client from the observability config; remove WithMetrics to silence this warning")
+			}
+			metrics, err := observability.NewMetrics(obsOpts...)
+			if err != nil {
+				return nil, err
+			}
+			c.metrics = metrics
+		}
+	}
+
+	// Without observability (or with DisableLogs), an injected [*observability.Logs] still needs the
+	// default SDK logger bridged to the same LoggerProvider (mirrors the objects/ example pattern).
+	if !userProvidedLogger && !otelLoggerWired {
+		if ol, ok := c.logs.(*observability.Logs); ok && ol != nil {
+			c.logger = logger.DefaultLoggerWithOtelProvider(c.logLevel, ol.Provider())
+			otelLoggerWired = true
+		}
+	}
+
 	ctx := context.Background()
 	c.logger.Info(ctx, "agent config built", slog.String("scope", "agent"), slog.String("name", c.Name), slog.String("taskQueue", c.taskQueue))
 	// Debug: full config summary for troubleshooting (no sensitive: systemPrompt, API keys)
@@ -602,7 +793,24 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Int("subAgentToolCount", len(c.subAgentTools)),
 		slog.Int("mcpToolCount", len(c.mcpTools)),
 		slog.Int("a2aToolCount", len(c.a2aTools)),
-		slog.Bool("hasConversation", c.conversation != nil))
+		slog.Bool("hasConversation", c.conversation != nil),
+		slog.Bool("hasObservability", c.observabilityConfig != nil),
+		slog.Bool("enabledTracer", c.tracer != nil),
+		slog.Bool("enabledMetrics", c.metrics != nil),
+		slog.Bool("otlpSdkLogsExporter", otlpLogsClientConfigured(c.logs)),
+		slog.Bool("otelLoggerWired", otelLoggerWired),
+	)
+
+	if c.tracer == nil {
+		c.tracer = observability.DefaultNoopTracer
+	}
+	if c.metrics == nil {
+		c.metrics = observability.DefaultNoopMetrics
+	}
+	if c.logs == nil {
+		c.logs = observability.DefaultNoopLogs
+	}
+
 	return c, nil
 }
 
@@ -801,14 +1009,82 @@ func (c *agentConfig) runtimeAgentExecution() runtime.AgentExecution {
 	return d
 }
 
+type observabilityFpShot struct {
+	Endpoint       string `json:"endpoint"`
+	Protocol       string `json:"protocol"`
+	Insecure       bool   `json:"insecure"`
+	DisableTraces  bool   `json:"disable_traces"`
+	DisableMetrics bool   `json:"disable_metrics"`
+	DisableLogs    bool   `json:"disable_logs"`
+}
+
+// observabilityConfigFingerprint returns a stable digest for [temporal.ComputeAgentFingerprint]:
+// trimmed OTLP [ObservabilityConfig.Endpoint], [ObservabilityConfig.Protocol], insecure flag,
+// and disable flags. Secrets (headers) are not included.
+// Empty when [ObservabilityConfig] is nil so callers without observability match workers without it.
+func observabilityConfigFingerprint(obs *ObservabilityConfig) string {
+	if obs == nil {
+		return ""
+	}
+	proto := strings.TrimSpace(string(obs.Protocol))
+	if proto == "" {
+		proto = string(types.OTLPProtocolGRPC)
+	}
+	s := observabilityFpShot{
+		Endpoint:       strings.TrimSpace(obs.Endpoint),
+		Protocol:       proto,
+		Insecure:       obs.Insecure,
+		DisableTraces:  obs.DisableTraces,
+		DisableMetrics: obs.DisableMetrics,
+		DisableLogs:    obs.DisableLogs,
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// observabilityOptions builds the [observability.Option] slice passed to [observability.NewTracer]
+// and [observability.NewMetrics] from [agentConfig.observabilityConfig]. Timing fields use
+// [types.DefaultOTLP*] constants. Uses [agentConfig.logger] for OTLP exporter diagnostics and
+// trims endpoint / normalizes protocol the same way as [observabilityConfigFingerprint].
+func observabilityOptions(c *agentConfig) []observability.Option {
+	obs := c.observabilityConfig
+	if obs == nil {
+		return nil
+	}
+	endpoint := strings.TrimSpace(obs.Endpoint)
+	opts := []observability.Option{
+		observability.WithLogger(c.logger),
+		observability.WithName(strings.TrimSpace(c.Name)),
+		observability.WithEndpoint(endpoint),
+		observability.WithExportTimeout(types.DefaultOTLPExportTimeout),
+		observability.WithBatchTimeout(types.DefaultOTLPBatchTimeout),
+		observability.WithMetricsInterval(types.DefaultOTLPMetricsInterval),
+	}
+	proto := strings.TrimSpace(string(obs.Protocol))
+	if proto == "" {
+		proto = string(types.OTLPProtocolGRPC)
+	}
+	opts = append(opts, observability.WithProtocol(observability.Protocol(proto)))
+	if obs.Insecure {
+		opts = append(opts, observability.WithInsecure(true))
+	}
+	return opts
+}
+
 // agentConfigFingerprint hashes identity, prompts, tools, sampling, limits, approval policy,
-// MCP wiring digest (transports, timeouts, filters, extra MCP client names), and A2A wiring digest
-// for outbound clients only ([WithA2AConfig] / [WithA2AClients] via [a2aConfigFingerprint]).
+// MCP wiring digest (transports, timeouts, filters, extra MCP client names), A2A wiring digest
+// for outbound clients only ([WithA2AConfig] / [WithA2AClients] via [a2aConfigFingerprint]),
+// and observability OTLP wiring ([observabilityConfigFingerprint] from [WithObservabilityConfig]).
 // Same inputs as temporal.NewTemporalRuntime agent fingerprint.
 //
 // Inbound [A2AServerConfig] from [WithA2AServer] / [WithA2ADefaultServer] (listen address,
 // [A2AServerConfig.BearerTokens], [A2AServerConfig.AgentCard] overrides for RunA2A) is omitted:
 // it does not change worker-side tool wiring or activity semantics and is typically deployment-specific.
+// Injected [WithTracer] / [WithMetrics] alone (without [WithObservabilityConfig]) are not hashed.
 func (c *agentConfig) agentConfigFingerprint() string {
 	mat := temporal.BuildAgentFingerprintPayload(
 		c.runtimeAgentSpec(),
@@ -823,6 +1099,7 @@ func (c *agentConfig) agentConfigFingerprint() string {
 		},
 		mcpConfigFingerprint(c.mcpServers, mcpExtraClientNames(c.mcpClients)),
 		a2aConfigFingerprint(c.a2aServers, a2aExtraClientNames(c.a2aClients)),
+		observabilityConfigFingerprint(c.observabilityConfig),
 		string(c.agentMode),
 		c.agentToolExecutionMode,
 	)

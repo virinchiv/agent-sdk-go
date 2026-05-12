@@ -231,6 +231,11 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 		defer cancel()
 	}
 
+	// Minimal instrumentation hook (OTLP when configured on the agent; no-ops otherwise).
+	runCtx, sp := rt.Tracer.StartSpan(runCtx, "TemporalRuntime.Execute")
+	defer sp.End()
+	rt.Metrics.IncrementCounter(runCtx, "agent.sdk.temporal.execute.started")
+
 	runID := uuid.New().String()
 	threadID := req.ConversationID
 	if threadID != "" {

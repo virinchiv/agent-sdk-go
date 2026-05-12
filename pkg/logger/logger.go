@@ -9,6 +9,9 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel/log"
 )
 
 // Logger is the SDK logging contract (log/slog-style): pass slog.String, slog.Int, slog.Any, etc. as keyvals.
@@ -97,6 +100,42 @@ func DefaultLogger(level string) Logger {
 	return &SlogLogger{log: slog.New(h), adjustCallerPC: false}
 }
 
+// DefaultLoggerWithOtel returns an SDK logger that writes human-readable lines to stderr and sends
+// logs to the global OpenTelemetry LoggerProvider via the slog bridge.
+//
+// Prefer [DefaultLoggerWithOtelProvider] when you have a concrete [log.LoggerProvider] (e.g. from
+// [pkg/observability.NewLogs]) so the bridge does not depend on the global provider being set.
+//
+// level uses slog names: debug, info, warn, error (case-insensitive). Empty defaults to "error".
+func DefaultLoggerWithOtel(level string) Logger {
+	lvl := parseSlogLevel(level)
+	handlers := []slog.Handler{
+		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}),
+		otelslog.NewHandler("agent-sdk-go"),
+	}
+	return &SlogLogger{log: slog.New(&multiHandler{handlers: handlers}), adjustCallerPC: false}
+}
+
+// DefaultLoggerWithOtelProvider returns an SDK logger that writes human-readable lines to stderr
+// and sends logs through the provided [log.LoggerProvider] (typically a [*sdklog.LoggerProvider]
+// built by [pkg/observability.NewLogs]).
+//
+// Using an explicit provider avoids relying on the global OTel LoggerProvider, which is often unset
+// in short-lived programs and would silently discard all records.
+//
+// level uses slog names: debug, info, warn, error (case-insensitive). Empty defaults to "error".
+func DefaultLoggerWithOtelProvider(level string, lp log.LoggerProvider) Logger {
+	if lp == nil {
+		return DefaultLogger(level)
+	}
+	lvl := parseSlogLevel(level)
+	handlers := []slog.Handler{
+		slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}),
+		otelslog.NewHandler("agent-sdk-go", otelslog.WithLoggerProvider(lp)),
+	}
+	return &SlogLogger{log: slog.New(&multiHandler{handlers: handlers}), adjustCallerPC: false}
+}
+
 // NewSlog returns a Logger wrapping the given *slog.Logger.
 func NewSlog(l *slog.Logger) Logger {
 	if l == nil {
@@ -167,4 +206,45 @@ func newWriterLogger(w io.Writer, level, format string, addSource bool) Logger {
 		h = slog.NewTextHandler(w, opts)
 	}
 	return &SlogLogger{log: slog.New(h), adjustCallerPC: addSource}
+}
+
+// multiHandler is a slog.Handler that writes to multiple handlers.
+type multiHandler struct {
+	handlers []slog.Handler
+}
+
+func (m *multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *multiHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, h := range m.handlers {
+		if h.Enabled(ctx, r.Level) {
+			if err := h.Handle(ctx, r.Clone()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	handlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		handlers[i] = h.WithAttrs(attrs)
+	}
+	return &multiHandler{handlers: handlers}
+}
+
+func (m *multiHandler) WithGroup(name string) slog.Handler {
+	handlers := make([]slog.Handler, len(m.handlers))
+	for i, h := range m.handlers {
+		handlers[i] = h.WithGroup(name)
+	}
+	return &multiHandler{handlers: handlers}
 }
