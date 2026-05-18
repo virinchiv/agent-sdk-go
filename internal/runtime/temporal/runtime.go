@@ -19,6 +19,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 )
@@ -121,7 +122,18 @@ func (rt *TemporalRuntime) Start(ctx context.Context) error {
 		return nil
 	}
 	rt.logger.Debug(ctx, "runtime worker registering workflows and activities", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue))
-	w := worker.New(rt.temporalClient, rt.taskQueue, worker.Options{})
+
+	workerOptions := worker.Options{}
+	tracingInterceptor, err := newTemporalTracingInterceptor(rt.Tracer)
+	if err != nil {
+		rt.logger.Error(ctx, "failed to create tracing interceptor", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", err))
+		return err
+	}
+	if tracingInterceptor != nil {
+		workerOptions.Interceptors = []interceptor.WorkerInterceptor{tracingInterceptor}
+	}
+
+	w := worker.New(rt.temporalClient, rt.taskQueue, workerOptions)
 	w.RegisterWorkflowWithOptions(rt.AgentWorkflow, workflow.RegisterOptions{Name: "AgentWorkflow"})
 	w.RegisterActivityWithOptions(rt.AgentLLMActivity, activity.RegisterOptions{Name: "AgentLLMActivity"})
 	w.RegisterActivityWithOptions(rt.AgentLLMStreamActivity, activity.RegisterOptions{Name: "AgentLLMStreamActivity"})
@@ -131,10 +143,9 @@ func (rt *TemporalRuntime) Start(ctx context.Context) error {
 	w.RegisterActivityWithOptions(rt.SendAgentEventUpdateActivity, activity.RegisterOptions{Name: "SendAgentEventUpdateActivity"})
 	w.RegisterActivityWithOptions(rt.AddConversationMessagesActivity, activity.RegisterOptions{Name: "AddConversationMessagesActivity"})
 	rt.agentWorker = w
-	err := rt.agentWorker.Start()
-	if err != nil {
-		rt.logger.Error(ctx, "failed to start runtime worker", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", err))
-		return err
+	if startErr := rt.agentWorker.Start(); startErr != nil {
+		rt.logger.Error(ctx, "failed to start runtime worker", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", startErr))
+		return startErr
 	}
 	rt.logger.Debug(ctx, "runtime worker started", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue))
 	return nil
@@ -263,10 +274,13 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 	}
 
 	if rt.enableRemoteWorkers {
-		rt.createEventWorker()
-		var err error
+		if err := rt.createEventWorker(); err != nil {
+			rt.logger.Error(runCtx, "runtime event worker creation failed", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", err))
+			return nil, err
+		}
 		wfInput.EventWorkflowID, wfInput.EventTaskQueue, err = rt.resolveEventPipeline(runCtx, agentNameFromExecuteRequest(req))
 		if err != nil {
+			rt.logger.Error(runCtx, "runtime event pipeline resolution failed", slog.String("scope", "runtime"), slog.String("agent", agentNameFromExecuteRequest(req)), slog.Any("error", err))
 			return nil, err
 		}
 	}
@@ -412,10 +426,13 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 
 	var eventWorkflowID, eventTaskQueue string
 	if rt.enableRemoteWorkers {
-		rt.createEventWorker()
-		var err error
+		if err := rt.createEventWorker(); err != nil {
+			rt.logger.Error(ctx, "runtime event worker creation failed", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", err))
+			return nil, err
+		}
 		eventWorkflowID, eventTaskQueue, err = rt.resolveEventPipeline(ctx, agentNameFromExecuteRequest(req))
 		if err != nil {
+			rt.logger.Error(ctx, "runtime event pipeline resolution failed", slog.String("scope", "runtime"), slog.String("agent", agentNameFromExecuteRequest(req)), slog.Any("error", err))
 			return nil, err
 		}
 	}
@@ -659,20 +676,32 @@ func (rt *TemporalRuntime) hasWorkers(ctx context.Context, taskQueue string) boo
 // createEventWorker starts the event worker if not already running. Called when ExecuteStream or
 // approval handling is needed. Per-agent mutex allows parallel creation across different agents
 // while preventing double-creation when Execute and ExecuteStream are invoked concurrently on the same agent.
-func (rt *TemporalRuntime) createEventWorker() {
+func (rt *TemporalRuntime) createEventWorker() error {
 	rt.eventWorkerMu.Lock()
 	defer rt.eventWorkerMu.Unlock()
 	if rt.eventWorker != nil {
 		rt.logger.Debug(context.Background(), "runtime event worker already running", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue))
-		return
+		return nil
 	}
 	eventQueue := getEventTaskQueue(rt.taskQueue)
 	rt.logger.Info(context.Background(), "runtime event worker starting", slog.String("scope", "runtime"), slog.String("taskQueue", eventQueue))
-	w := worker.New(rt.temporalClient, eventQueue, worker.Options{})
+
+	workerOptions := worker.Options{}
+	tracingInterceptor, err := newTemporalTracingInterceptor(rt.Tracer)
+	if err != nil {
+		rt.logger.Error(context.Background(), "failed to create tracing interceptor", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", err))
+		return err
+	}
+	if tracingInterceptor != nil {
+		workerOptions.Interceptors = []interceptor.WorkerInterceptor{tracingInterceptor}
+	}
+
+	w := worker.New(rt.temporalClient, eventQueue, workerOptions)
 	w.RegisterWorkflowWithOptions(rt.AgentEventWorkflow, workflow.RegisterOptions{Name: "AgentEventWorkflow"})
 	w.RegisterActivityWithOptions(rt.EventPublishActivity, activity.RegisterOptions{Name: "EventPublishActivity"})
 	rt.eventWorker = w
 	go func() { _ = rt.eventWorker.Start() }()
+	return nil
 }
 
 // publishRunEvent puts a run lifecycle or stream event on the local agent_event_* bus; the

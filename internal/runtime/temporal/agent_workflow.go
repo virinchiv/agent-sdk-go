@@ -892,23 +892,58 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 		closeTextMsg()
 	}
 
-	isLLMStreamSupported := rt.AgentExecution.LLM.Client.IsStreamSupported()
+	llmClient := rt.AgentExecution.LLM.Client
+	model := llmClient.GetModel()
+	provider := string(llmClient.GetProvider())
+	modelAttr := interfaces.Attribute{Key: types.MetricAttrModel, Value: model}
+	providerAttr := interfaces.Attribute{Key: types.MetricAttrProvider, Value: provider}
+
+	isLLMStreamSupported := llmClient.IsStreamSupported()
+
+	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallStarted, modelAttr, providerAttr)
+	llmStart := time.Now()
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "llm.stream",
+		interfaces.Attribute{Key: "agent.name", Value: agentName},
+		interfaces.Attribute{Key: "message.count", Value: len(messages)},
+		interfaces.Attribute{Key: "streaming", Value: isLLMStreamSupported},
+		modelAttr,
+		providerAttr,
+	)
+	defer sp.End()
+
 	if !isLLMStreamSupported {
 		logger.Debug("activity: LLM stream unsupported, using generate", "scope", "activity")
-		resp, err := rt.AgentExecution.LLM.Client.Generate(ctx, req)
+		resp, err := llmClient.Generate(ctx, req)
+		llmLatency := float64(time.Since(llmStart).Milliseconds())
 		if err != nil {
+			sp.RecordError(err)
+			rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+			rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
 			return nil, err
 		}
 		result, err := rt.llmResponseToResult(resp, tools)
 		if err != nil {
+			sp.RecordError(err)
+			rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+			rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
 			return nil, err
+		}
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
+		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallCompleted, modelAttr, providerAttr)
+		if resp.Usage != nil {
+			rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensInput, float64(resp.Usage.PromptTokens), modelAttr, providerAttr)
+			rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
 		}
 		finalizeAssistantTextMessage(result)
 		return result, nil
 	}
 
-	stream, err := rt.AgentExecution.LLM.Client.GenerateStream(ctx, req)
+	stream, err := llmClient.GenerateStream(ctx, req)
 	if err != nil {
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, float64(time.Since(llmStart).Milliseconds()), modelAttr, providerAttr)
 		return nil, err
 	}
 
@@ -957,18 +992,35 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 		}
 	}
 	flushReasoning()
+	llmLatency := float64(time.Since(llmStart).Milliseconds())
 	if err := stream.Err(); err != nil {
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
 		return nil, err
 	}
 
 	resp := stream.GetResult()
 	if resp == nil {
-		return nil, fmt.Errorf("stream completed without result")
+		err := fmt.Errorf("stream completed without result")
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
+		return nil, err
 	}
 	logger.Debug("activity: LLM stream completed", "scope", "activity", "runID", agentWorkflowID)
 	result, err := rt.llmResponseToResult(resp, tools)
 	if err != nil {
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
 		return nil, err
+	}
+	rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
+	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallCompleted, modelAttr, providerAttr)
+	if resp.Usage != nil {
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensInput, float64(resp.Usage.PromptTokens), modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
 	}
 	finalizeAssistantTextMessage(result)
 	return result, nil
@@ -1005,11 +1057,19 @@ func (rt *TemporalRuntime) fetchConversationMessages(ctx context.Context, conver
 		limit = 20
 	}
 
+	ctx, sp := rt.Tracer.StartSpan(ctx, "conversation.get_messages",
+		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
+		interfaces.Attribute{Key: "limit", Value: limit},
+	)
+	defer sp.End()
+
 	messages, err := rt.AgentExecution.Session.Conversation.ListMessages(ctx, conversationID, interfaces.WithLimit(limit))
 	if err != nil {
+		sp.RecordError(err)
 		return nil, fmt.Errorf("failed to list conversation messages: %w", err)
 	}
 
+	sp.SetAttribute("message.count", len(messages))
 	logger.Debug("activity: conversation history loaded", "scope", "activity", "messageCount", len(messages))
 	return messages, nil
 }
@@ -1059,10 +1119,40 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 
 	logger.Debug("activity: LLM generate started", "scope", "activity", "messageCount", len(messages))
 	req, tools := rt.buildLLMRequest(messages, input.SkipTools)
-	resp, err := rt.AgentExecution.LLM.Client.Generate(ctx, req)
+
+	llmClient := rt.AgentExecution.LLM.Client
+	model := llmClient.GetModel()
+	provider := string(llmClient.GetProvider())
+	modelAttr := interfaces.Attribute{Key: types.MetricAttrModel, Value: model}
+	providerAttr := interfaces.Attribute{Key: types.MetricAttrProvider, Value: provider}
+
+	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallStarted, modelAttr, providerAttr)
+	llmStart := time.Now()
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "llm.generate",
+		interfaces.Attribute{Key: "agent.name", Value: strings.TrimSpace(input.AgentName)},
+		interfaces.Attribute{Key: "message.count", Value: len(messages)},
+		modelAttr,
+		providerAttr,
+	)
+	resp, err := llmClient.Generate(ctx, req)
+	llmLatency := float64(time.Since(llmStart).Milliseconds())
 	if err != nil {
+		sp.RecordError(err)
+		sp.End()
+		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
 		return nil, err
 	}
+	sp.End()
+
+	rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
+	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallCompleted, modelAttr, providerAttr)
+	if resp.Usage != nil {
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensInput, float64(resp.Usage.PromptTokens), modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
+	}
+
 	logger.Debug("activity: LLM generate completed", "scope", "activity", "messageCount", len(messages))
 	result, err := rt.llmResponseToResult(resp, tools)
 	if err != nil {
@@ -1207,11 +1297,22 @@ func (rt *TemporalRuntime) AddConversationMessagesActivity(ctx context.Context, 
 		return fmt.Errorf("conversation is not configured")
 	}
 
+	ctx, sp := rt.Tracer.StartSpan(ctx, "conversation.add_messages",
+		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
+		interfaces.Attribute{Key: "message.count", Value: msgCount},
+	)
+	defer sp.End()
+
+	failCount := 0
 	for _, msg := range messages {
 		if err := rt.AgentExecution.Session.Conversation.AddMessage(ctx, conversationID, msg); err != nil {
+			failCount++
 			msgCount--
 			logger.Warn("activity: add conversation message failed", "scope", "activity", "conversationID", conversationID, "error", err)
 		}
+	}
+	if failCount > 0 {
+		sp.SetAttribute("failed.count", failCount)
 	}
 
 	logger.Debug("activity: add conversation messages completed", "scope", "activity", "conversationID", conversationID, "messagesCount", msgCount)
@@ -1235,10 +1336,27 @@ func (rt *TemporalRuntime) AgentToolExecuteActivity(ctx context.Context, input A
 		logger.Warn("activity: unknown tool", "scope", "activity", "tool", toolName)
 		return "", fmt.Errorf("unknown tool: %s", toolName)
 	}
+
+	toolAttr := interfaces.Attribute{Key: types.MetricAttrTool, Value: toolName}
+	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallStarted, toolAttr)
+	toolStart := time.Now()
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "tool.execute",
+		interfaces.Attribute{Key: "tool.name", Value: toolName},
+		interfaces.Attribute{Key: "arg.count", Value: len(args)},
+	)
+	defer sp.End()
+
 	result, err := tool.Execute(ctx, args)
+	toolLatency := float64(time.Since(toolStart).Milliseconds())
 	if err != nil {
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricToolCallFailed, toolAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
 		return "", err
 	}
+	rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
+	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallCompleted, toolAttr)
 	content := fmt.Sprintf("%v", result)
 	logger.Debug("activity: tool execute completed", "scope", "activity", "tool", toolName)
 	return content, nil
@@ -1264,16 +1382,27 @@ func (rt *TemporalRuntime) AgentToolAuthorizeActivity(ctx context.Context, input
 		logger.Debug("activity: tool has no authorizer; allow by default", "scope", "activity", "tool", toolName)
 		return AgentToolAuthorizeResult{Allowed: true}, nil
 	}
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "tool.authorize",
+		interfaces.Attribute{Key: "tool.name", Value: toolName},
+		interfaces.Attribute{Key: "arg.count", Value: len(args)},
+	)
+	defer sp.End()
+
 	decision, err := authorizer.Authorize(ctx, args)
 	if err != nil {
+		sp.RecordError(err)
 		logger.Warn("activity: tool authorization failed", "scope", "activity", "tool", toolName, "error", err)
 		return AgentToolAuthorizeResult{}, err
 	}
 	if decision.Allow {
+		sp.SetAttribute("decision", "allowed")
 		logger.Debug("activity: tool authorization allowed", "scope", "activity", "tool", toolName)
 		return AgentToolAuthorizeResult{Allowed: true}, nil
 	}
 	reason := strings.TrimSpace(decision.Reason)
+	sp.SetAttribute("decision", "denied")
+	sp.SetAttribute("deny.reason", reason)
 	logger.Info("activity: tool authorization denied", "scope", "activity", "tool", toolName, "reason", reason)
 	return AgentToolAuthorizeResult{
 		Allowed: false,

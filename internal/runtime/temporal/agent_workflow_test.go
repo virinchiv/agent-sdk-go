@@ -15,6 +15,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces/mocks"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 )
 
 func testRuntimeForWorkflow(t *testing.T) *TemporalRuntime {
@@ -28,7 +29,9 @@ func testRuntimeForWorkflow(t *testing.T) *TemporalRuntime {
 				Tools:   sdkruntime.AgentTools{Tools: nil},
 				Session: sdkruntime.AgentSession{},
 			},
-			logger: logger.NoopLogger(),
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
 		},
 	}
 }
@@ -178,6 +181,8 @@ func TestAgentLLMActivity_MockLLM_TextOnly(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockLLM := mocks.NewMockLLMClient(ctrl)
+	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
+	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
 	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{
 		Content: "final",
 	}, nil)
@@ -188,7 +193,9 @@ func TestAgentLLMActivity_MockLLM_TextOnly(t *testing.T) {
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 			},
-			logger: logger.NoopLogger(),
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
 		},
 	}
 
@@ -219,6 +226,8 @@ func TestAgentLLMActivity_MockLLM_ToolCalls(t *testing.T) {
 	policy.EXPECT().RequiresApproval(gomock.Any()).Return(false).AnyTimes()
 
 	mockLLM := mocks.NewMockLLMClient(ctrl)
+	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
+	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
 	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{
 		Content: "call tool",
 		ToolCalls: []*interfaces.ToolCall{{
@@ -235,7 +244,9 @@ func TestAgentLLMActivity_MockLLM_ToolCalls(t *testing.T) {
 				LLM:   sdkruntime.AgentLLM{Client: mockLLM},
 				Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{mockTool}, ApprovalPolicy: policy},
 			},
-			logger: logger.NoopLogger(),
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
 		},
 	}
 
@@ -259,6 +270,8 @@ func TestAgentLLMActivity_MockLLM_UnknownToolError(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockLLM := mocks.NewMockLLMClient(ctrl)
+	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
+	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
 	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{
 		Content: "x",
 		ToolCalls: []*interfaces.ToolCall{{
@@ -274,7 +287,9 @@ func TestAgentLLMActivity_MockLLM_UnknownToolError(t *testing.T) {
 				LLM:   sdkruntime.AgentLLM{Client: mockLLM},
 				Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{}},
 			},
-			logger: logger.NoopLogger(),
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
 		},
 	}
 
@@ -298,6 +313,8 @@ func TestAgentLLMActivity_MockConversationAndLLM(t *testing.T) {
 	)
 
 	mockLLM := mocks.NewMockLLMClient(ctrl)
+	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
+	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
 	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{Content: "answer"}, nil)
 
 	rt := &TemporalRuntime{
@@ -309,7 +326,9 @@ func TestAgentLLMActivity_MockConversationAndLLM(t *testing.T) {
 					ConversationSize: 10,
 				},
 			},
-			logger: logger.NoopLogger(),
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
 		},
 	}
 
@@ -338,7 +357,9 @@ func TestAgentLLMActivity_ConversationNotConfigured(t *testing.T) {
 				LLM:     sdkruntime.AgentLLM{Client: mockLLM},
 				Session: sdkruntime.AgentSession{Conversation: nil},
 			},
-			logger: logger.NoopLogger(),
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
 		},
 	}
 
@@ -357,6 +378,8 @@ func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockLLM := mocks.NewMockLLMClient(ctrl)
+	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
+	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
 	mockLLM.EXPECT().IsStreamSupported().Return(false)
 	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{Content: "gen"}, nil)
 
@@ -366,7 +389,9 @@ func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 			},
-			logger: logger.NoopLogger(),
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
 		},
 	}
 
