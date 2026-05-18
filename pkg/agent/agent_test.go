@@ -16,6 +16,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 )
 
 func testAgentWithRuntime(rt runtime.Runtime) *Agent {
@@ -24,6 +25,8 @@ func testAgentWithRuntime(rt runtime.Runtime) *Agent {
 			Name:             "TestAgent",
 			logger:           logger.DefaultLogger("error"),
 			maxSubAgentDepth: 2,
+			tracer:           observability.DefaultNoopTracer,
+			metrics:          observability.DefaultNoopMetrics,
 		},
 		runtime: rt,
 	}
@@ -309,8 +312,10 @@ func TestAgent_Run_RequiresApprovalHandlerWhenToolsNeedApproval(t *testing.T) {
 
 	a := &Agent{
 		agentConfig: agentConfig{
-			Name:   "A",
-			logger: logger.DefaultLogger("error"),
+			Name:    "A",
+			logger:  logger.DefaultLogger("error"),
+			tracer:  observability.DefaultNoopTracer,
+			metrics: observability.DefaultNoopMetrics,
 			tools: []interfaces.Tool{
 				mockToolWithApproval{mockTool: mockTool{name: "need"}, needApproval: true},
 			},

@@ -29,7 +29,6 @@ func main() {
 
 	opts := setup.BaseAgentOptions(cfg, llmClient)
 	opts = append(opts,
-		agent.WithLogLevel("info"),
 		agent.WithObservabilityConfig(&agent.ObservabilityConfig{
 			Endpoint: otlp.Endpoint,
 			Protocol: otlp.AgentProto,

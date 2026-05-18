@@ -81,6 +81,12 @@ func (t *Tracer) Shutdown(ctx context.Context) error {
 	return t.tp.Shutdown(ctx)
 }
 
+// OTelTracer returns the underlying OpenTelemetry Tracer.
+// This is an optional OTel specific extension to the [interfaces.OTelTracer] interface.
+func (t *Tracer) OTelTracer() trace.Tracer {
+	return t.tracer
+}
+
 // spanAdapter adapts an OpenTelemetry [trace.Span] to [interfaces.Span].
 type spanAdapter struct {
 	s trace.Span
