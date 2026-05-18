@@ -441,10 +441,19 @@ func (e *agentA2AExecutor) Execute(ctx context.Context, execCtx *a2asrv.Executor
 			e.agent.LLMClient != nil &&
 			e.agent.LLMClient.IsStreamSupported()
 
+		ctx, sp := e.agent.tracer.StartSpan(ctx, "a2a.execute",
+			interfaces.Attribute{Key: "agent.name", Value: e.agent.Name},
+			interfaces.Attribute{Key: "task.id", Value: execCtx.TaskID},
+			interfaces.Attribute{Key: "streaming", Value: streaming},
+			interfaces.Attribute{Key: "input.length", Value: len(inputText)},
+		)
+		defer sp.End()
+
 		if !streaming {
 			// Non-streaming: one blocking Run, one Message reply.
 			result, err := e.agent.Run(ctx, inputText, "")
 			if err != nil {
+				sp.RecordError(err)
 				errMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(err.Error()))
 				yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, errMsg), nil)
 				return
@@ -463,6 +472,7 @@ func (e *agentA2AExecutor) Execute(ctx context.Context, execCtx *a2asrv.Executor
 
 		streamCh, err := e.agent.Stream(ctx, inputText, "")
 		if err != nil {
+			sp.RecordError(err)
 			errMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(err.Error()))
 			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, errMsg), nil)
 			return
@@ -491,6 +501,7 @@ func (e *agentA2AExecutor) Execute(ctx context.Context, execCtx *a2asrv.Executor
 				yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, nil), nil)
 				return
 			case *events.AgentRunErrorEvent:
+				sp.RecordError(fmt.Errorf("%s", e.Message))
 				errMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(e.Message))
 				yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, errMsg), nil)
 				return

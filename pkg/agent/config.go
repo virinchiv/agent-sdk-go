@@ -772,7 +772,7 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	ctx := context.Background()
 	c.logger.Info(ctx, "agent config built", slog.String("scope", "agent"), slog.String("name", c.Name), slog.String("taskQueue", c.taskQueue))
 	// Debug: full config summary for troubleshooting (no sensitive: systemPrompt, API keys)
-	c.logger.Debug(ctx, "agent config detail",
+	c.logger.Info(ctx, "agent config detail",
 		slog.String("scope", "agent"),
 		slog.String("name", c.Name),
 		slog.String("taskQueue", c.taskQueue),

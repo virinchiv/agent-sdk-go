@@ -25,6 +25,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 )
 
 // streamCapableLLM reports IsStreamSupported true for A2A streaming executor tests.
@@ -553,6 +554,8 @@ func TestRunA2A_ServesAgentCardAndSendMessage(t *testing.T) {
 			Name:             "IntegrationA2A",
 			Description:      "integration test agent",
 			logger:           logger.DefaultLogger("error"),
+			tracer:           observability.DefaultNoopTracer,
+			metrics:          observability.DefaultNoopMetrics,
 			LLMClient:        stubLLM{},
 			maxSubAgentDepth: 2,
 			a2aServerConfig:  &A2AServerConfig{Hostname: addr.IP.String(), Port: addr.Port},
@@ -672,6 +675,8 @@ func TestRunA2A_JSONRPCSendStreamingMessage_ReturnsSSE(t *testing.T) {
 			Name:             "IntegrationA2ASSE",
 			Description:      "integration test agent",
 			logger:           logger.DefaultLogger("error"),
+			tracer:           observability.DefaultNoopTracer,
+			metrics:          observability.DefaultNoopMetrics,
 			LLMClient:        stubLLM{},
 			maxSubAgentDepth: 2,
 			a2aServerConfig:  &A2AServerConfig{Hostname: addr.IP.String(), Port: addr.Port},

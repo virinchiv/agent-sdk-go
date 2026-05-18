@@ -1,8 +1,12 @@
 package interfaces
 
-import "context"
+import (
+	"context"
 
-//go:generate mockgen -destination=./mocks/mock_observability.go -package=mocks github.com/agenticenv/agent-sdk-go/pkg/interfaces Tracer,Metrics,Span,Logs
+	"go.opentelemetry.io/otel/trace"
+)
+
+//go:generate mockgen -destination=./mocks/mock_observability.go -package=mocks github.com/agenticenv/agent-sdk-go/pkg/interfaces Tracer,OTelTracer,Metrics,Span,Logs
 
 // Tracer is the tracing surface used by the SDK for OpenTelemetry-backed implementations (see
 // pkg/observability). Callers construct spans around LLM and tool work without importing OTel types.
@@ -12,6 +16,12 @@ type Tracer interface {
 
 	// Shutdown flushes exporters and releases resources when the agent or worker stops.
 	Shutdown(ctx context.Context) error
+}
+
+// OTelTracer is an optional OTel specific extension to the [trace.Tracer] interface.
+type OTelTracer interface {
+	// OTelTracer returns the underlying OpenTelemetry Tracer.
+	OTelTracer() trace.Tracer
 }
 
 // Metrics records counters and histograms for agent execution without coupling callers to OTel APIs.

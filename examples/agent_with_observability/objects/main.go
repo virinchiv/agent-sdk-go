@@ -72,7 +72,6 @@ func main() {
 
 	opts := setup.BaseAgentOptions(cfg, llmClient)
 	opts = append(opts,
-		agent.WithLogLevel("info"),
 		agent.WithTracer(tr),
 		agent.WithMetrics(mt),
 		agent.WithLogs(lg),

@@ -13,6 +13,8 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/contrib/opentelemetry"
+	"go.temporal.io/sdk/interceptor"
 )
 
 type TemporalConfig struct {
@@ -56,7 +58,8 @@ type TemporalRuntimeConfig struct {
 	DisableFingerprintCheck bool
 
 	// Tracer and Metrics are optional clients from pkg/agent (WithObservabilityConfig / WithTracer / WithMetrics).
-	// They are stored for future instrumentation; nothing in the runtime uses them yet.
+	// When the runtime owns the Temporal client ([WithTemporalConfig]), [interfaces.OTelTracer] is used to attach
+	// the Temporal OpenTelemetry client interceptor. Workers use the same tracer for worker interceptors.
 	Tracer  interfaces.Tracer
 	Metrics interfaces.Metrics
 }
@@ -185,7 +188,10 @@ func WithDisableFingerprintCheck(disable bool) Option {
 }
 
 // WithTracer sets the optional [interfaces.Tracer] for this runtime (from pkg/agent build).
-// Reserved for future instrumentation; the runtime does not call it yet.
+// When the runtime dials its own Temporal client ([WithTemporalConfig]) and the tracer implements
+// [interfaces.OTelTracer], a Temporal OpenTelemetry client interceptor is attached.
+// For [WithTemporalClient], the SDK cannot modify the client; if the tracer implements [interfaces.OTelTracer],
+// a warning is logged so callers can register the interceptor on their client.
 func WithTracer(t interfaces.Tracer) Option {
 	return func(c *TemporalRuntimeConfig) {
 		c.Tracer = t
@@ -193,7 +199,7 @@ func WithTracer(t interfaces.Tracer) Option {
 }
 
 // WithMetrics sets the optional [interfaces.Metrics] for this runtime (from pkg/agent build).
-// Reserved for future instrumentation; the runtime does not call it yet.
+// The Temporal runtime stores it for consistency with agent config; worker/client paths do not emit metrics yet.
 func WithMetrics(m interfaces.Metrics) Option {
 	return func(c *TemporalRuntimeConfig) {
 		c.Metrics = m
@@ -211,11 +217,15 @@ func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) 
 	}
 
 	if c.temporalConfig != nil {
-		tc, err := newTemporalClient(c.temporalConfig, c.logger)
+		tc, err := newTemporalClient(c.temporalConfig, c.logger, c.Tracer)
 		if err != nil {
 			return nil, err
 		}
 		c.temporalClient = tc
+	} else { // user provided Temporal client
+		if _, ok := c.Tracer.(interfaces.OTelTracer); ok {
+			c.logger.Warn(context.Background(), "user provided Temporal client — add OTel interceptor manually for tracing", slog.String("scope", "runtime"))
+		}
 	}
 
 	if c.instanceId != "" {
@@ -253,7 +263,7 @@ func buildTemporalRuntimeConfig(opts ...Option) (*TemporalRuntimeConfig, error) 
 	return c, nil
 }
 
-func newTemporalClient(config *TemporalConfig, sdkLog logger.Logger) (client.Client, error) {
+func newTemporalClient(config *TemporalConfig, sdkLog logger.Logger, tracer interfaces.Tracer) (client.Client, error) {
 	ctx := context.Background()
 	sdkLog.Info(ctx, "runtime connecting to temporal server", slog.String("scope", "runtime"), slog.String("host", config.Host), slog.Int("port", config.Port))
 
@@ -262,6 +272,14 @@ func newTemporalClient(config *TemporalConfig, sdkLog logger.Logger) (client.Cli
 		Namespace:               config.Namespace,
 		Logger:                  NewLogAdapter(sdkLog),
 		WorkerHeartbeatInterval: -1, // Disable; requires Temporal server 1.29.1+ with frontend.WorkerHeartbeatsEnabled=true
+	}
+
+	tracingInterceptor, traceErr := newTemporalTracingInterceptor(tracer)
+	if traceErr != nil {
+		return nil, fmt.Errorf("failed to create tracing interceptor: %w", traceErr)
+	}
+	if tracingInterceptor != nil {
+		clientOptions.Interceptors = []interceptor.ClientInterceptor{tracingInterceptor}
 	}
 
 	ticker := time.NewTicker(3 * time.Second)
@@ -311,4 +329,17 @@ func newTemporalClient(config *TemporalConfig, sdkLog logger.Logger) (client.Cli
 			}
 		}
 	}
+}
+
+// newTemporalTracingInterceptor returns the Temporal SDK OpenTelemetry tracing [interceptor.Interceptor]
+// when tracer implements [interfaces.OTelTracer]. Returns (nil, nil) when tracing should be skipped
+// (including nil tracer or tracers that do not expose an OpenTelemetry [trace.Tracer]).
+func newTemporalTracingInterceptor(tracer interfaces.Tracer) (interceptor.Interceptor, error) {
+	otelTracer, ok := tracer.(interfaces.OTelTracer)
+	if !ok {
+		return nil, nil
+	}
+	return opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{
+		Tracer: otelTracer.OTelTracer(),
+	})
 }

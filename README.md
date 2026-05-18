@@ -34,6 +34,7 @@
 - **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
 - **Sub-agents** — Delegate to specialist agents via `WithSubAgents`.
 - **Scale** — Add Temporal workers to scale agent execution horizontally.
+- **Observability** — OpenTelemetry traces, metrics, and structured logs across all agent execution paths; export to any OTLP-compatible backend.
 
 ## Temporal Runtime
 
@@ -904,6 +905,121 @@ a.Run(ctx, "What's my name?", convID) // agent uses history: "Alice"
 
 ---
 
+## Observability
+
+The SDK emits **traces**, **metrics**, and **logs** via OpenTelemetry. All signals are **no-op by default** — if you set nothing, the agent runs without any overhead. Wire them only when you need them.
+
+### Default: no-op, zero config
+
+No `WithObservabilityConfig`, no `WithTracer`, no `WithMetrics` — the agent uses built-in no-op implementations. No extra imports or init code required.
+
+### Wire OTLP (traces + metrics + logs in one block)
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/agent"
+
+a, _ := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(...),
+    agent.WithObservabilityConfig(&agent.ObservabilityConfig{
+        Endpoint: "collector:4317",           // gRPC (default) or HTTP URL
+        Protocol: agent.OTLPProtocolGRPC,    // or OTLPProtocolHTTP
+        Insecure: true,                       // dev only; omit for TLS
+        // DisableTraces:  true,             // opt out of traces only
+        // DisableMetrics: true,             // opt out of metrics only
+        // DisableLogs:    true,             // opt out of OTLP logs only
+    }),
+)
+defer a.Close() // flushes all OTLP signals
+```
+
+Use the **same `WithObservabilityConfig`** on `NewAgent` and `NewAgentWorker` so spans and metrics from the worker activities are exported to the same backend.
+
+### Bring your own tracer / metrics
+
+Use `WithTracer` and `WithMetrics` when you already have an OTel provider set up or want a custom implementation. Both accept any value that satisfies `interfaces.Tracer` / `interfaces.Metrics`.
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    "github.com/agenticenv/agent-sdk-go/pkg/observability"
+)
+
+tracer, _ := observability.NewTracer(ctx, "my-service", "collector:4317",
+    observability.WithInsecure(),
+)
+metrics, _ := observability.NewMetrics(ctx, "my-service", "collector:4317",
+    observability.WithInsecure(),
+)
+
+a, _ := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(...),
+    agent.WithTracer(tracer),
+    agent.WithMetrics(metrics),
+)
+```
+
+### Traces (spans)
+
+| Span | Emitted by |
+|---|---|
+| `agent.run` | `Agent.Run` / `Agent.RunAsync` |
+| `agent.stream` | `Agent.Stream` (dispatch phase) |
+| `a2a.execute` | A2A server executor per request |
+| `llm.generate` | `AgentLLMActivity` (sync LLM call) |
+| `llm.stream` | `AgentLLMStreamActivity` (streaming LLM call) |
+| `tool.execute` | `AgentToolExecuteActivity` |
+| `tool.authorize` | `AgentToolAuthorizeActivity` |
+| `conversation.get_messages` | Fetch conversation history activity |
+| `conversation.add_messages` | Persist conversation activity |
+
+Common attributes: `agent.name`, `conversation.id`, `input.length`, `model`, `provider`, `tool`.
+
+### Metrics
+
+All metric names are defined in `internal/types/metrics.go`.
+
+**Agent API** (emitted by `Agent.Run` / `Agent.Stream`):
+
+| Metric | Kind | Description |
+|---|---|---|
+| `agent.run.started` | counter | Each `Run` / `RunAsync` invocation |
+| `agent.run.completed` | counter | Successful run |
+| `agent.run.failed` | counter | Failed run (includes error attribute) |
+| `agent.run.duration_ms` | histogram | Run wall-clock time in ms |
+| `agent.stream.started` | counter | Each `Stream` invocation |
+| `agent.stream.dispatched` | counter | Workflow successfully dispatched |
+| `agent.stream.failed` | counter | Dispatch failed |
+| `agent.stream.duration_ms` | histogram | Dispatch wall-clock time in ms |
+
+**Runtime** (emitted by Temporal activities; attributes: `model`, `provider`, `tool`):
+
+| Metric | Kind | Description |
+|---|---|---|
+| `agent.llm.call.started` | counter | LLM call started |
+| `agent.llm.call.completed` | counter | LLM call succeeded |
+| `agent.llm.call.failed` | counter | LLM call failed |
+| `agent.llm.latency_ms` | histogram | LLM wall-clock time in ms |
+| `agent.llm.tokens.input` | histogram | Prompt tokens (when provider reports usage) |
+| `agent.llm.tokens.output` | histogram | Completion tokens (when provider reports usage) |
+| `agent.tool.call.started` | counter | Tool execute started |
+| `agent.tool.call.completed` | counter | Tool execute succeeded |
+| `agent.tool.call.failed` | counter | Tool execute failed |
+| `agent.tool.latency_ms` | histogram | Tool wall-clock time in ms |
+
+### Logs
+
+Structured logs (`Info`, `Debug`, `Warn`, `Error`) are emitted throughout the agent lifecycle and workflow execution. The default logger writes to stderr. Use `WithLogger` to inject your own, `WithLogLevel` to set the level (`debug`, `info`, `warn`, `error`).
+
+When `WithObservabilityConfig` is set (and `DisableLogs` is not true), SDK logs are also exported to your OTLP backend automatically — no extra `WithLogger` call needed.
+
+```go
+agent.WithLogLevel("debug") // show all SDK internal log lines
+```
+
+---
+
 ## Configuration
 
 A Temporal connection is **required** — one of `WithTemporalConfig` or `WithTemporalClient` must be set; the agent does not run with LLM-only config.
@@ -991,6 +1107,7 @@ See **[cmd/README.md](cmd/README.md)** for CLI details and env vars.
 - **Split processes** — If you use `DisableLocalWorker` or `EnableRemoteWorkers()`, use a distributed conversation store (e.g. Redis) and exercise approval/streaming paths in integration tests.
 - **Secrets and data** — Keep LLM and Temporal credentials out of source control; treat tool arguments and model output as untrusted in your app.
 - **LLM safety** — Validate and sanitize prompts, tool args, and model output at your integration boundary.
+- **Observability** — Wire `WithObservabilityConfig` (or `WithTracer` / `WithMetrics`) on both `NewAgent` and `NewAgentWorker` so all signals reach your backend. Confirm your OTLP collector is reachable before deploying; use `Insecure: true` only in dev.
 - **Operations** — Use your logger (`WithLogger` / `WithLogLevel`) and the Temporal UI/history for a given run; after upgrading this module, confirm workflows still replay in your environment.
 
 ---
