@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"log/slog"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
 
 // Agent runs LLM-backed agent execution through the configured execution runtime.
@@ -122,6 +124,13 @@ func (a *Agent) Close() {
 
 	a.runtime.Close()
 
+	// Flush OTLP when built via [WithObservabilityConfig] (batched exporters need Shutdown). No-ops for noop.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_ = a.tracer.Shutdown(shutdownCtx)
+	_ = a.metrics.Shutdown(shutdownCtx)
+	_ = a.logs.Shutdown(shutdownCtx)
+	cancel()
+
 	a.logger.Info(ctx, "agent closed", slog.String("scope", "agent"), slog.String("name", a.Name))
 }
 
@@ -131,20 +140,41 @@ func (a *Agent) Close() {
 func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*AgentRunResult, error) {
 	a.logger.Debug(ctx, "agent run started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
 
+	start := time.Now()
+	ctx, sp := a.tracer.StartSpan(ctx, "agent.run",
+		interfaces.Attribute{Key: "agent.name", Value: a.Name},
+		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
+		interfaces.Attribute{Key: "input.length", Value: len(input)},
+	)
+	defer sp.End()
+	a.metrics.IncrementCounter(ctx, types.MetricRunStarted)
+
 	if err := a.validateConversationID(conversationID); err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricRunFailed, interfaces.Attribute{Key: "error", Value: "conversation_id_invalid"})
+		a.metrics.RecordHistogram(ctx, types.MetricRunDurationMs, float64(time.Since(start).Milliseconds()))
 		return nil, err
 	}
 
 	if a.hasApprovalTools() && a.approvalHandler == nil {
-		return nil, fmt.Errorf("tools require approval but WithApprovalHandler was not set (required for Run)")
+		err := fmt.Errorf("tools require approval but WithApprovalHandler was not set (required for Run)")
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricRunFailed, interfaces.Attribute{Key: "error", Value: "missing_approval_handler"})
+		a.metrics.RecordHistogram(ctx, types.MetricRunDurationMs, float64(time.Since(start).Milliseconds()))
+		return nil, err
 	}
 
 	req := a.executeRequest(input, conversationID, false)
 
 	result, err := a.runtime.Execute(ctx, req)
 	if err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricRunFailed, interfaces.Attribute{Key: "error", Value: "runtime_execute_failed"})
+		a.metrics.RecordHistogram(ctx, types.MetricRunDurationMs, float64(time.Since(start).Milliseconds()))
 		return nil, err
 	}
+	a.metrics.RecordHistogram(ctx, types.MetricRunDurationMs, float64(time.Since(start).Milliseconds()))
+	a.metrics.IncrementCounter(ctx, types.MetricRunCompleted)
 	return result, nil
 }
 
@@ -221,7 +251,19 @@ func copyApprovalArgs(src map[string]any) map[string]any {
 func (a *Agent) Stream(ctx context.Context, input string, conversationID string) (<-chan events.AgentEvent, error) {
 	a.logger.Debug(ctx, "agent run stream started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
 
+	start := time.Now()
+	ctx, sp := a.tracer.StartSpan(ctx, "agent.stream",
+		interfaces.Attribute{Key: "agent.name", Value: a.Name},
+		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
+		interfaces.Attribute{Key: "input.length", Value: len(input)},
+	)
+	defer sp.End()
+	a.metrics.IncrementCounter(ctx, types.MetricStreamStarted)
+
 	if err := a.validateConversationID(conversationID); err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricStreamFailed, interfaces.Attribute{Key: "error", Value: "conversation_id_invalid"})
+		a.metrics.RecordHistogram(ctx, types.MetricStreamDurationMs, float64(time.Since(start).Milliseconds()))
 		return nil, err
 	}
 
@@ -229,8 +271,13 @@ func (a *Agent) Stream(ctx context.Context, input string, conversationID string)
 
 	streamCh, err := a.runtime.ExecuteStream(ctx, req)
 	if err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricStreamFailed, interfaces.Attribute{Key: "error", Value: "runtime_execute_stream_failed"})
+		a.metrics.RecordHistogram(ctx, types.MetricStreamDurationMs, float64(time.Since(start).Milliseconds()))
 		return nil, err
 	}
+	a.metrics.RecordHistogram(ctx, types.MetricStreamDurationMs, float64(time.Since(start).Milliseconds()))
+	a.metrics.IncrementCounter(ctx, types.MetricStreamDispatched)
 	return streamCh, nil
 }
 

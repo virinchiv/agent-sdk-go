@@ -1,17 +1,21 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
+	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -22,6 +26,26 @@ func TestBuildAgentConfig_NeitherTemporalConfigNorClient(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "temporal connection is required") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBuildAgentConfig_DefaultNoopTracerMetrics(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("noop-obs"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.tracer.(*observability.NoopTracer); !ok {
+		t.Fatalf("without observability wiring, tracer should be *observability.NoopTracer, got %T", cfg.tracer)
+	}
+	if _, ok := cfg.metrics.(*observability.NoopMetrics); !ok {
+		t.Fatalf("without observability wiring, metrics should be *observability.NoopMetrics, got %T", cfg.metrics)
+	}
+	if _, ok := cfg.logs.(*observability.NoopLogs); !ok {
+		t.Fatalf("without observability wiring, logs should be *observability.NoopLogs, got %T", cfg.logs)
 	}
 }
 
@@ -727,5 +751,608 @@ func TestAgentConfig_validateToolNames_A2AConflict(t *testing.T) {
 	err := c.validateToolNames()
 	if err == nil || (!strings.Contains(err.Error(), "duplicate tool name") && !strings.Contains(err.Error(), "conflicts")) {
 		t.Fatalf("want duplicate/conflict error, got %v", err)
+	}
+}
+
+func TestObservabilityConfigFingerprint_defaultProtocolMatchesExplicitGRPC(t *testing.T) {
+	implicit := observabilityConfigFingerprint(&ObservabilityConfig{Endpoint: "localhost:4317"})
+	explicit := observabilityConfigFingerprint(&ObservabilityConfig{
+		Endpoint: "localhost:4317",
+		Protocol: OTLPProtocolGRPC,
+	})
+	if implicit != explicit {
+		t.Fatalf("empty Protocol should fingerprint same as grpc: %q vs %q", implicit, explicit)
+	}
+}
+
+func TestObservabilityConfigFingerprint_protocolAndInsecureChangeDigest(t *testing.T) {
+	base := observabilityConfigFingerprint(&ObservabilityConfig{Endpoint: "localhost:4317"})
+	withHTTP := observabilityConfigFingerprint(&ObservabilityConfig{
+		Endpoint: "localhost:4317",
+		Protocol: OTLPProtocolHTTP,
+	})
+	if base == withHTTP {
+		t.Fatal("expected different digest when Protocol changes")
+	}
+	insecure := observabilityConfigFingerprint(&ObservabilityConfig{
+		Endpoint: "localhost:4317",
+		Insecure: true,
+	})
+	if base == insecure {
+		t.Fatal("expected different digest when Insecure changes")
+	}
+}
+
+func TestObservabilityOptions_appliesTypesDefaults(t *testing.T) {
+	oc := &ObservabilityConfig{
+		Endpoint: "collector.example:4317",
+		Protocol: OTLPProtocolHTTP,
+		Insecure: true,
+	}
+	ac := &agentConfig{
+		Name:                "my-agent",
+		logger:              logger.DefaultLogger("error"),
+		observabilityConfig: oc,
+	}
+	cfg, err := observability.BuildConfig(observabilityOptions(ac)...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Name != "my-agent" || cfg.Endpoint != oc.Endpoint {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+	if cfg.Protocol != observability.ProtocolHTTP {
+		t.Fatalf("Protocol = %q", cfg.Protocol)
+	}
+	if !cfg.Insecure {
+		t.Fatal("want Insecure true")
+	}
+	if cfg.ExportTimeout != types.DefaultOTLPExportTimeout {
+		t.Fatalf("ExportTimeout = %v", cfg.ExportTimeout)
+	}
+	if cfg.BatchTimeout != types.DefaultOTLPBatchTimeout {
+		t.Fatalf("BatchTimeout = %v", cfg.BatchTimeout)
+	}
+	if cfg.MetricsInterval != types.DefaultOTLPMetricsInterval {
+		t.Fatalf("MetricsInterval = %v", cfg.MetricsInterval)
+	}
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_HTTP(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("obs-agent"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint: host,
+			Protocol: OTLPProtocolHTTP,
+			Insecure: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.tracer == nil || cfg.metrics == nil {
+		t.Fatalf("want tracer and metrics from observability config, tracer=%v metrics=%v", cfg.tracer, cfg.metrics)
+	}
+	if _, ok := cfg.logs.(*observability.Logs); !ok {
+		t.Fatalf("want OTLP *observability.Logs from observability config, got %T", cfg.logs)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := cfg.tracer.Shutdown(ctx); err != nil {
+		t.Errorf("tracer Shutdown: %v", err)
+	}
+	if err := cfg.metrics.Shutdown(ctx); err != nil {
+		t.Errorf("metrics Shutdown: %v", err)
+	}
+	if err := cfg.logs.Shutdown(ctx); err != nil {
+		t.Errorf("logs Shutdown: %v", err)
+	}
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_DisableTraces_keepsInjectedTracer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	stub := presStubTracer{}
+	cfg, err := buildAgentConfig([]Option{
+		WithName("disable-traces-keep-tracer"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTracer(stub),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint:      host,
+			Protocol:      OTLPProtocolHTTP,
+			Insecure:      true,
+			DisableTraces: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.tracer != stub {
+		t.Fatalf("expected WithTracer to remain when DisableTraces=true, got %T", cfg.tracer)
+	}
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_DisableMetrics_keepsInjectedMetrics(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	stub := presStubMetrics{}
+	cfg, err := buildAgentConfig([]Option{
+		WithName("disable-metrics-keep-metrics"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithMetrics(stub),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint:       host,
+			Protocol:       OTLPProtocolHTTP,
+			Insecure:       true,
+			DisableMetrics: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.metrics != stub {
+		t.Fatalf("expected WithMetrics to remain when DisableMetrics=true, got %T", cfg.metrics)
+	}
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_replacesInjectedTracer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	tr, err := observability.NewTracer(
+		observability.WithEndpoint(host),
+		observability.WithName("pre-inject-tracer"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tr.Shutdown(ctx)
+	}()
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("obs-replace-tracer"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTracer(tr),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint: host,
+			Protocol: OTLPProtocolHTTP,
+			Insecure: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.tracer == tr {
+		t.Fatal("expected observability-built tracer to replace injected WithTracer, same pointer")
+	}
+	if _, ok := cfg.tracer.(*observability.Tracer); !ok {
+		t.Fatalf("want *observability.Tracer from observability config, got %T", cfg.tracer)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cfg.tracer.Shutdown(ctx)
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_replacesInjectedMetrics(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	mt, err := observability.NewMetrics(
+		observability.WithEndpoint(host),
+		observability.WithName("pre-inject-metrics"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+		observability.WithMetricsInterval(40*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = mt.Shutdown(ctx)
+	}()
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("obs-replace-metrics"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithMetrics(mt),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint: host,
+			Protocol: OTLPProtocolHTTP,
+			Insecure: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.metrics == mt {
+		t.Fatal("expected observability-built metrics to replace injected WithMetrics, same pointer")
+	}
+	if _, ok := cfg.metrics.(*observability.Metrics); !ok {
+		t.Fatalf("want *observability.Metrics from observability config, got %T", cfg.metrics)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cfg.metrics.Shutdown(ctx)
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_replacesInjectedTracerMetricsLogsTogether(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	tr, err := observability.NewTracer(
+		observability.WithEndpoint(host),
+		observability.WithName("triple-pre-tr"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt, err := observability.NewMetrics(
+		observability.WithEndpoint(host),
+		observability.WithName("triple-pre-mt"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+		observability.WithMetricsInterval(40*time.Millisecond),
+	)
+	if err != nil {
+		_ = tr.Shutdown(context.Background())
+		t.Fatal(err)
+	}
+	lg, err := observability.NewLogs(
+		observability.WithEndpoint(host),
+		observability.WithName("triple-pre-lg"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+	)
+	if err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tr.Shutdown(ctx)
+		_ = mt.Shutdown(ctx)
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = tr.Shutdown(ctx)
+		_ = mt.Shutdown(ctx)
+		_ = lg.Shutdown(ctx)
+	}()
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("triple-replace"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTracer(tr),
+		WithMetrics(mt),
+		WithLogs(lg),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint: host,
+			Protocol: OTLPProtocolHTTP,
+			Insecure: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.tracer == tr || cfg.metrics == mt || cfg.logs == lg {
+		t.Fatalf("expected all three signals replaced by observability build: tracerSame=%v metricsSame=%v logsSame=%v",
+			cfg.tracer == tr, cfg.metrics == mt, cfg.logs == lg)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cfg.tracer.Shutdown(ctx)
+	_ = cfg.metrics.Shutdown(ctx)
+	_ = cfg.logs.Shutdown(ctx)
+}
+
+func TestBuildAgentConfig_injectedStubLogs_withoutObs_doesNotWireOtelLogger(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("stub-logs-no-otel"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogs(&stubLogs{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otlpLogsClientConfigured(cfg.logs) {
+		t.Fatal("stub WithLogs must not count as OTLP *observability.Logs for logger wiring")
+	}
+}
+
+type stubLogs struct {
+	shutdowns int
+}
+
+func (s *stubLogs) Shutdown(_ context.Context) error {
+	s.shutdowns++
+	return nil
+}
+
+// presStubTracer / presStubMetrics are minimal [interfaces.Tracer] / [interfaces.Metrics] for precedence tests.
+type presStubTracer struct{}
+
+func (presStubTracer) StartSpan(ctx context.Context, name string, attrs ...interfaces.Attribute) (context.Context, interfaces.Span) {
+	return ctx, &observability.NoopSpan{}
+}
+
+func (presStubTracer) Shutdown(context.Context) error { return nil }
+
+type presStubMetrics struct{}
+
+func (presStubMetrics) IncrementCounter(context.Context, string, ...interfaces.Attribute) {}
+
+func (presStubMetrics) RecordHistogram(context.Context, string, float64, ...interfaces.Attribute) {}
+
+func (presStubMetrics) Shutdown(context.Context) error { return nil }
+
+func TestBuildAgentConfig_WithLogs_withoutObservability(t *testing.T) {
+	stub := &stubLogs{}
+	cfg, err := buildAgentConfig([]Option{
+		WithName("logs-inject"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogs(stub),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.logs != stub {
+		t.Fatalf("expected injected WithLogs to be kept without WithObservabilityConfig, got %T", cfg.logs)
+	}
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_overwritesWithLogs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	stub := &stubLogs{}
+	cfg, err := buildAgentConfig([]Option{
+		WithName("obs-overwrites-logs"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogs(stub),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint: host,
+			Protocol: OTLPProtocolHTTP,
+			Insecure: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.logs.(*observability.Logs); !ok {
+		t.Fatalf("expected built OTLP *observability.Logs to replace WithLogs, got %T", cfg.logs)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cfg.logs.Shutdown(ctx)
+}
+
+func TestBuildAgentConfig_NewLogs_injected_alone_autoWiresDefaultLogger(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	lg, err := observability.NewLogs(
+		observability.WithEndpoint(host),
+		observability.WithName("inject-only-logs"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = lg.Shutdown(ctx)
+	}()
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("inject-logs-wire"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogs(lg),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.logs != lg {
+		t.Fatalf("expected WithLogs instance to be kept without observability config, got %T", cfg.logs)
+	}
+	ctx := context.Background()
+	cfg.logger.Info(ctx, "smoke after auto-wire")
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_replacesInjectedOTLPLogs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	lg, err := observability.NewLogs(
+		observability.WithEndpoint(host),
+		observability.WithName("pre-inject"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = lg.Shutdown(ctx)
+	}()
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("obs-replace-inject"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogs(lg),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint: host,
+			Protocol: OTLPProtocolHTTP,
+			Insecure: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.logs == lg {
+		t.Fatal("expected observability-built Logs to replace injected WithLogs, not the same pointer")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = cfg.logs.Shutdown(ctx)
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_DisableLogs_keepsWithLogs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	stub := &stubLogs{}
+	cfg, err := buildAgentConfig([]Option{
+		WithName("disable-logs-keep-inject"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogs(stub),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint:    host,
+			Protocol:    OTLPProtocolHTTP,
+			Insecure:    true,
+			DisableLogs: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.logs != stub {
+		t.Fatalf("expected WithLogs to remain when DisableLogs=true, got %T", cfg.logs)
+	}
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_DisableLogs_injectedOTLPLogs_wiresDefaultLogger(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	lg, err := observability.NewLogs(
+		observability.WithEndpoint(host),
+		observability.WithName("disable-logs-otlp-inject"),
+		observability.WithProtocol(observability.ProtocolHTTP),
+		observability.WithInsecure(true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = lg.Shutdown(ctx)
+	}()
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("disable-logs-wire-otel"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogs(lg),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint:    host,
+			Protocol:    OTLPProtocolHTTP,
+			Insecure:    true,
+			DisableLogs: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.logs != lg {
+		t.Fatalf("expected injected OTLP Logs to remain when DisableLogs=true, got %T", cfg.logs)
+	}
+	if !otlpLogsClientConfigured(cfg.logs) {
+		t.Fatal("expected *observability.Logs so default logger can bridge to OTLP")
+	}
+	ctx := context.Background()
+	cfg.logger.Info(ctx, "smoke with DisableLogs and injected OTLP Logs")
+}
+
+func TestBuildAgentConfig_WithObservabilityConfig_customLogger_warnsAboutLogs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(strings.TrimPrefix(srv.URL, "http://"), "https://")
+
+	var buf bytes.Buffer
+	custom := logger.NewWriterLogger(&buf, "warn", "text", false)
+
+	_, err := buildAgentConfig([]Option{
+		WithName("custom-log-warn"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithLogger(custom),
+		WithObservabilityConfig(&ObservabilityConfig{
+			Endpoint: host,
+			Protocol: OTLPProtocolHTTP,
+			Insecure: true,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "custom WithLogger") {
+		t.Fatalf("expected warning about custom WithLogger and OTLP logs; buf=%q", out)
 	}
 }

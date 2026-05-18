@@ -34,6 +34,7 @@ The examples use `TEMPORAL_HOST`, `TEMPORAL_PORT`, and `TEMPORAL_NAMESPACE` from
 | `agent_with_a2a_config` | Outbound A2A via `WithA2AConfig` — **`A2A_URL`** etc.; **[README](agent_with_a2a_config/README.md)** |
 | `agent_with_a2a_client` | Same env, explicit **`pkg/a2a/client`** — **[README](agent_with_a2a_client/README.md)** |
 | `agent_with_a2a_server` | **Inbound** A2A server — **`A2A_SERVER_*`**; **[README](agent_with_a2a_server/README.md)** (curl, **`a2a` CLI**, client example) |
+| `agent_with_observability` | OpenTelemetry OTLP exports — two runnable programs: **`config/`** ([`WithObservabilityConfig`](../pkg/agent/config.go)) vs **`objects/`** (pre-built [`pkg/observability`](../pkg/observability/) tracer/metrics + [`WithTracer`](../pkg/agent/config.go) / [`WithMetrics`](../pkg/agent/config.go)); shared **`setup/`** helper package — **[README](agent_with_observability/README.md)** (collector endpoint, ports **`4317`**/**`4318`**) |
 
 ## Setup
 
@@ -174,6 +175,20 @@ go run ./agent_with_a2a_server
 
 **curl, `a2a` CLI, testing with `agent_with_a2a_config`:** **[agent_with_a2a_server/README.md](agent_with_a2a_server/README.md)**.
 
+### Observability OTLP (`agent_with_observability`)
+
+Requires a reachable OTLP **collector** (**`OTEL_EXPORTER_OTLP_ENDPOINT`**, typically **`localhost:4317`** for gRPC or **`localhost:4318`** for HTTP — see **`env.sample`**). Same Temporal + LLM setup as other examples.
+
+```bash
+go run ./agent_with_observability/config/
+go run ./agent_with_observability/objects/
+
+go run ./agent_with_observability/config/ "Say hello in one sentence"
+go run ./agent_with_observability/objects/ "Say hello in one sentence"
+```
+
+Details, env semantics, and collector notes: **[agent_with_observability/README.md](agent_with_observability/README.md)**.
+
 ## Logging
 
 Examples send conversation (user prompt, assistant response) to **stdout** and internal logs to **stderr**. By default only errors are logged.
@@ -224,3 +239,6 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 | `A2A_SERVER_HOST` | Optional bind hostname for **`agent_with_a2a_server`** (empty → default **localhost**) |
 | `A2A_SERVER_PORT` | Optional TCP port for **`agent_with_a2a_server`** (0 → default **9999**) |
 | `A2A_SERVER_BEARER_TOKENS` | Optional comma-separated bearer secrets for inbound JSON-RPC on **`agent_with_a2a_server`** |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | **Required** for **`agent_with_observability`** examples: OTLP collector **`host:port`** only (no `http://` scheme), e.g. **`localhost:4317`** (gRPC) or **`localhost:4318`** (HTTP) |
+| `OTLP_PROTOCOL` | Optional for **`agent_with_observability`**: **`grpc`** (default) or **`http`** — must match how the collector listens |
+| `OTLP_INSECURE` | Optional: set to **`true`** for plaintext export (typical for local collectors without TLS) |
