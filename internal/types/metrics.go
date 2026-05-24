@@ -38,8 +38,17 @@ const (
 	// Runtime — tool wall-clock latency.
 	MetricToolLatencyMs = "agent.tool.latency_ms"
 
+	// Runtime — emitted per retriever.Search call (prefetch and hybrid modes).
+	MetricRetrieverCallStarted   = "agent.retriever.call.started"
+	MetricRetrieverCallCompleted = "agent.retriever.call.completed"
+	MetricRetrieverCallFailed    = "agent.retriever.call.failed"
+
+	// Runtime — retriever search wall-clock latency.
+	MetricRetrieverLatencyMs = "agent.retriever.latency_ms"
+
 	// Attribute keys used on both metrics and spans.
-	MetricAttrModel    = "model"
-	MetricAttrProvider = "provider"
-	MetricAttrTool     = "tool"
+	MetricAttrModel     = "model"
+	MetricAttrProvider  = "provider"
+	MetricAttrTool      = "tool"
+	MetricAttrRetriever = "retriever"
 )

@@ -50,6 +50,8 @@ type TemporalRuntimeConfig struct {
 	AgentMode string
 	// AgentToolExecutionMode is the [types.AgentToolExecutionMode] (e.g. "sequential", "parallel"); must match pkg/agent WithAgentToolExecutionMode.
 	AgentToolExecutionMode types.AgentToolExecutionMode
+	// RetrieverFingerprint is from pkg/agent retrieverConfigFingerprint; must match caller temporal.ComputeAgentFingerprint inputs.
+	RetrieverFingerprint string
 	// DisableLocalWorker mirrors pkg/agent [DisableLocalWorker]: when false, the client embeds a worker
 	// so Execute/ExecuteStream skip DescribeTaskQueue poller checks. ([NewAgentWorker] never calls those methods.)
 	DisableLocalWorker bool
@@ -168,6 +170,14 @@ func WithAgentMode(mode string) Option {
 func WithAgentToolExecutionMode(mode types.AgentToolExecutionMode) Option {
 	return func(c *TemporalRuntimeConfig) {
 		c.AgentToolExecutionMode = mode
+	}
+}
+
+// WithRetrieverFingerprint sets the retriever wiring digest (mode + retriever names).
+// Must match pkg/agent [retrieverConfigFingerprint] for the same agent.
+func WithRetrieverFingerprint(fp string) Option {
+	return func(c *TemporalRuntimeConfig) {
+		c.RetrieverFingerprint = fp
 	}
 }
 

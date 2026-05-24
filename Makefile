@@ -3,11 +3,12 @@
 BIN_DIR := cmd/bin
 BINARY := $(BIN_DIR)/agentctl
 GOPATH_BIN := $(shell go env GOPATH)/bin
-# Go 1.25+: coverage merges via covdata; with GOTOOLCHAIN=auto the fetched toolchain can fail on
-# packages with no tests ("go: no such tool covdata"). Pin minimum toolchain to module go line.
+# Coverage merges via covdata; with GOTOOLCHAIN=auto the fetched toolchain can fail on
+# packages with no tests ("go: no such tool covdata"). Pin to the exact toolchain line in go.mod
+# (e.g. go1.26.0) — the bare language version (go1.26) is not a valid toolchain name.
 # https://github.com/golang/go/issues/75031
-GO_MOD_VERSION := $(shell awk '/^go / { print $$2; exit }' go.mod)
-GOTOOLCHAIN_COVERAGE := go$(GO_MOD_VERSION)+auto
+GO_TOOLCHAIN := $(shell awk '/^toolchain / { print $$2; exit }' go.mod)
+GOTOOLCHAIN_COVERAGE := $(GO_TOOLCHAIN)+auto
 # Embedded in agentctl -version (git describe, or "dev" outside a repo)
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -ldflags "-X main.version=$(VERSION)"
@@ -68,7 +69,7 @@ spell:
 	go run github.com/client9/misspell/cmd/misspell@latest -error .
 
 # Run linters (gofmt -s, misspell, go vet + golangci-lint).
-# Use golangci-lint v2 when go.mod is 1.25+ — v1.x was built with Go 1.24 and errors on newer language targets.
+# Use golangci-lint v2 when go.mod is 1.26+ — v1.x binaries error on newer language targets.
 lint: fmt-check spell
 	@echo "==> Checking lints (go vet + golangci-lint)..."
 	go vet ./...

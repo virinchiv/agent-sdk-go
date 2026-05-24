@@ -51,6 +51,10 @@ type AgentFingerprintPayload struct {
 	// AgentToolExecutionMode is the tool execution mode (e.g. sequential vs parallel); must match pkg/agent WithAgentToolExecutionMode on caller and worker.
 	AgentToolExecutionMode string `json:"agent_tool_execution_mode"`
 
+	// RetrieverFingerprint is the pkg/agent digest of retriever mode and registered retriever names.
+	// Omitted when empty. Must match pkg/agent [retrieverConfigFingerprint] on caller and worker.
+	RetrieverFingerprint string `json:"retriever_fingerprint,omitempty"`
+
 	Sampling *sdkruntime.LLMSampling `json:"sampling,omitempty"`
 
 	SessionSize int `json:"session_size"`
@@ -89,6 +93,7 @@ func BuildAgentFingerprintPayload(
 	observabilityFingerprint string,
 	agentMode string,
 	agentToolExecutionMode types.AgentToolExecutionMode,
+	retrieverFingerprint string,
 ) AgentFingerprintPayload {
 	names := append([]string(nil), toolNames...)
 	sort.Strings(names)
@@ -111,6 +116,7 @@ func BuildAgentFingerprintPayload(
 		ObservabilityFingerprint: observabilityFingerprint,
 		AgentMode:                mode,
 		AgentToolExecutionMode:   string(toolExecutionMode),
+		RetrieverFingerprint:     retrieverFingerprint,
 		Sampling:                 cloneLLMSampling(sampling),
 		SessionSize:              sessionSize,
 		MaxIterations:            limits.MaxIterations,
@@ -187,6 +193,7 @@ func computeAgentFingerprintFromRuntimeConfig(c *TemporalRuntimeConfig) string {
 		c.ObservabilityFingerprint,
 		c.AgentMode,
 		c.AgentToolExecutionMode,
+		c.RetrieverFingerprint,
 	)
 	return ComputeAgentFingerprint(mat)
 }

@@ -56,6 +56,15 @@ const (
 	AgentToolExecutionModeSequential = types.AgentToolExecutionModeSequential
 )
 
+// RetrieverMode selects how retrievers are used in a run. Aliases [types.RetrieverMode].
+type RetrieverMode = types.RetrieverMode
+
+const (
+	RetrieverModeAgentic  = types.RetrieverModeAgentic
+	RetrieverModePrefetch = types.RetrieverModePrefetch
+	RetrieverModeHybrid   = types.RetrieverModeHybrid
+)
+
 // MCPServers maps a stable server key (e.g. "github", "slack") to per-server MCP settings.
 // Registered tool names use prefix mcp_<serverKey>_<toolName> (see [MCPTool]).
 // nil or empty map means no MCP servers from configuration.
@@ -178,7 +187,7 @@ type ObservabilityConfig struct {
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
-//     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
+//     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithRetrievers, WithRetrieverMode, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
 //     WithObservabilityConfig, WithTracer, WithMetrics, WithLogs
 //
 // When [WithObservabilityConfig] is set and a signal is not disabled, [buildAgentConfig] replaces
@@ -234,6 +243,12 @@ type agentConfig struct {
 	a2aServers A2AServers
 	a2aClients []interfaces.A2AClient
 	a2aTools   []interfaces.Tool
+
+	// Retrievers: optional vector/document backends (e.g. Weaviate) for RAG; validated at build.
+	// retrieverTools is filled by buildRetrieverTools for agentic/hybrid modes (see [RetrieverTool]).
+	retrievers     []interfaces.Retriever
+	retrieverMode  RetrieverMode
+	retrieverTools []interfaces.Tool
 
 	//A2A Server: optional server config; merged at build into a2aServer (see RunA2A).
 	a2aServerConfig *A2AServerConfig
@@ -499,6 +514,27 @@ func WithA2AClients(clients ...interfaces.A2AClient) Option {
 	}
 }
 
+// WithRetrievers registers vector/document retrievers (e.g. [pkg/retriever/weaviate]).
+// Each entry must be non-nil. Applies to Agent and AgentWorker.
+func WithRetrievers(retrievers ...interfaces.Retriever) Option {
+	return func(c *agentConfig) {
+		if len(retrievers) == 0 {
+			c.retrievers = nil
+			return
+		}
+		c.retrievers = append([]interfaces.Retriever(nil), retrievers...)
+	}
+}
+
+// WithRetrieverMode sets how retrievers participate in runs. Applies to Agent and AgentWorker.
+// When omitted, [RetrieverModeAgentic] is used: retrievers are exposed as tools and the LLM
+// decides when to call them. [RetrieverModeHybrid] combines pre-fetched context with agentic
+// tool access. [RetrieverModePrefetch] injects context before the first LLM call without
+// exposing retriever tools.
+func WithRetrieverMode(mode RetrieverMode) Option {
+	return func(c *agentConfig) { c.retrieverMode = mode }
+}
+
 // WithA2ADefaultServer enables the built-in A2A HTTP server with default
 // settings (hostname "localhost", port 9999). Use this when you want to
 // expose the agent as an A2A server without customising the listen address.
@@ -679,6 +715,17 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	if err := c.buildA2ATools(); err != nil {
 		return nil, err
 	}
+	if err := validateRetrievers(c.retrievers); err != nil {
+		return nil, err
+	}
+	mode, err := validateRetrieverMode(c.retrieverMode)
+	if err != nil {
+		return nil, err
+	}
+	c.retrieverMode = mode
+	if err := c.buildRetrieverTools(); err != nil {
+		return nil, err
+	}
 	if err := c.buildSubAgentTools(); err != nil {
 		return nil, err
 	}
@@ -793,6 +840,9 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Int("subAgentToolCount", len(c.subAgentTools)),
 		slog.Int("mcpToolCount", len(c.mcpTools)),
 		slog.Int("a2aToolCount", len(c.a2aTools)),
+		slog.Int("retrieverCount", len(c.retrievers)),
+		slog.Int("retrieverToolCount", len(c.retrieverTools)),
+		slog.String("retrieverMode", string(c.retrieverMode)),
 		slog.Bool("hasConversation", c.conversation != nil),
 		slog.Bool("hasObservability", c.observabilityConfig != nil),
 		slog.Bool("enabledTracer", c.tracer != nil),
@@ -814,7 +864,8 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	return c, nil
 }
 
-// toolsList returns WithTools or registry tools, merged MCP tools ([mcpTools]), A2A tools ([a2aTools]), then [subAgentTools] from [buildSubAgentTools].
+// toolsList returns WithTools or registry tools, merged MCP tools ([mcpTools]), A2A tools ([a2aTools]),
+// retriever tools ([retrieverTools]), then [subAgentTools] from [buildSubAgentTools].
 func (c *agentConfig) toolsList() []interfaces.Tool {
 	var base []interfaces.Tool
 	if c.toolRegistry != nil {
@@ -832,6 +883,12 @@ func (c *agentConfig) toolsList() []interfaces.Tool {
 		merged := make([]interfaces.Tool, len(base)+len(c.a2aTools))
 		copy(merged, base)
 		copy(merged[len(base):], c.a2aTools)
+		base = merged
+	}
+	if len(c.retrieverTools) > 0 {
+		merged := make([]interfaces.Tool, len(base)+len(c.retrieverTools))
+		copy(merged, base)
+		copy(merged[len(base):], c.retrieverTools)
 		base = merged
 	}
 	if len(c.subAgentTools) > 0 {
@@ -907,7 +964,8 @@ func dfsSubAgentDepth(a *Agent, path map[*Agent]struct{}, depth, maxDepth int) e
 	return nil
 }
 
-// validateToolNames ensures tool names are unique across WithTools/registry, MCP tools, A2A tools, and [subAgentTools].
+// validateToolNames ensures tool names are unique across WithTools/registry, MCP tools, A2A tools,
+// retriever tools, and [subAgentTools].
 func (c *agentConfig) validateToolNames() error {
 	var base []interfaces.Tool
 	if c.toolRegistry != nil {
@@ -940,6 +998,16 @@ func (c *agentConfig) validateToolNames() error {
 		n := t.Name()
 		if _, ok := names[n]; ok {
 			return fmt.Errorf("duplicate tool name %q: A2A tool conflicts with an existing tool", n)
+		}
+		names[n] = struct{}{}
+	}
+	for _, t := range c.retrieverTools {
+		if t == nil {
+			return fmt.Errorf("retriever tool must not be nil")
+		}
+		n := t.Name()
+		if _, ok := names[n]; ok {
+			return fmt.Errorf("duplicate tool name %q: retriever tool conflicts with an existing tool", n)
 		}
 		names[n] = struct{}{}
 	}
@@ -986,6 +1054,10 @@ func (c *agentConfig) runtimeAgentExecution() runtime.AgentExecution {
 			Tools:          c.toolsList(),
 			Registry:       c.toolRegistry,
 			ApprovalPolicy: c.toolApprovalPolicy,
+		},
+		Retrievers: runtime.AgentRetrievers{
+			Retrievers: c.retrievers,
+			Mode:       c.retrieverMode,
 		},
 		Session: runtime.AgentSession{
 			Conversation:     c.conversation,
@@ -1078,7 +1150,8 @@ func observabilityOptions(c *agentConfig) []observability.Option {
 // agentConfigFingerprint hashes identity, prompts, tools, sampling, limits, approval policy,
 // MCP wiring digest (transports, timeouts, filters, extra MCP client names), A2A wiring digest
 // for outbound clients only ([WithA2AConfig] / [WithA2AClients] via [a2aConfigFingerprint]),
-// and observability OTLP wiring ([observabilityConfigFingerprint] from [WithObservabilityConfig]).
+// observability OTLP wiring ([observabilityConfigFingerprint] from [WithObservabilityConfig]),
+// [WithRetrieverMode], and retriever names ([retrieverConfigFingerprint]).
 // Same inputs as temporal.NewTemporalRuntime agent fingerprint.
 //
 // Inbound [A2AServerConfig] from [WithA2AServer] / [WithA2ADefaultServer] (listen address,
@@ -1102,6 +1175,7 @@ func (c *agentConfig) agentConfigFingerprint() string {
 		observabilityConfigFingerprint(c.observabilityConfig),
 		string(c.agentMode),
 		c.agentToolExecutionMode,
+		retrieverConfigFingerprint(c.retrieverMode, c.retrievers),
 	)
 	return temporal.ComputeAgentFingerprint(mat)
 }
@@ -1243,6 +1317,63 @@ func (c *agentConfig) buildMCPTools() error {
 		}
 	}
 	c.mcpTools = tools
+	return nil
+}
+
+// validateRetrievers checks for nil entries in [WithRetrievers].
+func validateRetrievers(retrievers []interfaces.Retriever) error {
+	for i, r := range retrievers {
+		if r == nil {
+			return fmt.Errorf("retriever at index %d must not be nil", i)
+		}
+	}
+	return nil
+}
+
+// validateRetrieverMode applies the default [RetrieverModeAgentic] when mode is empty and
+// ensures mode is one of the supported values.
+func validateRetrieverMode(mode RetrieverMode) (RetrieverMode, error) {
+	if mode == "" {
+		mode = RetrieverModeAgentic
+	}
+	switch mode {
+	case RetrieverModeAgentic, RetrieverModePrefetch, RetrieverModeHybrid:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("invalid retriever mode %q: use %q, %q, or %q",
+			mode, RetrieverModeAgentic, RetrieverModePrefetch, RetrieverModeHybrid)
+	}
+}
+
+// buildRetrieverTools registers a [RetrieverTool] per [WithRetrievers] entry when mode is
+// [RetrieverModeAgentic] or [RetrieverModeHybrid], and appends to [agentConfig.retrieverTools].
+// [RetrieverModePrefetch] does not expose tools (context is injected before the first LLM call).
+func (c *agentConfig) buildRetrieverTools() error {
+	c.retrieverTools = nil
+	if c.retrieverMode != RetrieverModeAgentic && c.retrieverMode != RetrieverModeHybrid {
+		return nil
+	}
+	if len(c.retrievers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(c.retrievers))
+	tools := make([]interfaces.Tool, 0, len(c.retrievers))
+	for _, r := range c.retrievers {
+		n := strings.TrimSpace(r.Name())
+		if n == "" {
+			return fmt.Errorf("retriever name must not be empty")
+		}
+		if _, dup := seen[n]; dup {
+			return fmt.Errorf("duplicate retriever name %q", n)
+		}
+		seen[n] = struct{}{}
+		tool := NewRetrieverTool(r)
+		if tool == nil {
+			return fmt.Errorf("retriever %q: failed to build tool", n)
+		}
+		tools = append(tools, tool)
+	}
+	c.retrieverTools = tools
 	return nil
 }
 

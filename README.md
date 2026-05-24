@@ -1,6 +1,6 @@
 # Agent SDK for Go - Temporal-first
 
-**Build durable, production-grade AI agents in Go** — Temporal-backed workflows that survive crashes and deploys. OpenAI, Anthropic, Gemini, MCP, A2A, AG-UI, observability, streaming, sub-agents, and human-in-the-loop approvals.
+**Build durable, production-grade AI agents in Go** — Temporal-backed workflows that survive crashes and deploys. See [Capabilities](#capabilities) for the full feature set.
 
 [![CI](https://github.com/agenticenv/agent-sdk-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/agenticenv/agent-sdk-go/actions)
 [![Release](https://img.shields.io/github/v/release/agenticenv/agent-sdk-go?label=Release)](https://github.com/agenticenv/agent-sdk-go/releases)
@@ -10,6 +10,50 @@
 [![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go)
 
 > **Versioning:** [Semantic versioning](https://semver.org/); published lines are **git tags** (e.g. `v0.1.2`). See the **[latest release](https://github.com/agenticenv/agent-sdk-go/releases/latest)** — the README does not pin a patch number so it stays accurate after each tag.
+>
+> **Note:** Independent community library — **not** affiliated with Temporal Technologies.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Capabilities](#capabilities)
+- [Reference apps](#reference-apps)
+- [Temporal Runtime](#temporal-runtime)
+  - [Durable agents: survive crashes, restarts, and deploys](#durable-agents-survive-crashes-restarts-and-deploys)
+  - [Streaming and approvals](#streaming-and-approvals)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Create an agent and run](#create-an-agent-and-run)
+  - [Temporal connection](#temporal-connection)
+  - [LLM providers](#create-an-llm-client-openai-anthropic-or-gemini)
+  - [Stream events](#stream-events-stream)
+  - [Token usage](#token-usage-llmusage)
+  - [Tools](#tools)
+  - [MCP](#mcp-model-context-protocol)
+  - [A2A](#a2a-agent-to-agent)
+  - [Retrieval (RAG)](#retrieval-rag)
+  - [Sub-agents](#sub-agents)
+  - [Approvals](#approvals)
+  - [Timeouts and deadlines](#timeouts-and-deadlines)
+  - [Custom tools](#custom-tools)
+  - [Response format](#response-format)
+  - [Reasoning / extended thinking](#reasoning--extended-thinking)
+  - [Multiple agents](#multiple-agents)
+  - [Agent and worker in separate processes](#agent-and-worker-in-separate-processes)
+  - [Conversation](#conversation-message-history)
+  - [AG-UI Protocol](#ag-ui-protocol)
+- [Observability](#observability)
+  - [Wire OTLP](#wire-otlp-traces--metrics--logs-in-one-block)
+  - [Bring your own tracer / metrics](#bring-your-own-tracer--metrics)
+  - [Traces](#traces-spans)
+  - [Metrics](#metrics)
+  - [Logs](#logs)
+- [Configuration](#configuration)
+- [Development](#development)
+  - [Code Coverage](#code-coverage)
+- [Setup and run examples](#setup-and-run-examples)
+- [Production Readiness Checklist](#production-readiness-checklist)
+- [Disclaimer](#disclaimer)
 
 ## Overview
 
@@ -19,24 +63,30 @@
 
 `pkg/agent` exposes three entry points — `Run`, `Stream`, and `RunAsync` — each mapped directly to a Temporal workflow. Connect via `WithTemporalConfig` or `WithTemporalClient` to your cluster. See [Getting Started](#getting-started) to set up, or [Temporal Runtime](#temporal-runtime) for deeper detail on workers, queues, and streaming.
 
-> **Note:** Independent community library — **not** affiliated with Temporal Technologies.
-
 ## Capabilities
 
-> Every run is a Temporal workflow — with full replay, retry, A2A protocol support, AG-UI event streaming, and built-in observability. No in-memory execution path.
+> Every agent run is a Temporal workflow: durable, replay-safe, and observable. No in-memory execution path.
 
 - **LLM providers** — OpenAI, Anthropic, and Gemini out of the box; bring your own via `interfaces.LLMClient`.
+- **Tools** — Register built-in or custom tools via `interfaces.Tool`; optional **parallel vs sequential** execution for multiple tool calls in one LLM round (`WithAgentToolExecutionMode`).
+- **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
+- **Conversation** — Persist multi-turn message history across runs via `WithConversation`; built-in in-memory and Redis stores, or bring your own.
+- **Sub-agents** — Delegate to specialist agents via `WithSubAgents`.
+- **MCP** — Extend agent capabilities by connecting any MCP server as a tool source via `WithMCPConfig` or `WithMCPClients`.
+- **A2A** — Connect remote [Agent-to-Agent](https://github.com/a2aproject/A2A) agents as tool providers via `WithA2AConfig` or `WithA2AClients`; or expose the agent itself as an A2A server via `WithA2ADefaultServer` / `WithA2AServer` and `RunA2A`.
+- **Retrieval (RAG)** — Ground agent responses in external knowledge bases via a pluggable `Retriever` interface with built-in Weaviate and pgvector support; extend with your own implementation.
 - **Streaming** — Partial tokens and events via `Stream` and `WithStream`.
 - **AG-UI** — Stream events conform to the [AG-UI protocol](https://docs.ag-ui.com); agents work out of the box with any AG-UI compatible frontend such as [CopilotKit](https://copilotkit.ai).
 - **Reasoning** — Extended thinking / chain-of-thought where supported (Anthropic, Gemini).
 - **Token usage** — Track input, output, and reasoning token counts per run.
-- **Tools** — Register built-in or custom tools via `interfaces.Tool`; optional **parallel vs sequential** execution for multiple tool calls in one LLM round (`WithAgentToolExecutionMode`).
-- **MCP** — Extend agent capabilities by connecting any MCP server as a tool source via `WithMCPConfig` or `WithMCPClients`.
-- **A2A** — Connect remote [Agent-to-Agent](https://github.com/a2aproject/A2A) agents as tool providers via `WithA2AConfig` or `WithA2AClients`; or expose the agent itself as an A2A server via `WithA2ADefaultServer` / `WithA2AServer` and `RunA2A`.
-- **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
-- **Sub-agents** — Delegate to specialist agents via `WithSubAgents`.
 - **Scale** — Add Temporal workers to scale agent execution horizontally.
 - **Observability** — OpenTelemetry traces, metrics, and structured logs across all agent execution paths; export to any OTLP-compatible backend.
+
+## Reference apps
+
+Demo applications that use **agent-sdk-go** end-to-end:
+
+- **[Agent Chat](https://github.com/agenticenv/agent-chat)** — Web chat demo with durable conversations; a good reference for wiring the SDK into an HTTP-backed app.
 
 ## Temporal Runtime
 
@@ -62,8 +112,6 @@ graph TD
     Child --> Mem2[Activity: save memory]
 ```
 
-
-
 Details: [Temporal connection](#temporal-connection), [Sub-agents](#sub-agents), [Agent and worker in separate processes](#agent-and-worker-in-separate-processes).
 
 ### Durable agents: survive crashes, restarts, and deploys
@@ -82,44 +130,13 @@ Stream events and approval events cross two boundaries: **Temporal** (durable wo
 - **Your responsibility.** Keep worker processes supervised and restarting on crash, maintain a stable connection to your Temporal cluster, and ensure stream subscribers can reconnect.
 - **Client reconnection and UX.** For interactive apps, if the process serving `Stream` crashes, the workflow continues in Temporal but your client loses the connection. Once a stream is lost, reconnecting to that specific run is not supported — the recommended approach is to block the user from sending a new prompt until the current one completes, then fetch the final response and display it. This keeps conversation turns sequential and avoids out-of-order state. For autonomous agents, this is a non-issue since the caller waits for completion and the workflow finishes regardless.
 
-## AG-UI Protocol
-
-Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), making your agents natively compatible with any AG-UI frontend without extra integration work.
-
-Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are emitted in the correct AG-UI sequence during every `Stream()` call. Serialize any event with `event.ToJSON()` and forward it over SSE, WebSocket, or Redis to a TypeScript/React frontend using the AG-UI client SDK.
-
-For a complete server + UI reference, see `[examples/agent_copilotkit](examples/agent_copilotkit)` (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
-
-```go
-ch, err := a.Stream(ctx, prompt, conversationID)
-if err != nil {
-    return err
-}
-for ev := range ch {
-    if ev == nil {
-        continue
-    }
-    data, err := ev.ToJSON()
-    if err != nil {
-        continue
-    }
-    _ = data // e.g. SSE or WebSocket
-}
-```
-
-## Reference apps
-
-Demo applications that use **agent-sdk-go** end-to-end. More may be added over time (e.g. web apps, autonomous agents, other integration patterns).
-
-- **[Agent Chat](https://github.com/agenticenv/agent-chat)** — Web chat demo with durable conversations; a good reference for wiring the SDK into an HTTP-backed app.
-
 ## Getting Started
 
 How to **use** the SDK—agents, LLMs, Temporal connection, examples.
 
 ### Prerequisites
 
-**agent-sdk-go** runs agents on the **[Temporal](https://temporal.io)** runtime (durable workflows and activities), so a **running Temporal server** is required. See **[Temporal setup](temporal-setup.md)**. Also **Go 1.25+** (see `go.mod`) and credentials for your LLM provider.
+**agent-sdk-go** runs agents on the **[Temporal](https://temporal.io)** runtime (durable workflows and activities), so a **running Temporal server** is required. See **[Temporal setup](temporal-setup.md)**. Also **Go 1.26+** (see `go.mod`) and credentials for your LLM provider.
 
 **Module:** `github.com/agenticenv/agent-sdk-go`
 
@@ -540,6 +557,71 @@ You may use **Option 1** for some remote agents and **Option 2** for others on t
 
 [examples/agent_with_a2a_config](examples/agent_with_a2a_config) and [examples/agent_with_a2a_client](examples/agent_with_a2a_client) show A2A from env (`A2A_URL`, optional bearer/headers/filter). Variables: [examples/env.sample](examples/env.sample). Running examples from `examples/`: [examples/README.md](examples/README.md). **Remote agent setup (e.g. `a2a-samples` helloworld), curl checks:** [examples/agent_with_a2a_config/README.md](examples/agent_with_a2a_config/README.md).
 
+### Retrieval (RAG)
+
+Retrieval-Augmented Generation (RAG) lets agents query external knowledge bases and ground responses in up-to-date or domain-specific content — without hardcoding it into the prompt.
+
+Built-in retriever implementations are in `pkg/retriever/weaviate` and `pkg/retriever/pgvector`. Bring your own by implementing `interfaces.Retriever` (`Name`, `Search`).
+
+**Retriever modes**
+
+- **Agentic** (default) — LLM decides when to call the retriever as a tool, the same way it calls any other tool. Best for multi-step agents where retrieval is not always needed.
+- **Prefetch** — Retrieval fires before every LLM call. Retrieved context is injected automatically. Best for always-grounded Q&A or enterprise knowledge-base scenarios.
+- **Hybrid** — Both: retriever context is pre-fetched and injected (prefetch), and the LLM can also call the retriever as a tool (agentic).
+
+Set mode with `agent.WithRetrieverMode`:
+
+```go
+agent.WithRetrieverMode(agent.RetrieverModeAgentic)   // default
+agent.WithRetrieverMode(agent.RetrieverModePrefetch)
+agent.WithRetrieverMode(agent.RetrieverModeHybrid)    // prefetch + agentic
+```
+
+**Weaviate** (local Docker, zero auth for dev):
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/retriever/weaviate"
+
+r, err := weaviate.NewRetriever("product_knowledge",
+    weaviate.WithHost("localhost:8080"),
+    weaviate.WithClassName("ProductDocs"),
+)
+
+a, _ := agent.NewAgent(
+    agent.WithRetrievers(r),
+    agent.WithRetrieverMode(agent.RetrieverModeAgentic),
+    ...
+)
+```
+
+**pgvector** (Postgres with pgvector extension; requires an embed function):
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/retriever/pgvector"
+
+r, err := pgvector.NewRetriever("support_knowledge", embedFn,
+    pgvector.WithDSN("postgres://user:pass@localhost:5432/mydb"),
+    pgvector.WithTable("documents"),
+)
+```
+
+**Custom retriever** — implement `interfaces.Retriever`:
+
+```go
+type Retriever interface {
+    Name() string
+    Search(ctx context.Context, query string) ([]interfaces.Document, error)
+}
+```
+
+**Multiple retrievers** — pass as many as needed; each must have a unique name:
+
+```go
+agent.WithRetrievers(productRetriever, supportRetriever)
+```
+
+[examples/agent_with_retriever/weaviate](examples/agent_with_retriever/weaviate) · [examples/agent_with_retriever/pgvector](examples/agent_with_retriever/pgvector)
+
 ### Sub-agents
 
 Build each specialist with `NewAgent` (its own `TaskQueue`, LLM, tools, and prompts). Register specialists on the main agent with `WithSubAgents`. Use `WithName` and `WithDescription` when you want clearer labels for routing. Use `WithMaxSubAgentDepth` only if the default nesting limit is not enough. Run `Run`, `Stream`, or `RunAsync` on the main agent. Sub-agents always run without a conversation ID—they do not inherit the main agent session history. If you use `DisableLocalWorker`, pair each `NewAgentWorker` with the same options as the `NewAgent` that runs that agent.
@@ -904,6 +986,31 @@ a.Run(ctx, "What's my name?", convID) // agent uses history: "Alice"
 ```
 
 [examples/agent_with_conversation](examples/agent_with_conversation)
+
+### AG-UI Protocol
+
+Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), making your agents natively compatible with any AG-UI frontend without extra integration work.
+
+Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are emitted in the correct AG-UI sequence during every `Stream()` call. Serialize any event with `event.ToJSON()` and forward it over SSE, WebSocket, or Redis to a TypeScript/React frontend using the AG-UI client SDK.
+
+For a complete server + UI reference, see `[examples/agent_copilotkit](examples/agent_copilotkit)` (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
+
+```go
+ch, err := a.Stream(ctx, prompt, conversationID)
+if err != nil {
+    return err
+}
+for ev := range ch {
+    if ev == nil {
+        continue
+    }
+    data, err := ev.ToJSON()
+    if err != nil {
+        continue
+    }
+    _ = data // e.g. SSE or WebSocket
+}
+```
 
 ---
 
