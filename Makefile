@@ -33,9 +33,10 @@ test:
 	go test ./internal/... -count=1
 	@echo "==> Tests complete"
 
-# Full gate: format, then tests + fmt-check + spell + go vet + golangci-lint + secrets-scan (lint runs fmt-check and spell)
-check: fmt test lint secrets-scan
-	@echo "==> All checks passed"
+# Run before push: lint, test, build, and secrets scan (same core gates as CI; no auto-format).
+# Coverage is CI-only (`make test-coverage` when you want the report). If fmt-check fails, run `make fmt`.
+check: lint test build secrets-scan
+	@echo "==> All checks passed (ready to push)"
 
 # Run tests with coverage
 test-coverage:
