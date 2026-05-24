@@ -8,7 +8,7 @@ Before contributing, ensure you have:
 
 | Requirement | Version / Notes |
 |-------------|-----------------|
-| **Go** | **Minimum `go 1.25.0`** (see the `go` line in `go.mod`; use that version or newer). |
+| **Go** | **Minimum `go 1.26.0`** (see the `go` line in `go.mod`; use that version or newer). |
 | **Temporal server** | Required for examples, CLI, and tests — see [Temporal setup](temporal-setup.md) |
 | **golangci-lint** | Required for `make lint` — install **v2** with Go **≥** the `go` line in `go.mod`: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 | **gofmt** | `make lint` runs `gofmt -s` check first; run `make fmt` to apply `gofmt -s -w` project-wide |
@@ -78,7 +78,7 @@ make lint
 
 This runs `go vet` and `golangci-lint`. All contributions must pass lint with zero errors.
 
-**golangci-lint vs Go version:** If you see `the Go language version used to build golangci-lint is lower than the targeted Go version`, your `golangci-lint` binary is too old for this module (Go 1.25+ requires **golangci-lint v2**). Reinstall: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`, ensure `$(go env GOPATH)/bin` is on `PATH` ahead of any older install, then run `golangci-lint version` — it should report **v2.x** and a Go build **≥ 1.25**.
+**golangci-lint vs Go version:** If you see `the Go language version used to build golangci-lint is lower than the targeted Go version`, your `golangci-lint` binary is too old for this module (Go 1.26+ requires **golangci-lint v2**). Reinstall: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`, ensure `$(go env GOPATH)/bin` is on `PATH` ahead of any older install, then run `golangci-lint version` — it should report **v2.x** and a Go build **≥ 1.26**.
 
 ### 5. Generate coverage
 

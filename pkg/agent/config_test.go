@@ -463,6 +463,424 @@ func (s *stubA2AClient) Close() error { return nil }
 
 var _ interfaces.A2AClient = (*stubA2AClient)(nil)
 
+type stubRetriever struct{}
+
+func (stubRetriever) Name() string { return "stub" }
+
+func (stubRetriever) Search(context.Context, string) ([]interfaces.Document, error) {
+	return nil, nil
+}
+
+var _ interfaces.Retriever = stubRetriever{}
+
+type namedStubRetriever string
+
+func (n namedStubRetriever) Name() string { return string(n) }
+
+func (namedStubRetriever) Search(context.Context, string) ([]interfaces.Document, error) {
+	return nil, nil
+}
+
+var _ interfaces.Retriever = namedStubRetriever("")
+
+// ---------------------------------------------------------------------------
+// Retriever config tests
+// ---------------------------------------------------------------------------
+
+func TestValidateRetrieverMode(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		mode, err := validateRetrieverMode("")
+		if err != nil || mode != RetrieverModeAgentic {
+			t.Fatalf("mode=%q err=%v", mode, err)
+		}
+	})
+	t.Run("valid", func(t *testing.T) {
+		for _, want := range []RetrieverMode{
+			RetrieverModeAgentic,
+			RetrieverModePrefetch,
+			RetrieverModeHybrid,
+		} {
+			mode, err := validateRetrieverMode(want)
+			if err != nil || mode != want {
+				t.Fatalf("want %q got %q err=%v", want, mode, err)
+			}
+		}
+	})
+	t.Run("invalid", func(t *testing.T) {
+		_, err := validateRetrieverMode(RetrieverMode("bogus"))
+		if err == nil || !strings.Contains(err.Error(), "invalid retriever mode") {
+			t.Fatalf("got %v", err)
+		}
+	})
+}
+
+func TestValidateRetrievers(t *testing.T) {
+	t.Run("nil", func(t *testing.T) {
+		err := validateRetrievers([]interfaces.Retriever{nil})
+		if err == nil || !strings.Contains(err.Error(), "nil") {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("ok", func(t *testing.T) {
+		if err := validateRetrievers([]interfaces.Retriever{stubRetriever{}, stubRetriever{}}); err != nil {
+			t.Fatalf("got %v", err)
+		}
+	})
+}
+
+func TestBuildRetrieverTools(t *testing.T) {
+	t.Run("agentic_builds_tools", func(t *testing.T) {
+		c := &agentConfig{
+			retrieverMode: RetrieverModeAgentic,
+			retrievers:    []interfaces.Retriever{namedStubRetriever("kb")},
+		}
+		if err := c.buildRetrieverTools(); err != nil {
+			t.Fatal(err)
+		}
+		if len(c.retrieverTools) != 1 || c.retrieverTools[0].Name() != "retriever_kb" {
+			t.Fatalf("retrieverTools = %v", c.retrieverTools)
+		}
+	})
+	t.Run("hybrid_builds_tools", func(t *testing.T) {
+		c := &agentConfig{
+			retrieverMode: RetrieverModeHybrid,
+			retrievers:    []interfaces.Retriever{stubRetriever{}},
+		}
+		if err := c.buildRetrieverTools(); err != nil {
+			t.Fatal(err)
+		}
+		if len(c.retrieverTools) != 1 {
+			t.Fatalf("len = %d", len(c.retrieverTools))
+		}
+	})
+	t.Run("prefetch_skips_tools", func(t *testing.T) {
+		c := &agentConfig{
+			retrieverMode: RetrieverModePrefetch,
+			retrievers:    []interfaces.Retriever{stubRetriever{}},
+		}
+		if err := c.buildRetrieverTools(); err != nil {
+			t.Fatal(err)
+		}
+		if c.retrieverTools != nil {
+			t.Fatalf("retrieverTools = %v, want nil", c.retrieverTools)
+		}
+	})
+	t.Run("no_retrievers", func(t *testing.T) {
+		c := &agentConfig{retrieverMode: RetrieverModeAgentic}
+		if err := c.buildRetrieverTools(); err != nil {
+			t.Fatal(err)
+		}
+		if c.retrieverTools != nil {
+			t.Fatalf("retrieverTools = %v, want nil", c.retrieverTools)
+		}
+	})
+	t.Run("duplicate_name", func(t *testing.T) {
+		c := &agentConfig{
+			retrieverMode: RetrieverModeAgentic,
+			retrievers:    []interfaces.Retriever{namedStubRetriever("x"), namedStubRetriever("x")},
+		}
+		err := c.buildRetrieverTools()
+		if err == nil || !strings.Contains(err.Error(), "duplicate retriever name") {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("empty_name", func(t *testing.T) {
+		c := &agentConfig{
+			retrieverMode: RetrieverModeAgentic,
+			retrievers:    []interfaces.Retriever{namedStubRetriever("  ")},
+		}
+		err := c.buildRetrieverTools()
+		if err == nil || !strings.Contains(err.Error(), "must not be empty") {
+			t.Fatalf("got %v", err)
+		}
+	})
+}
+
+func TestBuildAgentConfig_WithRetrievers(t *testing.T) {
+	r1, r2 := namedStubRetriever("kb-a"), namedStubRetriever("kb-b")
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrievers(r1, r2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.retrievers) != 2 {
+		t.Fatalf("retrievers len = %d", len(cfg.retrievers))
+	}
+	if len(cfg.retrieverTools) != 2 {
+		t.Fatalf("retrieverTools len = %d, want 2 (default agentic mode)", len(cfg.retrieverTools))
+	}
+}
+
+func TestBuildAgentConfig_RetrieverMode_prefetchNoTools(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrievers(stubRetriever{}),
+		WithRetrieverMode(RetrieverModePrefetch),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.retrieverTools) != 0 {
+		t.Fatalf("retrieverTools len = %d, want 0 for prefetch", len(cfg.retrieverTools))
+	}
+}
+
+func TestBuildAgentConfig_RetrieverMode_agenticBuildsTools(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrievers(stubRetriever{}),
+		WithRetrieverMode(RetrieverModeAgentic),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.retrieverTools) != 1 || cfg.retrieverTools[0].Name() != "retriever_stub" {
+		t.Fatalf("retrieverTools = %v", cfg.retrieverTools)
+	}
+}
+
+func TestBuildAgentConfig_AgenticNoRetrievers_NoTools(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrieverMode(RetrieverModeAgentic),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.retrieverTools) != 0 {
+		t.Fatalf("retrieverTools len = %d, want 0", len(cfg.retrieverTools))
+	}
+}
+
+func TestBuildAgentConfig_RetrieverMode_hybridBuildsTools(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrievers(stubRetriever{}),
+		WithRetrieverMode(RetrieverModeHybrid),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.retrieverTools) != 1 || cfg.retrieverTools[0].Name() != "retriever_stub" {
+		t.Fatalf("retrieverTools = %v", cfg.retrieverTools)
+	}
+}
+
+func TestBuildAgentConfig_RetrieverDuplicateName(t *testing.T) {
+	_, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrievers(namedStubRetriever("dup"), namedStubRetriever("dup")),
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate retriever name") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBuildAgentConfig_toolsList_includesRetrieverTools(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTools(mockTool{name: "echo"}),
+		WithRetrievers(stubRetriever{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := cfg.toolsList()
+	if len(list) != 2 {
+		t.Fatalf("toolsList len = %d, want 2", len(list))
+	}
+	if list[1].Name() != "retriever_stub" {
+		t.Fatalf("tool[1].Name = %q", list[1].Name())
+	}
+}
+
+func TestBuildAgentConfig_validateToolNames_RetrieverConflict(t *testing.T) {
+	c := &agentConfig{
+		tools: []interfaces.Tool{mockTool{name: "retriever_stub"}},
+		retrieverTools: []interfaces.Tool{
+			NewRetrieverTool(stubRetriever{}),
+		},
+	}
+	err := c.validateToolNames()
+	if err == nil || !strings.Contains(err.Error(), "retriever tool conflicts") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBuildAgentConfig_validateToolNames_nilRetrieverTool(t *testing.T) {
+	c := &agentConfig{retrieverTools: []interfaces.Tool{nil}}
+	err := c.validateToolNames()
+	if err == nil || !strings.Contains(err.Error(), "retriever tool must not be nil") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBuildAgentConfig_WithRetrievers_nilEntry(t *testing.T) {
+	_, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrievers(stubRetriever{}, nil),
+	})
+	if err == nil || !strings.Contains(err.Error(), "nil") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestBuildAgentConfig_WithRetrievers_emptyClears(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrievers(stubRetriever{}),
+		WithRetrievers(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.retrievers != nil {
+		t.Fatalf("retrievers = %v, want nil", cfg.retrievers)
+	}
+	if len(cfg.retrieverTools) != 0 {
+		t.Fatalf("retrieverTools len = %d, want 0", len(cfg.retrieverTools))
+	}
+}
+
+func TestBuildAgentConfig_RetrieverMode_default(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.retrieverMode != RetrieverModeAgentic {
+		t.Fatalf("retrieverMode = %q, want %q", cfg.retrieverMode, RetrieverModeAgentic)
+	}
+}
+
+func TestBuildAgentConfig_RetrieverMode_explicit(t *testing.T) {
+	for _, mode := range []RetrieverMode{
+		RetrieverModeAgentic,
+		RetrieverModePrefetch,
+		RetrieverModeHybrid,
+	} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg, err := buildAgentConfig([]Option{
+				WithName("test"),
+				WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+				WithLLMClient(stubLLM{}),
+				WithRetrieverMode(mode),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.retrieverMode != mode {
+				t.Fatalf("retrieverMode = %q, want %q", cfg.retrieverMode, mode)
+			}
+		})
+	}
+}
+
+func TestAgentConfigFingerprint_RetrieverModeChangesDigest(t *testing.T) {
+	baseOpts := []Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+	}
+	build := func(mode RetrieverMode) string {
+		t.Helper()
+		opts := append(append([]Option(nil), baseOpts...), WithRetrieverMode(mode))
+		cfg, err := buildAgentConfig(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg.agentConfigFingerprint()
+	}
+	fpAgentic := build(RetrieverModeAgentic)
+	fpPrefetch := build(RetrieverModePrefetch)
+	fpHybrid := build(RetrieverModeHybrid)
+	if fpAgentic == fpPrefetch {
+		t.Fatal("expected different fingerprints for agentic vs prefetch retriever mode")
+	}
+	if fpAgentic == fpHybrid {
+		t.Fatal("expected different fingerprints for agentic vs hybrid retriever mode")
+	}
+	if fpPrefetch == fpHybrid {
+		t.Fatal("expected different fingerprints for prefetch vs hybrid retriever mode")
+	}
+}
+
+func TestBuildAgentConfig_toolsList_includesRetrieverTools_hybrid(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTools(mockTool{name: "echo"}),
+		WithRetrievers(stubRetriever{}),
+		WithRetrieverMode(RetrieverModeHybrid),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := cfg.toolsList()
+	if len(list) != 2 {
+		t.Fatalf("toolsList len = %d, want 2 (base tool + retriever tool)", len(list))
+	}
+	if list[1].Name() != "retriever_stub" {
+		t.Fatalf("tool[1].Name = %q, want retriever_stub", list[1].Name())
+	}
+}
+
+func TestAgentConfigFingerprint_AgenticRetrieverNamesChangesDigest(t *testing.T) {
+	baseOpts := []Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrieverMode(RetrieverModeAgentic),
+	}
+	cfgNoR, err := buildAgentConfig(baseOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgWithR, err := buildAgentConfig(append(baseOpts, WithRetrievers(namedStubRetriever("wiki"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgNoR.agentConfigFingerprint() == cfgWithR.agentConfigFingerprint() {
+		t.Fatal("expected different fingerprints for agentic mode with vs without retriever names")
+	}
+}
+
+func TestBuildAgentConfig_RetrieverMode_invalid(t *testing.T) {
+	_, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithRetrieverMode(RetrieverMode("bogus")),
+	})
+	if err == nil || !strings.Contains(err.Error(), "invalid retriever mode") {
+		t.Fatalf("got %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // A2A config tests
 // ---------------------------------------------------------------------------

@@ -83,10 +83,19 @@ type AgentSpec struct {
 // stay stable so callers do not depend on a single flat blob that might be reshaped later.
 // Temporal-backed runtimes typically use worker-local configuration for activities; this is a snapshot.
 type AgentExecution struct {
-	LLM     AgentLLM
-	Tools   AgentTools
-	Session AgentSession
-	Limits  AgentLimits
+	LLM        AgentLLM
+	Tools      AgentTools
+	Retrievers AgentRetrievers
+	Session    AgentSession
+	Limits     AgentLimits
+}
+
+// AgentRetrievers holds the retriever instances and mode for prefetch and hybrid RAG.
+type AgentRetrievers struct {
+	// Retrievers is the list of retriever instances registered with the agent.
+	Retrievers []interfaces.Retriever
+	// Mode is the retriever mode (agentic, prefetch, hybrid).
+	Mode types.RetrieverMode
 }
 
 // LLMSampling is the runtime package name for per-run sampling options.
