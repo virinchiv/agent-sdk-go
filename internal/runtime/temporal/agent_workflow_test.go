@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -477,6 +478,272 @@ func TestAgentWorkflow_ContinueAsNewOnHistorySizeAfterTools(t *testing.T) {
 	wfErr := env.GetWorkflowError()
 	require.Error(t, wfErr)
 	require.True(t, workflow.IsContinueAsNewError(wfErr), "expected continue-as-new, got: %v", wfErr)
+}
+
+// ---------------------------------------------------------------------------
+// AgentRetrieverActivity tests
+// ---------------------------------------------------------------------------
+
+func makeRetrieverRuntime(t *testing.T, retrievers []interfaces.Retriever, mode types.RetrieverMode) *TemporalRuntime {
+	t.Helper()
+	mockLLM := mocks.NewMockLLMClient(gomock.NewController(t))
+	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
+	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
+	return &TemporalRuntime{
+		TemporalRuntimeConfig: TemporalRuntimeConfig{
+			AgentSpec: sdkruntime.AgentSpec{Name: "RetrieverTest"},
+			AgentExecution: sdkruntime.AgentExecution{
+				LLM: sdkruntime.AgentLLM{Client: mockLLM},
+				Retrievers: sdkruntime.AgentRetrievers{
+					Retrievers: retrievers,
+					Mode:       mode,
+				},
+			},
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
+		},
+	}
+}
+
+func TestAgentRetrieverActivity_NoRetrievers(t *testing.T) {
+	rt := makeRetrieverRuntime(t, nil, types.RetrieverModePrefetch)
+	actEnv := newActivityTestEnv(t)
+	actEnv.RegisterActivity(rt.AgentRetrieverActivity)
+
+	val, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "test"})
+	require.NoError(t, err)
+
+	var got AgentRetrieverResult
+	require.NoError(t, val.Get(&got))
+	require.Empty(t, got.RetrieverContext)
+}
+
+func TestAgentRetrieverActivity_SingleRetriever(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockR := mocks.NewMockRetriever(ctrl)
+	mockR.EXPECT().Name().Return("kb").AnyTimes()
+	mockR.EXPECT().Search(gomock.Any(), "what is Go?").Return([]interfaces.Document{
+		{Content: "Go is a language", Source: "docs.go.dev", Score: 0.95},
+	}, nil)
+
+	rt := makeRetrieverRuntime(t, []interfaces.Retriever{mockR}, types.RetrieverModePrefetch)
+	actEnv := newActivityTestEnv(t)
+	actEnv.RegisterActivity(rt.AgentRetrieverActivity)
+
+	val, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "what is Go?"})
+	require.NoError(t, err)
+
+	var got AgentRetrieverResult
+	require.NoError(t, val.Get(&got))
+	require.Contains(t, got.RetrieverContext, "Go is a language")
+	require.Contains(t, got.RetrieverContext, "docs.go.dev")
+	require.Contains(t, got.RetrieverContext, "0.95")
+	// Single retriever: no section header
+	require.NotContains(t, got.RetrieverContext, "## kb")
+}
+
+func TestAgentRetrieverActivity_MultipleRetrievers_SectionHeaders(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockR1 := mocks.NewMockRetriever(ctrl)
+	mockR1.EXPECT().Name().Return("r1").AnyTimes()
+	mockR1.EXPECT().Search(gomock.Any(), "q").Return([]interfaces.Document{
+		{Content: "doc from r1", Source: "s1", Score: 0.9},
+	}, nil)
+
+	mockR2 := mocks.NewMockRetriever(ctrl)
+	mockR2.EXPECT().Name().Return("r2").AnyTimes()
+	mockR2.EXPECT().Search(gomock.Any(), "q").Return([]interfaces.Document{
+		{Content: "doc from r2", Source: "s2", Score: 0.8},
+	}, nil)
+
+	rt := makeRetrieverRuntime(t, []interfaces.Retriever{mockR1, mockR2}, types.RetrieverModeHybrid)
+	actEnv := newActivityTestEnv(t)
+	actEnv.RegisterActivity(rt.AgentRetrieverActivity)
+
+	val, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "q"})
+	require.NoError(t, err)
+
+	var got AgentRetrieverResult
+	require.NoError(t, val.Get(&got))
+	require.Contains(t, got.RetrieverContext, "## r1")
+	require.Contains(t, got.RetrieverContext, "doc from r1")
+	require.Contains(t, got.RetrieverContext, "## r2")
+	require.Contains(t, got.RetrieverContext, "doc from r2")
+}
+
+func TestAgentRetrieverActivity_PartialFailure_ContinuesWithPartialContext(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockOK := mocks.NewMockRetriever(ctrl)
+	mockOK.EXPECT().Name().Return("ok").AnyTimes()
+	mockOK.EXPECT().Search(gomock.Any(), "q").Return([]interfaces.Document{
+		{Content: "good doc", Source: "src", Score: 0.88},
+	}, nil)
+
+	mockFail := mocks.NewMockRetriever(ctrl)
+	mockFail.EXPECT().Name().Return("bad").AnyTimes()
+	mockFail.EXPECT().Search(gomock.Any(), "q").Return(nil, fmt.Errorf("connection refused"))
+
+	rt := makeRetrieverRuntime(t, []interfaces.Retriever{mockOK, mockFail}, types.RetrieverModePrefetch)
+	actEnv := newActivityTestEnv(t)
+	actEnv.RegisterActivity(rt.AgentRetrieverActivity)
+
+	val, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "q"})
+	require.NoError(t, err)
+
+	var got AgentRetrieverResult
+	require.NoError(t, val.Get(&got))
+	require.Contains(t, got.RetrieverContext, "good doc")
+	require.NotContains(t, got.RetrieverContext, "bad")
+}
+
+func TestAgentRetrieverActivity_AllFail_ReturnsError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockFail := mocks.NewMockRetriever(ctrl)
+	mockFail.EXPECT().Name().Return("bad").AnyTimes()
+	mockFail.EXPECT().Search(gomock.Any(), "q").Return(nil, fmt.Errorf("timeout"))
+
+	rt := makeRetrieverRuntime(t, []interfaces.Retriever{mockFail}, types.RetrieverModePrefetch)
+	actEnv := newActivityTestEnv(t)
+	actEnv.RegisterActivity(rt.AgentRetrieverActivity)
+
+	_, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "q"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "all")
+}
+
+func TestAgentRetrieverActivity_EmptyDocs_EmptyContext(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockR := mocks.NewMockRetriever(ctrl)
+	mockR.EXPECT().Name().Return("kb").AnyTimes()
+	mockR.EXPECT().Search(gomock.Any(), "q").Return(nil, nil)
+
+	rt := makeRetrieverRuntime(t, []interfaces.Retriever{mockR}, types.RetrieverModePrefetch)
+	actEnv := newActivityTestEnv(t)
+	actEnv.RegisterActivity(rt.AgentRetrieverActivity)
+
+	val, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "q"})
+	require.NoError(t, err)
+
+	var got AgentRetrieverResult
+	require.NoError(t, val.Get(&got))
+	require.Empty(t, got.RetrieverContext)
+}
+
+// ---------------------------------------------------------------------------
+// buildLLMRequest RAG context tests
+// ---------------------------------------------------------------------------
+
+func TestBuildLLMRequest_WithRagContext_AugmentsSystemPrompt(t *testing.T) {
+	rt := &TemporalRuntime{
+		TemporalRuntimeConfig: TemporalRuntimeConfig{
+			AgentSpec:      sdkruntime.AgentSpec{Name: "Test", SystemPrompt: "You are helpful."},
+			AgentExecution: sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}},
+		},
+	}
+	req, _ := rt.buildLLMRequest(nil, false, "doc context")
+	require.Contains(t, req.SystemMessage, "You are helpful.")
+	require.Contains(t, req.SystemMessage, "Relevant Context:")
+	require.Contains(t, req.SystemMessage, "doc context")
+}
+
+func TestBuildLLMRequest_NoRagContext_UnchangedSystemPrompt(t *testing.T) {
+	rt := &TemporalRuntime{
+		TemporalRuntimeConfig: TemporalRuntimeConfig{
+			AgentSpec:      sdkruntime.AgentSpec{Name: "Test", SystemPrompt: "You are helpful."},
+			AgentExecution: sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}},
+		},
+	}
+	req, _ := rt.buildLLMRequest(nil, false, "")
+	require.Equal(t, "You are helpful.", req.SystemMessage)
+}
+
+// ---------------------------------------------------------------------------
+// AgentWorkflow + prefetch mode integration
+// ---------------------------------------------------------------------------
+
+func TestAgentWorkflow_PrefetchMode_CallsRetrieverActivityFirst(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockR := mocks.NewMockRetriever(ctrl)
+	mockR.EXPECT().Name().Return("kb").AnyTimes()
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := &TemporalRuntime{
+		TemporalRuntimeConfig: TemporalRuntimeConfig{
+			AgentSpec: sdkruntime.AgentSpec{Name: "PrefetchAgent", SystemPrompt: "base prompt"},
+			AgentExecution: sdkruntime.AgentExecution{
+				LLM:    sdkruntime.AgentLLM{Client: stubLLM{}},
+				Limits: sdkruntime.AgentLimits{MaxIterations: 5},
+				Retrievers: sdkruntime.AgentRetrievers{
+					Retrievers: []interfaces.Retriever{mockR},
+					Mode:       types.RetrieverModePrefetch,
+				},
+			},
+			logger:  logger.NoopLogger(),
+			Tracer:  observability.DefaultNoopTracer,
+			Metrics: observability.DefaultNoopMetrics,
+		},
+	}
+
+	env.RegisterWorkflow(rt.AgentWorkflow)
+
+	retrieverCalled := false
+	env.OnActivity(rt.AgentRetrieverActivity, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in AgentRetrieverInput) (*AgentRetrieverResult, error) {
+			retrieverCalled = true
+			require.Equal(t, "user query", in.UserPrompt)
+			return &AgentRetrieverResult{RetrieverContext: "[1] prefetched doc"}, nil
+		})
+
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
+			require.Contains(t, in.RetrieverContext, "prefetched doc")
+			return &AgentLLMResult{Content: "answer"}, nil
+		})
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{UserPrompt: "user query"})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.True(t, retrieverCalled, "AgentRetrieverActivity must have been called")
+
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, "answer", result.Content)
+}
+
+func TestAgentWorkflow_AgenticMode_SkipsRetrieverActivity(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	env.RegisterWorkflow(rt.AgentWorkflow)
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(&AgentLLMResult{Content: "done"}, nil)
+
+	// AgentRetrieverActivity must NOT be called when mode is agentic (default / empty)
+	env.OnActivity(rt.AgentRetrieverActivity, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in AgentRetrieverInput) (*AgentRetrieverResult, error) {
+			t.Error("AgentRetrieverActivity must not be called in agentic mode")
+			return &AgentRetrieverResult{}, nil
+		})
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{UserPrompt: "hi"})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
 }
 
 func TestMergeLLMUsage(t *testing.T) {
