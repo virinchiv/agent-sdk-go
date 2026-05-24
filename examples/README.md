@@ -35,6 +35,7 @@ The examples use `TEMPORAL_HOST`, `TEMPORAL_PORT`, and `TEMPORAL_NAMESPACE` from
 | `agent_with_a2a_client` | Same env, explicit **`pkg/a2a/client`** — **[README](agent_with_a2a_client/README.md)** |
 | `agent_with_a2a_server` | **Inbound** A2A server — **`A2A_SERVER_*`**; **[README](agent_with_a2a_server/README.md)** (curl, **`a2a` CLI**, client example) |
 | `agent_with_observability` | OpenTelemetry OTLP exports — two runnable programs: **`config/`** ([`WithObservabilityConfig`](../pkg/agent/config.go)) vs **`objects/`** (pre-built [`pkg/observability`](../pkg/observability/) tracer/metrics + [`WithTracer`](../pkg/agent/config.go) / [`WithMetrics`](../pkg/agent/config.go)); shared **`setup/`** helper package — **[README](agent_with_observability/README.md)** (collector endpoint, ports **`4317`**/**`4318`**) |
+| `agent_with_retriever` | Vector retrievers — **`weaviate/`** or **`pgvector/`** backends; shared **`common/`**; modes **`agentic`**, **`prefetch`**, **`hybrid`** via **`RETRIEVER_MODE`** — **[README](agent_with_retriever/README.md)** (Weaviate / Postgres setup in subfolder READMEs) |
 
 ## Setup
 
@@ -189,6 +190,22 @@ go run ./agent_with_observability/objects/ "Say hello in one sentence"
 
 Details, env semantics, and collector notes: **[agent_with_observability/README.md](agent_with_observability/README.md)**.
 
+### Vector retriever (`agent_with_retriever`)
+
+Requires a running vector store (Weaviate **or** Postgres with pgvector) plus Temporal and LLM env. Set backend-specific vars in **`env.sample`** (`WEAVIATE_*` or **`PGVECTOR_DSN`**).
+
+```bash
+# Weaviate (run ./agent_with_retriever/weaviate/setup.sh; ./cleanup.sh when done)
+go run ./agent_with_retriever/weaviate "What is the return policy?"
+
+# pgvector (run ./agent_with_retriever/pgvector/setup.sh; ./cleanup.sh when done)
+go run ./agent_with_retriever/pgvector "What is the return policy?"
+
+RETRIEVER_MODE=prefetch go run ./agent_with_retriever/weaviate "What are the return and shipping rules?"
+```
+
+Setup guides: **[agent_with_retriever/README.md](agent_with_retriever/README.md)**, **[weaviate/README.md](agent_with_retriever/weaviate/README.md)**, **[pgvector/README.md](agent_with_retriever/pgvector/README.md)**.
+
 ## Logging
 
 Examples send conversation (user prompt, assistant response) to **stdout** and internal logs to **stderr**. By default only errors are logged.
@@ -242,3 +259,6 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | **Required** for **`agent_with_observability`** examples: OTLP collector **`host:port`** only (no `http://` scheme), e.g. **`localhost:4317`** (gRPC) or **`localhost:4318`** (HTTP) |
 | `OTLP_PROTOCOL` | Optional for **`agent_with_observability`**: **`grpc`** (default) or **`http`** — must match how the collector listens |
 | `OTLP_INSECURE` | Optional: set to **`true`** for plaintext export (typical for local collectors without TLS) |
+| `RETRIEVER_MODE` | For **`agent_with_retriever`**: **`agentic`** (default), **`prefetch`**, or **`hybrid`** |
+| `WEAVIATE_HOST`, `WEAVIATE_SCHEME`, `WEAVIATE_CLASS`, … | Weaviate backend — see **`env.sample`** and **[agent_with_retriever/weaviate/README.md](agent_with_retriever/weaviate/README.md)** |
+| `PGVECTOR_DSN`, `PGVECTOR_TABLE`, `EMBEDDING_MODEL`, … | pgvector backend — **`PGVECTOR_DSN` required**; see **[agent_with_retriever/pgvector/README.md](agent_with_retriever/pgvector/README.md)** |

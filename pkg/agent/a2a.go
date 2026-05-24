@@ -76,35 +76,35 @@ func NewA2ATool(serverName string, spec interfaces.ToolSpec, skillSpec interface
 }
 
 // Name implements [interfaces.Tool].
-func (m *A2ATool) Name() string {
-	if m == nil {
+func (t *A2ATool) Name() string {
+	if t == nil {
 		return ""
 	}
-	return a2aToolName(m.ServerName, m.Spec.Name)
+	return a2aToolName(t.ServerName, t.Spec.Name)
 }
 
 // DisplayName implements [interfaces.Tool].
-func (m *A2ATool) DisplayName() string {
-	if m == nil {
+func (t *A2ATool) DisplayName() string {
+	if t == nil {
 		return ""
 	}
-	return a2aToolDisplayName(m.ServerName, m.Spec.Name)
+	return a2aToolDisplayName(t.ServerName, t.Spec.Name)
 }
 
 // Description implements [interfaces.Tool].
-func (m *A2ATool) Description() string {
-	if m == nil {
+func (t *A2ATool) Description() string {
+	if t == nil {
 		return ""
 	}
-	return m.Spec.Description
+	return t.Spec.Description
 }
 
 // Parameters implements [interfaces.Tool]. Returns a default object schema when spec parameters are nil.
-func (m *A2ATool) Parameters() interfaces.JSONSchema {
-	if m == nil || m.Spec.Parameters == nil {
+func (t *A2ATool) Parameters() interfaces.JSONSchema {
+	if t == nil || t.Spec.Parameters == nil {
 		return interfaces.JSONSchema{"type": "object"}
 	}
-	return m.Spec.Parameters
+	return t.Spec.Parameters
 }
 
 // Execute implements [interfaces.Tool].
@@ -115,15 +115,15 @@ func (m *A2ATool) Parameters() interfaces.JSONSchema {
 //   - Task result (async): the task is JSON-encoded and returned as a string.
 //     Callers that need full task lifecycle management should use [interfaces.A2AClient] directly.
 //   - Empty result (neither message nor task): an empty string is returned without error.
-func (m *A2ATool) Execute(ctx context.Context, args map[string]any) (any, error) {
-	if m == nil || m.Client == nil {
+func (t *A2ATool) Execute(ctx context.Context, args map[string]any) (any, error) {
+	if t == nil || t.Client == nil {
 		return nil, fmt.Errorf("a2a tool: nil client")
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {
 		return nil, fmt.Errorf("a2a tool: marshal args: %w", err)
 	}
-	result, err := m.Client.SendMessage(ctx, interfaces.A2ASendMessageRequest{
+	result, err := t.Client.SendMessage(ctx, interfaces.A2ASendMessageRequest{
 		Message: interfaces.A2AMessage{
 			Role:  "user",
 			Parts: []interfaces.A2APart{{Kind: "text", Text: string(raw)}},

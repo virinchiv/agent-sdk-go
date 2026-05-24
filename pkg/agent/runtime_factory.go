@@ -34,6 +34,7 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (runtime.Runtime
 		temporal.WithMetrics(cfg.metrics),
 		temporal.WithAgentMode(string(cfg.agentMode)),
 		temporal.WithAgentToolExecutionMode(cfg.agentToolExecutionMode),
+		temporal.WithRetrieverFingerprint(retrieverConfigFingerprint(cfg.retrieverMode, cfg.retrievers)),
 		temporal.WithDisableLocalWorker(cfg.disableLocalWorker),
 		// Never allow fingerprint bypass on remote worker runtime.
 		temporal.WithDisableFingerprintCheck(cfg.disableFingerprintCheck && !remoteWorker),

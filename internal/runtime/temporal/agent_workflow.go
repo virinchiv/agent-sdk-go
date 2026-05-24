@@ -36,6 +36,9 @@ var (
 	agentToolExecuteActivityTaskTimeout time.Duration = 30 * time.Minute
 	agentToolExecuteActivityMaxAttempts int32         = 3
 
+	agentRetrieverActivityTaskTimeout time.Duration = 5 * time.Minute
+	agentRetrieverActivityMaxAttempts int32         = 3
+
 	sendEventActivityTaskTimeout time.Duration = 15 * time.Second
 	sendEventActivityMaxAttempts int32         = 1
 
@@ -134,9 +137,23 @@ type AgentWorkflowState struct {
 	Messages  []interfaces.Message `json:"messages"`
 }
 
+// AgentRetrieverInput is the input to AgentRetrieverActivity.
+type AgentRetrieverInput struct {
+	AgentFingerprint string `json:"agent_fingerprint,omitempty"`
+	UserPrompt       string `json:"user_prompt"`
+}
+
+// AgentRetrieverResult is the return value of AgentRetrieverActivity.
+// RetrieverContext is the combined, formatted document context from all retrievers; empty when no
+// documents were found. It is injected into the system prompt by AgentLLMActivity and AgentLLMStreamActivity.
+type AgentRetrieverResult struct {
+	RetrieverContext string `json:"retriever_context,omitempty"`
+}
+
 // AgentLLMInput is the input to AgentLLMActivity and AgentLLMStreamActivity.
 // When ConversationID is set, the activity loads history from the store. MessageID is the assistant text id
 // for TEXT_MESSAGE_* (and stream ordering with REASONING_*); the workflow sets it each turn.
+// RetrieverContext is the pre-fetched RAG context from AgentRetrieverActivity (prefetch / hybrid modes).
 type AgentLLMInput struct {
 	AgentName        string               `json:"agent_name,omitempty"`
 	ConversationID   string               `json:"conversation_id,omitempty"`
@@ -147,6 +164,7 @@ type AgentLLMInput struct {
 	EventWorkflowID  string               `json:"event_workflow_id,omitempty"`
 	EventTaskQueue   string               `json:"event_task_queue,omitempty"`
 	LocalChannelName string               `json:"local_channel_name,omitempty"`
+	RetrieverContext string               `json:"retriever_context,omitempty"`
 }
 
 // AgentLLMResult is the return value of AgentLLMActivity. Workflow uses it to decide: return content or execute tools.
@@ -284,6 +302,11 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		StartToCloseTimeout: conversationActivityTaskTimeout,
 		RetryPolicy:         retryPolicy(conversationActivityMaxAttempts),
 	})
+	retrieverActCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		ActivityID:          "AgentRetrieverActivity_" + activityIDSuffix,
+		StartToCloseTimeout: agentRetrieverActivityTaskTimeout,
+		RetryPolicy:         retryPolicy(agentRetrieverActivityMaxAttempts),
+	})
 
 	var streamingUnavailable bool
 	// emitAgentEvent must use wfCtx (the coroutine that calls Get) for ExecuteActivity().Get — not the root
@@ -347,6 +370,29 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 	messages := input.State.Messages
 
+	// Pre-fetch retrieval context once before the first LLM call (prefetch and hybrid modes).
+	// The resulting retrieverContext is forwarded to every AgentLLMInput in the run so the LLM always
+	// sees the retrieved documents in its system prompt, regardless of the number of iterations.
+	retrieverContext := ""
+	retrieverMode := rt.AgentExecution.Retrievers.Mode
+	if (retrieverMode == types.RetrieverModePrefetch || retrieverMode == types.RetrieverModeHybrid) &&
+		len(rt.AgentExecution.Retrievers.Retrievers) > 0 {
+		logger.Debug("workflow: retriever prefetch started", "scope", "workflow", "retrieverMode", string(retrieverMode), "retrieverCount", len(rt.AgentExecution.Retrievers.Retrievers))
+		retrieverInput := AgentRetrieverInput{
+			AgentFingerprint: input.AgentFingerprint,
+			UserPrompt:       input.UserPrompt,
+		}
+		var retrieverResult AgentRetrieverResult
+		if err := workflow.ExecuteActivity(retrieverActCtx, rt.AgentRetrieverActivity, retrieverInput).Get(retrieverActCtx, &retrieverResult); err != nil {
+			if temporal.IsCanceledError(err) {
+				return nil, err
+			}
+			return nil, err
+		}
+		retrieverContext = retrieverResult.RetrieverContext
+		logger.Debug("workflow: retriever prefetch done", "scope", "workflow", "hasContext", retrieverContext != "")
+	}
+
 	lastContent := ""
 	var runUsage *interfaces.LLMUsage
 	var llmResult AgentLLMResult
@@ -363,6 +409,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			EventWorkflowID:  eventWorkflowID,
 			EventTaskQueue:   eventTaskQueue,
 			LocalChannelName: input.LocalChannelName,
+			RetrieverContext: retrieverContext,
 		}
 
 		if useStreaming {
@@ -860,7 +907,7 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 
 	logger.Debug("activity: LLM stream started", "scope", "activity", "runID", agentWorkflowID, "messageCount", len(messages))
 
-	req, tools := rt.buildLLMRequest(messages, input.SkipTools)
+	req, tools := rt.buildLLMRequest(messages, input.SkipTools, input.RetrieverContext)
 
 	emitDelta := func(ev events.AgentEvent) {
 		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
@@ -1026,11 +1073,17 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 	return result, nil
 }
 
-// buildLLMRequest builds an LLMRequest from messages and skipTools. Returns the request and tools list.
-func (rt *TemporalRuntime) buildLLMRequest(messages []interfaces.Message, skipTools bool) (*interfaces.LLMRequest, []interfaces.Tool) {
+// buildLLMRequest builds an LLMRequest from messages, skipTools, and optional retrieverContext.
+// When retrieverContext is non-empty (prefetch / hybrid mode) it is appended to the system prompt so the
+// LLM sees pre-fetched documents on every call in the run. Returns the request and tools list.
+func (rt *TemporalRuntime) buildLLMRequest(messages []interfaces.Message, skipTools bool, retrieverContext string) (*interfaces.LLMRequest, []interfaces.Tool) {
 	tools := rt.AgentExecution.Tools.Tools
+	systemMessage := rt.AgentSpec.SystemPrompt
+	if retrieverContext != "" {
+		systemMessage = fmt.Sprintf("%s\n\nRelevant Context:\n%s", rt.AgentSpec.SystemPrompt, retrieverContext)
+	}
 	req := &interfaces.LLMRequest{
-		SystemMessage:  rt.AgentSpec.SystemPrompt,
+		SystemMessage:  systemMessage,
 		ResponseFormat: rt.AgentSpec.ResponseFormat,
 		Messages:       messages,
 	}
@@ -1100,6 +1153,105 @@ func (rt *TemporalRuntime) llmResponseToResult(resp *interfaces.LLMResponse, too
 	return result, nil
 }
 
+// AgentRetrieverActivity runs all configured retrievers in parallel using input.UserPrompt as the query,
+// then returns a combined document context string for injection into the LLM system prompt.
+// Called only for [types.RetrieverModePrefetch] and [types.RetrieverModeHybrid].
+// Partial failures (some retrievers fail) are logged and skipped; if all retrievers fail, the activity
+// returns an error so Temporal can retry per the retry policy.
+func (rt *TemporalRuntime) AgentRetrieverActivity(ctx context.Context, input AgentRetrieverInput) (*AgentRetrieverResult, error) {
+	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+		return nil, err
+	}
+
+	retrievers := rt.AgentExecution.Retrievers.Retrievers
+	if len(retrievers) == 0 {
+		return &AgentRetrieverResult{}, nil
+	}
+
+	logger := activity.GetLogger(ctx)
+	logger.Debug("activity: retriever prefetch started", "scope", "activity", "retrieverCount", len(retrievers), "query", input.UserPrompt)
+
+	type retrieverResult struct {
+		name string
+		docs []interfaces.Document
+		err  error
+	}
+
+	results := make([]retrieverResult, len(retrievers))
+	var wg sync.WaitGroup
+	for i, r := range retrievers {
+		wg.Add(1)
+		go func(idx int, ret interfaces.Retriever) {
+			defer wg.Done()
+			name := ret.Name()
+			retrieverAttr := interfaces.Attribute{Key: types.MetricAttrRetriever, Value: name}
+			rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallStarted, retrieverAttr)
+			start := time.Now()
+
+			searchCtx, sp := rt.Tracer.StartSpan(ctx, "retriever.search",
+				interfaces.Attribute{Key: "retriever.name", Value: name},
+				interfaces.Attribute{Key: "query", Value: input.UserPrompt},
+			)
+			docs, err := ret.Search(searchCtx, input.UserPrompt)
+			latency := float64(time.Since(start).Milliseconds())
+			if err != nil {
+				sp.RecordError(err)
+				sp.End()
+				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallFailed, retrieverAttr)
+				rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
+			} else {
+				sp.End()
+				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallCompleted, retrieverAttr)
+				rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
+			}
+			results[idx] = retrieverResult{name: name, docs: docs, err: err}
+		}(i, r)
+	}
+	wg.Wait()
+
+	multipleRetrievers := len(retrievers) > 1
+	var sb strings.Builder
+	failedCount := 0
+	for _, res := range results {
+		if res.err != nil {
+			failedCount++
+			logger.Error("activity: retriever search failed, skipping", "scope", "activity", "retriever", res.name, "error", res.err)
+			continue
+		}
+		if len(res.docs) == 0 {
+			continue
+		}
+		if multipleRetrievers {
+			fmt.Fprintf(&sb, "## %s\n", res.name)
+		}
+		sb.WriteString(formatRetrieverDocs(res.docs))
+	}
+
+	if failedCount == len(retrievers) {
+		return nil, fmt.Errorf("retriever prefetch: all %d retriever(s) failed", len(retrievers))
+	}
+	if failedCount > 0 {
+		logger.Warn("activity: some retrievers failed, continuing with partial context", "scope", "activity", "failed", failedCount, "total", len(retrievers))
+	}
+
+	retrieverContext := strings.TrimSpace(sb.String())
+	logger.Debug("activity: retriever prefetch completed", "scope", "activity", "retrieverCount", len(retrievers), "hasContext", retrieverContext != "")
+	return &AgentRetrieverResult{RetrieverContext: retrieverContext}, nil
+}
+
+// formatRetrieverDocs formats a list of documents for injection into the LLM system prompt.
+// Format: "[N] content\n(source: s, score: 0.XX)\n\n" for each document.
+func formatRetrieverDocs(docs []interfaces.Document) string {
+	if len(docs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, doc := range docs {
+		fmt.Fprintf(&sb, types.RetrieverDocFormat, i+1, doc.Content, doc.Source, doc.Score)
+	}
+	return sb.String()
+}
+
 // AgentLLMActivity calls the LLM and returns content plus any tool calls.
 // When input.ConversationID is set, fetches from store and adds assistant message on completion.
 func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMInput) (*AgentLLMResult, error) {
@@ -1118,7 +1270,7 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 	}
 
 	logger.Debug("activity: LLM generate started", "scope", "activity", "messageCount", len(messages))
-	req, tools := rt.buildLLMRequest(messages, input.SkipTools)
+	req, tools := rt.buildLLMRequest(messages, input.SkipTools, input.RetrieverContext)
 
 	llmClient := rt.AgentExecution.LLM.Client
 	model := llmClient.GetModel()

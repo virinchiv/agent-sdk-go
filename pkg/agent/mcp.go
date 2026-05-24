@@ -63,47 +63,47 @@ func NewMCPTool(serverName string, spec interfaces.ToolSpec, client interfaces.M
 }
 
 // Name implements interfaces.Tool.
-func (m *MCPTool) Name() string {
-	if m == nil {
+func (t *MCPTool) Name() string {
+	if t == nil {
 		return ""
 	}
-	return mcpToolName(m.ServerName, m.Spec.Name)
+	return mcpToolName(t.ServerName, t.Spec.Name)
 }
 
 // DisplayName implements interfaces.Tool.
-func (m *MCPTool) DisplayName() string {
-	if m == nil {
+func (t *MCPTool) DisplayName() string {
+	if t == nil {
 		return ""
 	}
-	return mcpToolDisplayName(m.ServerName, m.Spec.Name)
+	return mcpToolDisplayName(t.ServerName, t.Spec.Name)
 }
 
 // Description implements interfaces.Tool.
-func (m *MCPTool) Description() string {
-	if m == nil {
+func (t *MCPTool) Description() string {
+	if t == nil {
 		return ""
 	}
-	return m.Spec.Description
+	return t.Spec.Description
 }
 
 // Parameters implements interfaces.Tool.
-func (m *MCPTool) Parameters() interfaces.JSONSchema {
-	if m == nil || m.Spec.Parameters == nil {
+func (t *MCPTool) Parameters() interfaces.JSONSchema {
+	if t == nil || t.Spec.Parameters == nil {
 		return interfaces.JSONSchema{"type": "object"}
 	}
-	return m.Spec.Parameters
+	return t.Spec.Parameters
 }
 
 // Execute implements interfaces.Tool: marshal args, CallTool, return decoded JSON or raw string.
-func (m *MCPTool) Execute(ctx context.Context, args map[string]any) (any, error) {
-	if m == nil || m.Client == nil {
+func (t *MCPTool) Execute(ctx context.Context, args map[string]any) (any, error) {
+	if t == nil || t.Client == nil {
 		return nil, fmt.Errorf("mcp tool: nil client")
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {
 		return nil, err
 	}
-	out, err := m.Client.CallTool(ctx, m.Spec.Name, raw)
+	out, err := t.Client.CallTool(ctx, t.Spec.Name, raw)
 	if err != nil {
 		return nil, err
 	}
