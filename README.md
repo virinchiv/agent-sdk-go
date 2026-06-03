@@ -1,6 +1,6 @@
-# Agent SDK for Go - Temporal-first
+# Agent SDK for Go
 
-**Build durable, production-grade AI agents in Go** — Temporal-backed workflows that survive crashes and deploys. See [Capabilities](#capabilities) for the full feature set.
+**Build production-grade AI agents in Go** — backed by [Temporal](https://temporal.io) for durable, crash-resilient execution, or run in-process with zero setup. See [Capabilities](#capabilities) for the full feature set.
 
 [![CI](https://github.com/agenticenv/agent-sdk-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/agenticenv/agent-sdk-go/actions)
 [![Release](https://img.shields.io/github/v/release/agenticenv/agent-sdk-go?label=Release)](https://github.com/agenticenv/agent-sdk-go/releases)
@@ -18,9 +18,9 @@
 - [Overview](#overview)
 - [Capabilities](#capabilities)
 - [Reference apps](#reference-apps)
-- [Temporal Runtime](#temporal-runtime)
-  - [Durable agents: survive crashes, restarts, and deploys](#durable-agents-survive-crashes-restarts-and-deploys)
-  - [Streaming and approvals](#streaming-and-approvals)
+- [Runtimes](#runtimes)
+  - [Temporal](#temporal-runtime)
+  - [In-Process](#in-process-runtime)
 - [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Create an agent and run](#create-an-agent-and-run)
@@ -57,21 +57,21 @@
 
 ## Overview
 
-**agent-sdk-go** is a Go SDK for production AI agents — tools, MCP, human-in-the-loop approvals, and multi-agent delegation — built on [Temporal](https://temporal.io) durable execution.
+**agent-sdk-go** is a Go SDK for production AI agents — tools, MCP, A2A, human-in-the-loop approvals, and multi-agent delegation.
 
-> **Most agent frameworks live and die inside a single process: if your server restarts, the run is lost.** Here, every agent run is a Temporal workflow end to end. Runs survive crashes and deploys, respect timeouts and retries, and are observable as real service operations. There is no execution path outside Temporal.
+Every agent run on the **Temporal runtime** is a durable workflow: it survives process crashes and deploys, supports horizontal scaling, and is observable as a real service operation. This is the recommended runtime for production workloads where run durability matters. A **running Temporal server** is required.
 
-`pkg/agent` exposes three entry points — `Run`, `Stream`, and `RunAsync` — each mapped directly to a Temporal workflow. Connect via `WithTemporalConfig` or `WithTemporalClient` to your cluster. See [Getting Started](#getting-started) to set up, or [Temporal Runtime](#temporal-runtime) for deeper detail on workers, queues, and streaming.
+The **in-process runtime** runs the agent loop directly in your process with no external dependencies — ideal for development, testing, and deployments where Temporal is not available. It has full feature parity: tools, MCP, A2A, sub-agents, streaming, AG-UI, approvals, conversation, and observability.
+
+`pkg/agent` exposes three entry points — `Run`, `Stream`, and `RunAsync`. Add `WithTemporalConfig` or `WithTemporalClient` for the Temporal runtime; omit it for in-process. See [Getting Started](#getting-started) or [Runtimes](#runtimes).
 
 ## Capabilities
-
-> Every agent run is a Temporal workflow: durable, replay-safe, and observable. No in-memory execution path.
 
 - **LLM providers** — OpenAI, Anthropic, and Gemini out of the box; bring your own via `interfaces.LLMClient`.
 - **Tools** — Register built-in or custom tools via `interfaces.Tool`; optional **parallel vs sequential** execution for multiple tool calls in one LLM round (`WithAgentToolExecutionMode`).
 - **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
-- **Conversation** — Persist multi-turn message history across runs via `WithConversation`; built-in in-memory and Redis stores, or bring your own.
-- **Sub-agents** — Delegate to specialist agents via `WithSubAgents`.
+- **Conversation** — Persist multi-turn message history via `WithConversation`; in-memory store for in-process; in-memory and Redis for Temporal. Bring your own via `interfaces.Conversation`.
+- **Sub-agents** — Delegate to specialist agents via `WithSubAgents`; recursive delegation with depth limiting; all sub-agent events fan in to the parent stream on both runtimes.
 - **MCP** — Extend agent capabilities by connecting any MCP server as a tool source via `WithMCPConfig` or `WithMCPClients`.
 - **A2A** — Connect remote [Agent-to-Agent](https://github.com/a2aproject/A2A) agents as tool providers via `WithA2AConfig` or `WithA2AClients`; or expose the agent itself as an A2A server via `WithA2ADefaultServer` / `WithA2AServer` and `RunA2A`.
 - **Retrieval (RAG)** — Ground agent responses in external knowledge bases via a pluggable `Retriever` interface with built-in Weaviate and pgvector support; extend with your own implementation.
@@ -79,8 +79,11 @@
 - **AG-UI** — Stream events conform to the [AG-UI protocol](https://docs.ag-ui.com); agents work out of the box with any AG-UI compatible frontend such as [CopilotKit](https://copilotkit.ai).
 - **Reasoning** — Extended thinking / chain-of-thought where supported (Anthropic, Gemini).
 - **Token usage** — Track input, output, and reasoning token counts per run.
-- **Scale** — Add Temporal workers to scale agent execution horizontally.
-- **Observability** — OpenTelemetry traces, metrics, and structured logs across all agent execution paths; export to any OTLP-compatible backend.
+- **Observability** — OpenTelemetry traces, metrics, and structured logs; export to any OTLP-compatible backend.
+- **Durable execution** ★ — Runs survive process crashes and restarts; Temporal workflow history ensures no step is lost.
+- **Scale** ★ — Add Temporal workers to scale agent execution horizontally; split agent and worker across separate processes.
+
+> ★ Temporal runtime only.
 
 ## Reference apps
 
@@ -88,7 +91,9 @@ Demo applications that use **agent-sdk-go** end-to-end:
 
 - **[Agent Chat](https://github.com/agenticenv/agent-chat)** — Web chat demo with durable conversations; a good reference for wiring the SDK into an HTTP-backed app.
 
-## Temporal Runtime
+## Runtimes
+
+### Temporal
 
 **Temporal** powers agents through three moving parts: a **Temporal client** that launches agent workflows, **workers** (typically `NewAgentWorker`) that poll task queues and execute workflow and activity code, and **workflow history** that makes each run durable. Workers are stateless — they replay and advance history, not hold state themselves.
 
@@ -130,13 +135,29 @@ Stream events and approval events cross two boundaries: **Temporal** (durable wo
 - **Your responsibility.** Keep worker processes supervised and restarting on crash, maintain a stable connection to your Temporal cluster, and ensure stream subscribers can reconnect.
 - **Client reconnection and UX.** For interactive apps, if the process serving `Stream` crashes, the workflow continues in Temporal but your client loses the connection. Once a stream is lost, reconnecting to that specific run is not supported — the recommended approach is to block the user from sending a new prompt until the current one completes, then fetch the final response and display it. This keeps conversation turns sequential and avoids out-of-order state. For autonomous agents, this is a non-issue since the caller waits for completion and the workflow finishes regardless.
 
+### In-Process
+
+Runs the agent loop directly in your process — zero setup, zero infrastructure.
+
+**When to use:**
+- Development, testing, and prototyping
+- Deployments where Temporal is not needed
+- Short-lived runs where crash recovery is not required
+
+All capabilities listed above apply except ★ items. Conversation uses the in-memory store only. If the process crashes, the run is lost — no replay, no remote workers.
+
+**Switching to Temporal:** add `WithTemporalConfig` (or `WithTemporalClient`) to any `NewAgent` call — no other code changes required.
+
 ## Getting Started
 
 How to **use** the SDK—agents, LLMs, Temporal connection, examples.
 
 ### Prerequisites
 
-**agent-sdk-go** runs agents on the **[Temporal](https://temporal.io)** runtime (durable workflows and activities), so a **running Temporal server** is required. See **[Temporal setup](temporal-setup.md)**. Also **Go 1.26+** (see `go.mod`) and credentials for your LLM provider.
+**Go 1.26+** (see `go.mod`) and credentials for your LLM provider are always required.
+
+- **In-process runtime** (default): no additional setup — just `go get` and an LLM API key.
+- **Temporal runtime**: a running Temporal server is required. See **[Temporal setup](temporal-setup.md)**.
 
 **Module:** `github.com/agenticenv/agent-sdk-go`
 
@@ -145,6 +166,8 @@ go get github.com/agenticenv/agent-sdk-go@latest
 ```
 
 ### Create an agent and run
+
+**Local runtime** (no Temporal required):
 
 ```go
 import (
@@ -159,6 +182,19 @@ llmClient, _ := openai.NewClient(
 )
 
 a, _ := agent.NewAgent(
+    agent.WithSystemPrompt("You are a helpful assistant."),
+    agent.WithLLMClient(llmClient),
+)
+defer a.Close()
+
+result, err := a.Run(ctx, "Hello", "")
+// result.Content, result.AgentName, result.Model
+```
+
+**Temporal runtime** (durable execution):
+
+```go
+a, _ := agent.NewAgent(
     agent.WithTemporalConfig(&agent.TemporalConfig{
         Host: "localhost", Port: 7233,
         Namespace: "default", TaskQueue: "my-app",
@@ -169,7 +205,6 @@ a, _ := agent.NewAgent(
 defer a.Close()
 
 result, err := a.Run(ctx, "Hello", "")
-// result.Content, result.AgentName, result.Model
 ```
 
 [examples/simple_agent](examples/simple_agent)
@@ -760,7 +795,7 @@ if res.Err != nil { /* handle */ }
 
 For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use `**OnApproval`** as in the snippet above—the activity token string is `**ApprovalToken**` from `**ParseCustomEventApproval**` / `**ParseCustomEventDelegation**` (not a field on the `**AgentEvent**` interface).
 
-[examples/agent_with_tools_approval](examples/agent_with_tools_approval)
+[examples/agent_with_tools/approval](examples/agent_with_tools/approval)
 
 [examples/agent_with_run_async](examples/agent_with_run_async)
 
@@ -802,7 +837,7 @@ result, err := a.Run(context.Background(), "Hello", "")
 
 Implement `interfaces.Tool`: `Name()`, `Description()`, `Parameters()`, `Execute()`. Register with `agent.WithTools(tool1, tool2)`.
 
-[examples/agent_with_custom_tools](examples/agent_with_custom_tools)
+[examples/agent_with_tools/custom](examples/agent_with_tools/custom)
 
 ### Response format
 
@@ -993,7 +1028,7 @@ Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), ma
 
 Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are emitted in the correct AG-UI sequence during every `Stream()` call. Serialize any event with `event.ToJSON()` and forward it over SSE, WebSocket, or Redis to a TypeScript/React frontend using the AG-UI client SDK.
 
-For a complete server + UI reference, see `[examples/agent_copilotkit](examples/agent_copilotkit)` (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
+For a complete server + UI reference, see [examples/agent_with_agui](examples/agent_with_agui) (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
 
 ```go
 ch, err := a.Stream(ctx, prompt, conversationID)
@@ -1131,7 +1166,7 @@ agent.WithLogLevel("debug") // show all SDK internal log lines
 
 ## Configuration
 
-A Temporal connection is **required** — one of `WithTemporalConfig` or `WithTemporalClient` must be set; the agent does not run with LLM-only config.
+A Temporal connection (`WithTemporalConfig` or `WithTemporalClient`) is **optional** — omit it to use the **local runtime** (in-process, no Temporal). Set it to use the **Temporal runtime** (durable execution). All other options work the same on both runtimes.
 
 - **WithTemporalConfig**: Temporal connection (Host, Port, Namespace, TaskQueue). Use for simple setups. See [Temporal connection](#temporal-connection).
 - **WithTemporalClient**: Pre-configured Temporal client. Use for TLS, API key auth, Temporal Cloud. Requires `WithTaskQueue`. Agent does not close the client.

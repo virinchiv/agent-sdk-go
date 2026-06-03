@@ -631,7 +631,7 @@ func otlpLogsClientConfigured(logs interfaces.Logs) bool {
 }
 
 // buildAgentConfig applies options, validates, and sets defaults (logger, timeouts, iterations).
-// WithTemporalConfig lets the runtime create a Temporal client from host settings; WithTemporalClient supplies a caller-owned client.
+// When neither WithTemporalConfig nor WithTemporalClient is set, the local in-process runtime is used.
 // remoteWorker is false for Agent; NewAgentWorker sets it to true for worker-side activities.
 func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	c := &agentConfig{remoteWorker: false, ID: uuid.New().String()}
@@ -666,17 +666,13 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	if c.toolApprovalPolicy == nil {
 		c.toolApprovalPolicy = RequireAllToolApprovalPolicy{}
 	}
-	// Either TemporalConfig or TemporalClient is required, not both.
+	// Temporal-specific validation: only enforced when the caller explicitly opts in to the
+	// Temporal backend. When neither is set the local runtime is used as the default backend.
 	if c.temporalConfig != nil && c.temporalClient != nil {
 		return nil, errors.New("provide either WithTemporalConfig or WithTemporalClient, not both")
 	}
-	if c.temporalConfig == nil && c.temporalClient == nil {
-		return nil, errors.New("temporal connection is required: use WithTemporalConfig or WithTemporalClient")
-	}
-	if c.temporalConfig != nil {
-		if c.temporalConfig.TaskQueue == "" {
-			return nil, errors.New("TaskQueue is required in TemporalConfig: provide a unique name per agent")
-		}
+	if c.temporalConfig != nil && c.temporalConfig.TaskQueue == "" {
+		return nil, errors.New("TaskQueue is required in TemporalConfig: provide a unique name per agent")
 	}
 	if c.temporalClient != nil && c.taskQueue == "" {
 		return nil, errors.New("taskQueue is required when using WithTemporalClient")
@@ -816,20 +812,26 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		}
 	}
 
+	runtimeName := "local"
+	if c.hasTemporalRuntime() {
+		runtimeName = "temporal"
+	}
+
 	ctx := context.Background()
-	c.logger.Info(ctx, "agent config built", slog.String("scope", "agent"), slog.String("name", c.Name), slog.String("taskQueue", c.taskQueue))
-	// Debug: full config summary for troubleshooting (no sensitive: systemPrompt, API keys)
-	c.logger.Info(ctx, "agent config detail",
+	c.logger.Info(ctx, "agent config built",
 		slog.String("scope", "agent"),
 		slog.String("name", c.Name),
-		slog.String("taskQueue", c.taskQueue),
-		slog.String("instanceId", c.instanceId),
+		slog.String("runtime", runtimeName),
+	)
+
+	// Full config summary for troubleshooting (no sensitive values: systemPrompt, API keys).
+	// Fields are split by relevance: common fields always logged; Temporal-specific fields only
+	// when the Temporal backend is selected.
+	commonAttrs := []any{
+		slog.String("scope", "agent"),
+		slog.String("name", c.Name),
+		slog.String("runtime", runtimeName),
 		slog.Int("maxIterations", c.maxIterations),
-		slog.Bool("streamEnabled", c.streamEnabled),
-		slog.Bool("disableLocalWorker", c.disableLocalWorker),
-		slog.Bool("enableRemoteWorkers", c.enableRemoteWorkers),
-		slog.Bool("remoteWorker", c.remoteWorker),
-		slog.Bool("disableFingerprintCheck", c.disableFingerprintCheck),
 		slog.String("agentMode", string(c.agentMode)),
 		slog.String("agentToolExecutionMode", string(c.agentToolExecutionMode)),
 		slog.Bool("hasApprovalHandler", c.approvalHandler != nil),
@@ -849,7 +851,20 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Bool("enabledMetrics", c.metrics != nil),
 		slog.Bool("otlpSdkLogsExporter", otlpLogsClientConfigured(c.logs)),
 		slog.Bool("otelLoggerWired", otelLoggerWired),
-	)
+	}
+	if c.hasTemporalRuntime() {
+		c.logger.Info(ctx, "agent config detail", append(commonAttrs,
+			slog.String("taskQueue", c.taskQueue),
+			slog.String("instanceId", c.instanceId),
+			slog.Bool("streamEnabled", c.streamEnabled),
+			slog.Bool("disableLocalWorker", c.disableLocalWorker),
+			slog.Bool("enableRemoteWorkers", c.enableRemoteWorkers),
+			slog.Bool("remoteWorker", c.remoteWorker),
+			slog.Bool("disableFingerprintCheck", c.disableFingerprintCheck),
+		)...)
+	} else {
+		c.logger.Info(ctx, "agent config detail", commonAttrs...)
+	}
 
 	if c.tracer == nil {
 		c.tracer = observability.DefaultNoopTracer
@@ -862,6 +877,16 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	}
 
 	return c, nil
+}
+
+// buildAgentRuntime constructs the execution backend from agentConfig.
+// Defaults to the local in-process runtime when no Temporal backend is configured.
+// Extend with additional branches when new [runtime.Runtime] implementations are added.
+func (cfg *agentConfig) buildAgentRuntime(remoteWorker bool) (runtime.Runtime, error) {
+	if cfg.hasTemporalRuntime() {
+		return cfg.buildTemporalRuntime(remoteWorker)
+	}
+	return cfg.buildLocalRuntime()
 }
 
 // toolsList returns WithTools or registry tools, merged MCP tools ([mcpTools]), A2A tools ([a2aTools]),
@@ -1145,39 +1170,6 @@ func observabilityOptions(c *agentConfig) []observability.Option {
 		opts = append(opts, observability.WithInsecure(true))
 	}
 	return opts
-}
-
-// agentConfigFingerprint hashes identity, prompts, tools, sampling, limits, approval policy,
-// MCP wiring digest (transports, timeouts, filters, extra MCP client names), A2A wiring digest
-// for outbound clients only ([WithA2AConfig] / [WithA2AClients] via [a2aConfigFingerprint]),
-// observability OTLP wiring ([observabilityConfigFingerprint] from [WithObservabilityConfig]),
-// [WithRetrieverMode], and retriever names ([retrieverConfigFingerprint]).
-// Same inputs as temporal.NewTemporalRuntime agent fingerprint.
-//
-// Inbound [A2AServerConfig] from [WithA2AServer] / [WithA2ADefaultServer] (listen address,
-// [A2AServerConfig.BearerTokens], [A2AServerConfig.AgentCard] overrides for RunA2A) is omitted:
-// it does not change worker-side tool wiring or activity semantics and is typically deployment-specific.
-// Injected [WithTracer] / [WithMetrics] alone (without [WithObservabilityConfig]) are not hashed.
-func (c *agentConfig) agentConfigFingerprint() string {
-	mat := temporal.BuildAgentFingerprintPayload(
-		c.runtimeAgentSpec(),
-		temporal.ToolNamesFromTools(c.toolsList()),
-		toolPolicyFingerprint(c.toolApprovalPolicy),
-		llmSamplingRuntimeView(c.llmSampling),
-		c.conversationSize,
-		runtime.AgentLimits{
-			MaxIterations:   c.maxIterations,
-			Timeout:         c.timeout,
-			ApprovalTimeout: c.approvalTimeout,
-		},
-		mcpConfigFingerprint(c.mcpServers, mcpExtraClientNames(c.mcpClients)),
-		a2aConfigFingerprint(c.a2aServers, a2aExtraClientNames(c.a2aClients)),
-		observabilityConfigFingerprint(c.observabilityConfig),
-		string(c.agentMode),
-		c.agentToolExecutionMode,
-		retrieverConfigFingerprint(c.retrieverMode, c.retrievers),
-	)
-	return temporal.ComputeAgentFingerprint(mat)
 }
 
 func llmSamplingRuntimeView(s *LLMSampling) *runtime.LLMSampling {

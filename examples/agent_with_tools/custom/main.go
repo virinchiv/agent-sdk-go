@@ -25,17 +25,12 @@ func main() {
 		agent.WithName("agent-with-custom-tools"),
 		agent.WithDescription("Agent with custom reverser and word_count tools"),
 		agent.WithSystemPrompt("You are a helpful assistant. You can reverse text or count words. Use the tools when the user asks for those operations."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithTools(NewReverser(), NewWordCount()),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()), // allow all tools without approval (default requires approval)
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

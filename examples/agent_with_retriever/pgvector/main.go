@@ -62,10 +62,7 @@ func main() {
 		log.Fatalf("pgvector retriever: %v", err)
 	}
 
-	opts := common.AgentOptions(
-		cfg.Host, cfg.Port, cfg.Namespace, cfg.TaskQueue,
-		llmClient, logr, retrieverCfg, "pgvector",
-	)
+	opts := common.AgentOptions(cfg, llmClient, logr, retrieverCfg, "pgvector")
 	opts = append(opts, agent.WithRetrievers(retriever))
 
 	a, err := agent.NewAgent(opts...)

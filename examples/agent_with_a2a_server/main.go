@@ -31,12 +31,6 @@ func main() {
 		agent.WithName("agent-with-a2a-server"),
 		agent.WithDescription("Example agent exposed as an A2A HTTP server (agent card + JSON-RPC)."),
 		agent.WithSystemPrompt("You are a helpful assistant. You have an echo tool when the user asks to repeat text."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithToolRegistry(reg),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
@@ -45,6 +39,7 @@ func main() {
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 		agent.WithLogLevel(cfg.LogLevel),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

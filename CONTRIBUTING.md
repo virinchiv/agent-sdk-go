@@ -1,6 +1,6 @@
 # Contributing to agent-sdk-go
 
-Thank you for your interest in contributing. **agent-sdk-go** is a community Go SDK for AI agents that **run on the [Temporal](https://temporal.io)** runtime (workflows and activities). You need a **running Temporal server** for examples and the CLI; see **[temporal-setup.md](temporal-setup.md)**. This document explains how to set up your environment and what we expect from contributors.
+Thank you for your interest in contributing. **agent-sdk-go** is a community Go SDK for AI agents — backed by [Temporal](https://temporal.io) for durable execution, or running in-process with no external dependencies. This document explains how to set up your environment and what we expect from contributors.
 
 ## Prerequisites
 
@@ -9,14 +9,14 @@ Before contributing, ensure you have:
 | Requirement | Version / Notes |
 |-------------|-----------------|
 | **Go** | **Minimum `go 1.26.0`** (see the `go` line in `go.mod`; use that version or newer). |
-| **Temporal server** | Required for examples, CLI, and tests — see [Temporal setup](temporal-setup.md) |
+| **Temporal server** | Required only for Temporal runtime examples, CLI, and Temporal-specific tests — see [Temporal setup](temporal-setup.md). Unit tests and in-process runtime examples run without it. |
 | **golangci-lint** | Required for `make lint` — install **v2** with Go **≥** the `go` line in `go.mod`: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 | **gofmt** | `make lint` runs `gofmt -s` check first; run `make fmt` to apply `gofmt -s -w` project-wide |
 | **misspell** | `make spell` or `make lint` — typos via `misspell` (similar to Go Report Card) |
 
 ## Temporal setup
 
-Run Temporal locally (or point at Cloud/self-hosted) before examples and tests. Full steps: **[temporal-setup.md](temporal-setup.md)**.
+Only needed for the **Temporal runtime** path — examples and tests that use `AGENT_RUNTIME=temporal` or `WithTemporalConfig`. In-process runtime examples and unit tests run without it. Full steps: **[temporal-setup.md](temporal-setup.md)**.
 
 ## Development Workflow
 

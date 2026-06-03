@@ -3,17 +3,16 @@ package common
 import (
 	"fmt"
 
+	excfg "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 )
 
-// AgentOptions builds shared agent options: Temporal, LLM, retriever mode, and system prompt.
+// AgentOptions builds shared agent options: runtime, LLM, retriever mode, and system prompt.
 // backendLabel is shown in the agent name/description (e.g. "weaviate" or "pgvector").
 func AgentOptions(
-	host string,
-	port int,
-	namespace, taskQueue string,
+	cfg *excfg.Config,
 	llmClient interfaces.LLMClient,
 	log logger.Logger,
 	settings *Settings,
@@ -28,19 +27,14 @@ func AgentOptions(
 		backendLabel,
 		mode,
 	)
-	return []agent.Option{
+	opts := []agent.Option{
 		agent.WithName(fmt.Sprintf("agent-with-retriever-%s", backendLabel)),
 		agent.WithDescription(fmt.Sprintf("Agent with %s retriever (%s)", backendLabel, mode)),
 		agent.WithSystemPrompt(prompt),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      host,
-			Port:      port,
-			Namespace: namespace,
-			TaskQueue: taskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithLogger(log),
 		agent.WithRetrieverMode(mode),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 	}
+	return append(opts, excfg.RuntimeOption(cfg)...)
 }

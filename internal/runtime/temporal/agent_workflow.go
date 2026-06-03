@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/google/uuid"
@@ -116,18 +117,18 @@ func (rt *TemporalRuntime) sendAgentEventWorkflowUpdate(ctx context.Context, eve
 // EventTypes is set by the SDK; a single "*" element means emit all event kinds (used for Stream).
 // AgentFingerprint is the SHA-256 hex digest of the worker-local agent config; activities reject on mismatch.
 type AgentWorkflowInput struct {
-	UserPrompt       string                         `json:"user_prompt,omitempty"`
-	EventWorkflowID  string                         `json:"event_workflow_id,omitempty"`
-	EventTaskQueue   string                         `json:"event_task_queue,omitempty"`
-	LocalChannelName string                         `json:"local_channel_name,omitempty"`
-	StreamingEnabled bool                           `json:"streaming_enabled,omitempty"`
-	ConversationID   string                         `json:"conversation_id,omitempty"`
-	AgentFingerprint string                         `json:"agent_fingerprint,omitempty"`
-	EventTypes       []events.AgentEventType        `json:"event_types,omitempty"`
-	SubAgentDepth    int                            `json:"sub_agent_depth,omitempty"`
-	SubAgentRoutes   map[string]types.SubAgentRoute `json:"sub_agent_routes,omitempty"`
-	MaxSubAgentDepth int                            `json:"max_sub_agent_depth,omitempty"`
-	State            *AgentWorkflowState            `json:"state,omitempty"`
+	UserPrompt       string                   `json:"user_prompt,omitempty"`
+	EventWorkflowID  string                   `json:"event_workflow_id,omitempty"`
+	EventTaskQueue   string                   `json:"event_task_queue,omitempty"`
+	LocalChannelName string                   `json:"local_channel_name,omitempty"`
+	StreamingEnabled bool                     `json:"streaming_enabled,omitempty"`
+	ConversationID   string                   `json:"conversation_id,omitempty"`
+	AgentFingerprint string                   `json:"agent_fingerprint,omitempty"`
+	EventTypes       []events.AgentEventType  `json:"event_types,omitempty"`
+	SubAgentDepth    int                      `json:"sub_agent_depth,omitempty"`
+	SubAgentRoutes   map[string]SubAgentRoute `json:"sub_agent_routes,omitempty"`
+	MaxSubAgentDepth int                      `json:"max_sub_agent_depth,omitempty"`
+	State            *AgentWorkflowState      `json:"state,omitempty"`
 }
 
 // AgentWorkflowState is the state of the agent workflow.
@@ -172,6 +173,26 @@ type AgentLLMResult struct {
 	Content   string               `json:"content"`
 	ToolCalls []ToolCallRequest    `json:"tool_calls"`
 	Usage     *interfaces.LLMUsage `json:"usage,omitempty"`
+}
+
+// baseLLMResultToActivity converts a [base.LLMResult] (no JSON tags) to an [AgentLLMResult]
+// (with JSON tags required for Temporal serialization). ToolCallRequests are copied field by field
+// so the two types stay independent (temporal adds JSON tags, base does not).
+func baseLLMResultToActivity(r *base.LLMResult) *AgentLLMResult {
+	out := &AgentLLMResult{
+		Content: r.Content,
+		Usage:   base.CloneLLMUsage(r.Usage),
+	}
+	for _, tc := range r.ToolCalls {
+		out.ToolCalls = append(out.ToolCalls, ToolCallRequest{
+			ToolCallID:      tc.ToolCallID,
+			ToolName:        tc.ToolName,
+			ToolDisplayName: tc.ToolDisplayName,
+			Args:            tc.Args,
+			NeedsApproval:   tc.NeedsApproval,
+		})
+	}
+	return out
 }
 
 // ToolCallRequest is a tool invocation with approval flag. NeedsApproval is set by AgentLLMActivity.
@@ -424,7 +445,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			return nil, err
 		}
 
-		runUsage = mergeLLMUsage(runUsage, llmResult.Usage)
+		runUsage = base.MergeLLMUsage(runUsage, llmResult.Usage)
 
 		if len(llmResult.ToolCalls) == 0 {
 			// Final response: accumulate assistant message for conversation
@@ -448,7 +469,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 				}
 				return nil, err
 			}
-			runUsage = mergeLLMUsage(runUsage, llmResult.Usage)
+			runUsage = base.MergeLLMUsage(runUsage, llmResult.Usage)
 			messages = append(messages, interfaces.Message{Role: interfaces.MessageRoleAssistant, Content: llmResult.Content})
 			lastContent = llmResult.Content
 			break
@@ -471,7 +492,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 		var toolResults []interfaces.Message
 
-		toolExecMode := rt.AgentToolExecutionMode
+		toolExecMode := rt.ToolExecutionMode
 		if toolExecMode == "" {
 			toolExecMode = types.AgentToolExecutionModeParallel
 		}
@@ -891,266 +912,28 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 	}
 	stopHB := startLongActivityHeartbeats(ctx)
 	defer stopHB()
-	logger := activity.GetLogger(ctx)
-	info := activity.GetInfo(ctx)
-	agentWorkflowID := info.WorkflowExecution.ID
+
+	actLog := newActivityLogger(activity.GetLogger(ctx))
 	agentName := strings.TrimSpace(input.AgentName)
 
 	messages := input.Messages
 	if input.ConversationID != "" {
-		convMessages, err := rt.fetchConversationMessages(ctx, input.ConversationID)
+		convMessages, err := rt.FetchConversationMessages(ctx, actLog, input.ConversationID)
 		if err != nil {
 			return nil, err
 		}
 		messages = append(convMessages, messages...)
 	}
 
-	logger.Debug("activity: LLM stream started", "scope", "activity", "runID", agentWorkflowID, "messageCount", len(messages))
-
-	req, tools := rt.buildLLMRequest(messages, input.SkipTools, input.RetrieverContext)
-
-	emitDelta := func(ev events.AgentEvent) {
+	emit := func(ev events.AgentEvent) {
 		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
 	}
 
-	textMsgOpen := false
-	openTextMsg := func() {
-		if textMsgOpen {
-			return
-		}
-		emitDelta(events.NewAgentTextMessageStartEvent(input.MessageID, string(interfaces.MessageRoleAssistant)))
-		textMsgOpen = true
-	}
-	closeTextMsg := func() {
-		if !textMsgOpen {
-			return
-		}
-		emitDelta(events.NewAgentTextMessageEndEvent(input.MessageID))
-		textMsgOpen = false
-	}
-	// If the model never sent text chunks, still emit one text message (empty for tool-only) to match one activity = one assistant turn.
-	finalizeAssistantTextMessage := func(result *AgentLLMResult) {
-		if textMsgOpen {
-			closeTextMsg()
-			return
-		}
-		openTextMsg()
-		emitDelta(events.NewAgentTextMessageContentEvent(input.MessageID, result.Content))
-		closeTextMsg()
-	}
-
-	llmClient := rt.AgentExecution.LLM.Client
-	model := llmClient.GetModel()
-	provider := string(llmClient.GetProvider())
-	modelAttr := interfaces.Attribute{Key: types.MetricAttrModel, Value: model}
-	providerAttr := interfaces.Attribute{Key: types.MetricAttrProvider, Value: provider}
-
-	isLLMStreamSupported := llmClient.IsStreamSupported()
-
-	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallStarted, modelAttr, providerAttr)
-	llmStart := time.Now()
-
-	ctx, sp := rt.Tracer.StartSpan(ctx, "llm.stream",
-		interfaces.Attribute{Key: "agent.name", Value: agentName},
-		interfaces.Attribute{Key: "message.count", Value: len(messages)},
-		interfaces.Attribute{Key: "streaming", Value: isLLMStreamSupported},
-		modelAttr,
-		providerAttr,
-	)
-	defer sp.End()
-
-	if !isLLMStreamSupported {
-		logger.Debug("activity: LLM stream unsupported, using generate", "scope", "activity")
-		resp, err := llmClient.Generate(ctx, req)
-		llmLatency := float64(time.Since(llmStart).Milliseconds())
-		if err != nil {
-			sp.RecordError(err)
-			rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
-			rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-			return nil, err
-		}
-		result, err := rt.llmResponseToResult(resp, tools)
-		if err != nil {
-			sp.RecordError(err)
-			rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
-			rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-			return nil, err
-		}
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallCompleted, modelAttr, providerAttr)
-		if resp.Usage != nil {
-			rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensInput, float64(resp.Usage.PromptTokens), modelAttr, providerAttr)
-			rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
-		}
-		finalizeAssistantTextMessage(result)
-		return result, nil
-	}
-
-	stream, err := llmClient.GenerateStream(ctx, req)
+	result, err := rt.ExecuteLLMStream(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, emit)
 	if err != nil {
-		sp.RecordError(err)
-		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, float64(time.Since(llmStart).Milliseconds()), modelAttr, providerAttr)
 		return nil, err
 	}
-
-	// Reasoning AG-UI order: REASONING_START → REASONING_MESSAGE_START → REASONING_MESSAGE_CONTENT* →
-	// REASONING_MESSAGE_END → REASONING_END (flushed before the first assistant text delta, or at stream end).
-	// reasoningMID is a new UUID per reasoning phase (regenerated after a prior phase is flushed).
-	var reasoningMID string
-	reasoningPhaseOpen := false
-	reasoningMsgOpen := false
-	flushReasoning := func() {
-		if reasoningMsgOpen {
-			emitDelta(events.NewAgentReasoningMessageEndEvent(reasoningMID))
-			reasoningMsgOpen = false
-		}
-		if reasoningPhaseOpen {
-			emitDelta(events.NewAgentReasoningEndEvent(reasoningMID))
-			reasoningPhaseOpen = false
-		}
-	}
-	openReasoning := func() {
-		if reasoningPhaseOpen {
-			return
-		}
-		reasoningMID = uuid.New().String()
-		emitDelta(events.NewAgentReasoningStartEvent(reasoningMID))
-		reasoningPhaseOpen = true
-		emitDelta(events.NewAgentReasoningMessageStartEvent(reasoningMID, string(interfaces.MessageRoleReasoning)))
-		reasoningMsgOpen = true
-	}
-
-	for stream.Next() {
-		chunk := stream.Current()
-		if chunk == nil {
-			continue
-		}
-		if chunk.ContentDelta != "" {
-			flushReasoning()
-			openTextMsg()
-			//TEXT_MESSAGE_CONTENT
-			emitDelta(events.NewAgentTextMessageContentEvent(input.MessageID, chunk.ContentDelta))
-		}
-		if chunk.ThinkingDelta != "" {
-			openReasoning()
-			//REASONING_MESSAGE_CONTENT
-			emitDelta(events.NewAgentReasoningMessageContentEvent(reasoningMID, chunk.ThinkingDelta))
-		}
-	}
-	flushReasoning()
-	llmLatency := float64(time.Since(llmStart).Milliseconds())
-	if err := stream.Err(); err != nil {
-		sp.RecordError(err)
-		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-		return nil, err
-	}
-
-	resp := stream.GetResult()
-	if resp == nil {
-		err := fmt.Errorf("stream completed without result")
-		sp.RecordError(err)
-		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-		return nil, err
-	}
-	logger.Debug("activity: LLM stream completed", "scope", "activity", "runID", agentWorkflowID)
-	result, err := rt.llmResponseToResult(resp, tools)
-	if err != nil {
-		sp.RecordError(err)
-		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-		return nil, err
-	}
-	rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallCompleted, modelAttr, providerAttr)
-	if resp.Usage != nil {
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensInput, float64(resp.Usage.PromptTokens), modelAttr, providerAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
-	}
-	finalizeAssistantTextMessage(result)
-	return result, nil
-}
-
-// buildLLMRequest builds an LLMRequest from messages, skipTools, and optional retrieverContext.
-// When retrieverContext is non-empty (prefetch / hybrid mode) it is appended to the system prompt so the
-// LLM sees pre-fetched documents on every call in the run. Returns the request and tools list.
-func (rt *TemporalRuntime) buildLLMRequest(messages []interfaces.Message, skipTools bool, retrieverContext string) (*interfaces.LLMRequest, []interfaces.Tool) {
-	tools := rt.AgentExecution.Tools.Tools
-	systemMessage := rt.AgentSpec.SystemPrompt
-	if retrieverContext != "" {
-		systemMessage = fmt.Sprintf("%s\n\nRelevant Context:\n%s", rt.AgentSpec.SystemPrompt, retrieverContext)
-	}
-	req := &interfaces.LLMRequest{
-		SystemMessage:  systemMessage,
-		ResponseFormat: rt.AgentSpec.ResponseFormat,
-		Messages:       messages,
-	}
-	applyLLMSampling(rt.AgentExecution.LLM.Sampling, req)
-	if skipTools {
-		req.Tools = []interfaces.ToolSpec{}
-	} else {
-		req.Tools = interfaces.ToolsToSpecs(tools)
-	}
-	return req, tools
-}
-
-// fetchConversationMessages fetches messages for the LLM: fetches from conversation when ConversationID is set,
-func (rt *TemporalRuntime) fetchConversationMessages(ctx context.Context, conversationID string) ([]interfaces.Message, error) {
-	logger := activity.GetLogger(ctx)
-	logger.Debug("activity: loading conversation history", "scope", "activity", "conversationID", conversationID)
-
-	if rt.AgentExecution.Session.Conversation == nil {
-		return nil, fmt.Errorf("conversation is not configured")
-	}
-
-	limit := rt.AgentExecution.Session.ConversationSize
-	if limit <= 0 {
-		limit = 20
-	}
-
-	ctx, sp := rt.Tracer.StartSpan(ctx, "conversation.get_messages",
-		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
-		interfaces.Attribute{Key: "limit", Value: limit},
-	)
-	defer sp.End()
-
-	messages, err := rt.AgentExecution.Session.Conversation.ListMessages(ctx, conversationID, interfaces.WithLimit(limit))
-	if err != nil {
-		sp.RecordError(err)
-		return nil, fmt.Errorf("failed to list conversation messages: %w", err)
-	}
-
-	sp.SetAttribute("message.count", len(messages))
-	logger.Debug("activity: conversation history loaded", "scope", "activity", "messageCount", len(messages))
-	return messages, nil
-}
-
-func (rt *TemporalRuntime) llmResponseToResult(resp *interfaces.LLMResponse, tools []interfaces.Tool) (*AgentLLMResult, error) {
-	result := &AgentLLMResult{Content: resp.Content, Usage: cloneLLMUsagePtr(resp.Usage)}
-	for _, tc := range resp.ToolCalls {
-		if tc == nil {
-			continue
-		}
-		tool, ok := findToolByName(tools, tc.ToolName)
-		if !ok {
-			return nil, fmt.Errorf("unknown tool: %s", tc.ToolName)
-		}
-		needsApproval := rt.requiresApproval(tool)
-		displayName := tool.DisplayName()
-		if displayName == "" {
-			displayName = tc.ToolName
-		}
-		result.ToolCalls = append(result.ToolCalls, ToolCallRequest{
-			ToolCallID:      tc.ToolCallID,
-			ToolName:        tc.ToolName,
-			ToolDisplayName: displayName,
-			Args:            tc.Args,
-			NeedsApproval:   needsApproval,
-		})
-	}
-	return result, nil
+	return baseLLMResultToActivity(result), nil
 }
 
 // AgentRetrieverActivity runs all configured retrievers in parallel using input.UserPrompt as the query,
@@ -1162,94 +945,12 @@ func (rt *TemporalRuntime) AgentRetrieverActivity(ctx context.Context, input Age
 	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
 		return nil, err
 	}
-
-	retrievers := rt.AgentExecution.Retrievers.Retrievers
-	if len(retrievers) == 0 {
-		return &AgentRetrieverResult{}, nil
+	actLog := newActivityLogger(activity.GetLogger(ctx))
+	retrieverContext, err := rt.ExecuteRetrievers(ctx, actLog, input.UserPrompt)
+	if err != nil {
+		return nil, err
 	}
-
-	logger := activity.GetLogger(ctx)
-	logger.Debug("activity: retriever prefetch started", "scope", "activity", "retrieverCount", len(retrievers), "query", input.UserPrompt)
-
-	type retrieverResult struct {
-		name string
-		docs []interfaces.Document
-		err  error
-	}
-
-	results := make([]retrieverResult, len(retrievers))
-	var wg sync.WaitGroup
-	for i, r := range retrievers {
-		wg.Add(1)
-		go func(idx int, ret interfaces.Retriever) {
-			defer wg.Done()
-			name := ret.Name()
-			retrieverAttr := interfaces.Attribute{Key: types.MetricAttrRetriever, Value: name}
-			rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallStarted, retrieverAttr)
-			start := time.Now()
-
-			searchCtx, sp := rt.Tracer.StartSpan(ctx, "retriever.search",
-				interfaces.Attribute{Key: "retriever.name", Value: name},
-				interfaces.Attribute{Key: "query", Value: input.UserPrompt},
-			)
-			docs, err := ret.Search(searchCtx, input.UserPrompt)
-			latency := float64(time.Since(start).Milliseconds())
-			if err != nil {
-				sp.RecordError(err)
-				sp.End()
-				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallFailed, retrieverAttr)
-				rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
-			} else {
-				sp.End()
-				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallCompleted, retrieverAttr)
-				rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
-			}
-			results[idx] = retrieverResult{name: name, docs: docs, err: err}
-		}(i, r)
-	}
-	wg.Wait()
-
-	multipleRetrievers := len(retrievers) > 1
-	var sb strings.Builder
-	failedCount := 0
-	for _, res := range results {
-		if res.err != nil {
-			failedCount++
-			logger.Error("activity: retriever search failed, skipping", "scope", "activity", "retriever", res.name, "error", res.err)
-			continue
-		}
-		if len(res.docs) == 0 {
-			continue
-		}
-		if multipleRetrievers {
-			fmt.Fprintf(&sb, "## %s\n", res.name)
-		}
-		sb.WriteString(formatRetrieverDocs(res.docs))
-	}
-
-	if failedCount == len(retrievers) {
-		return nil, fmt.Errorf("retriever prefetch: all %d retriever(s) failed", len(retrievers))
-	}
-	if failedCount > 0 {
-		logger.Warn("activity: some retrievers failed, continuing with partial context", "scope", "activity", "failed", failedCount, "total", len(retrievers))
-	}
-
-	retrieverContext := strings.TrimSpace(sb.String())
-	logger.Debug("activity: retriever prefetch completed", "scope", "activity", "retrieverCount", len(retrievers), "hasContext", retrieverContext != "")
 	return &AgentRetrieverResult{RetrieverContext: retrieverContext}, nil
-}
-
-// formatRetrieverDocs formats a list of documents for injection into the LLM system prompt.
-// Format: "[N] content\n(source: s, score: 0.XX)\n\n" for each document.
-func formatRetrieverDocs(docs []interfaces.Document) string {
-	if len(docs) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	for i, doc := range docs {
-		fmt.Fprintf(&sb, types.RetrieverDocFormat, i+1, doc.Content, doc.Source, doc.Score)
-	}
-	return sb.String()
 }
 
 // AgentLLMActivity calls the LLM and returns content plus any tool calls.
@@ -1258,66 +959,27 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
 		return nil, err
 	}
-	logger := activity.GetLogger(ctx)
+	actLog := newActivityLogger(activity.GetLogger(ctx))
+	agentName := strings.TrimSpace(input.AgentName)
 
 	messages := input.Messages
 	if input.ConversationID != "" {
-		convMessages, err := rt.fetchConversationMessages(ctx, input.ConversationID)
+		convMessages, err := rt.FetchConversationMessages(ctx, actLog, input.ConversationID)
 		if err != nil {
 			return nil, err
 		}
 		messages = append(convMessages, messages...)
 	}
 
-	logger.Debug("activity: LLM generate started", "scope", "activity", "messageCount", len(messages))
-	req, tools := rt.buildLLMRequest(messages, input.SkipTools, input.RetrieverContext)
-
-	llmClient := rt.AgentExecution.LLM.Client
-	model := llmClient.GetModel()
-	provider := string(llmClient.GetProvider())
-	modelAttr := interfaces.Attribute{Key: types.MetricAttrModel, Value: model}
-	providerAttr := interfaces.Attribute{Key: types.MetricAttrProvider, Value: provider}
-
-	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallStarted, modelAttr, providerAttr)
-	llmStart := time.Now()
-
-	ctx, sp := rt.Tracer.StartSpan(ctx, "llm.generate",
-		interfaces.Attribute{Key: "agent.name", Value: strings.TrimSpace(input.AgentName)},
-		interfaces.Attribute{Key: "message.count", Value: len(messages)},
-		modelAttr,
-		providerAttr,
-	)
-	resp, err := llmClient.Generate(ctx, req)
-	llmLatency := float64(time.Since(llmStart).Milliseconds())
-	if err != nil {
-		sp.RecordError(err)
-		sp.End()
-		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-		return nil, err
-	}
-	sp.End()
-
-	rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
-	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallCompleted, modelAttr, providerAttr)
-	if resp.Usage != nil {
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensInput, float64(resp.Usage.PromptTokens), modelAttr, providerAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
+	emit := func(ev events.AgentEvent) {
+		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
 	}
 
-	logger.Debug("activity: LLM generate completed", "scope", "activity", "messageCount", len(messages))
-	result, err := rt.llmResponseToResult(resp, tools)
+	result, err := rt.ExecuteLLM(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, emit)
 	if err != nil {
 		return nil, err
 	}
-	agentNameTrim := strings.TrimSpace(input.AgentName)
-	publish := func(ev events.AgentEvent) {
-		rt.publishAgentEventToStream(ctx, agentNameTrim, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
-	}
-	publish(events.NewAgentTextMessageStartEvent(input.MessageID, string(interfaces.MessageRoleAssistant)))
-	publish(events.NewAgentTextMessageContentEvent(input.MessageID, result.Content))
-	publish(events.NewAgentTextMessageEndEvent(input.MessageID))
-	return result, nil
+	return baseLLMResultToActivity(result), nil
 }
 
 // AgentToolApprovalActivity blocks until the driver completes it via CompleteActivity.
@@ -1478,40 +1140,8 @@ func (rt *TemporalRuntime) AgentToolExecuteActivity(ctx context.Context, input A
 	}
 	stopHB := startLongActivityHeartbeats(ctx)
 	defer stopHB()
-	toolName := input.ToolName
-	args := input.Args
-	logger := activity.GetLogger(ctx)
-	logger.Debug("activity: tool execute started", "scope", "activity", "tool", toolName, "argCount", len(args))
-	tools := rt.AgentExecution.Tools.Tools
-	tool, ok := findToolByName(tools, toolName)
-	if !ok {
-		logger.Warn("activity: unknown tool", "scope", "activity", "tool", toolName)
-		return "", fmt.Errorf("unknown tool: %s", toolName)
-	}
-
-	toolAttr := interfaces.Attribute{Key: types.MetricAttrTool, Value: toolName}
-	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallStarted, toolAttr)
-	toolStart := time.Now()
-
-	ctx, sp := rt.Tracer.StartSpan(ctx, "tool.execute",
-		interfaces.Attribute{Key: "tool.name", Value: toolName},
-		interfaces.Attribute{Key: "arg.count", Value: len(args)},
-	)
-	defer sp.End()
-
-	result, err := tool.Execute(ctx, args)
-	toolLatency := float64(time.Since(toolStart).Milliseconds())
-	if err != nil {
-		sp.RecordError(err)
-		rt.Metrics.IncrementCounter(ctx, types.MetricToolCallFailed, toolAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
-		return "", err
-	}
-	rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
-	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallCompleted, toolAttr)
-	content := fmt.Sprintf("%v", result)
-	logger.Debug("activity: tool execute completed", "scope", "activity", "tool", toolName)
-	return content, nil
+	actLog := newActivityLogger(activity.GetLogger(ctx))
+	return rt.ExecuteTool(ctx, actLog, input.ToolName, input.Args)
 }
 
 // AgentToolAuthorizeActivity checks optional programmatic authorization before approval/execute.
@@ -1519,59 +1149,15 @@ func (rt *TemporalRuntime) AgentToolAuthorizeActivity(ctx context.Context, input
 	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
 		return AgentToolAuthorizeResult{}, err
 	}
-	toolName := input.ToolName
-	args := input.Args
-	logger := activity.GetLogger(ctx)
-	logger.Debug("activity: tool authorize started", "scope", "activity", "tool", toolName, "argCount", len(args))
-	tools := rt.AgentExecution.Tools.Tools
-	tool, ok := findToolByName(tools, toolName)
-	if !ok {
-		logger.Warn("activity: unknown tool in authorization", "scope", "activity", "tool", toolName)
-		return AgentToolAuthorizeResult{}, fmt.Errorf("unknown tool: %s", toolName)
-	}
-	authorizer, ok := tool.(interfaces.ToolAuthorizer)
-	if !ok {
-		logger.Debug("activity: tool has no authorizer; allow by default", "scope", "activity", "tool", toolName)
-		return AgentToolAuthorizeResult{Allowed: true}, nil
-	}
-
-	ctx, sp := rt.Tracer.StartSpan(ctx, "tool.authorize",
-		interfaces.Attribute{Key: "tool.name", Value: toolName},
-		interfaces.Attribute{Key: "arg.count", Value: len(args)},
-	)
-	defer sp.End()
-
-	decision, err := authorizer.Authorize(ctx, args)
+	actLog := newActivityLogger(activity.GetLogger(ctx))
+	authResult, err := rt.AuthorizeTool(ctx, actLog, input.ToolName, input.Args)
 	if err != nil {
-		sp.RecordError(err)
-		logger.Warn("activity: tool authorization failed", "scope", "activity", "tool", toolName, "error", err)
 		return AgentToolAuthorizeResult{}, err
 	}
-	if decision.Allow {
-		sp.SetAttribute("decision", "allowed")
-		logger.Debug("activity: tool authorization allowed", "scope", "activity", "tool", toolName)
-		return AgentToolAuthorizeResult{Allowed: true}, nil
-	}
-	reason := strings.TrimSpace(decision.Reason)
-	sp.SetAttribute("decision", "denied")
-	sp.SetAttribute("deny.reason", reason)
-	logger.Info("activity: tool authorization denied", "scope", "activity", "tool", toolName, "reason", reason)
-	return AgentToolAuthorizeResult{
-		Allowed: false,
-		Reason:  reason,
-	}, nil
+	return AgentToolAuthorizeResult{Allowed: authResult.Allowed, Reason: authResult.Reason}, nil
 }
 
-func findToolByName(tools []interfaces.Tool, toolName string) (interfaces.Tool, bool) {
-	for _, t := range tools {
-		if t.Name() == toolName {
-			return t, true
-		}
-	}
-	return nil, false
-}
-
-func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentWorkflowInput, tc ToolCallRequest, route types.SubAgentRoute, emitEvent func(events.AgentEvent) error) (string, error) {
+func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentWorkflowInput, tc ToolCallRequest, route SubAgentRoute, emitEvent func(events.AgentEvent) error) (string, error) {
 	logger := workflow.GetLogger(ctx)
 	if strings.TrimSpace(route.TaskQueue) == "" {
 		logger.Warn("workflow: sub-agent delegation skipped (empty task queue)",
@@ -1591,7 +1177,7 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 		return fmt.Sprintf("Sub-agent delegation refused: maximum nesting depth (%d) reached for this agent.", maxDepth), nil
 	}
 
-	query := subAgentQueryFromArgs(tc.Args)
+	query := base.SubAgentQuery(tc.Args)
 	childInput := AgentWorkflowInput{
 		UserPrompt:       query,
 		EventWorkflowID:  input.EventWorkflowID,
@@ -1669,55 +1255,11 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 	return childResult.Content, nil
 }
 
-func (rt *TemporalRuntime) requiresApproval(t interfaces.Tool) bool {
-	if rt.AgentExecution.Tools.ApprovalPolicy == nil {
-		// No policy: honor tool's ApprovalRequired
-		if ar, ok := t.(interfaces.ToolApproval); ok && ar.ApprovalRequired() {
-			return true
-		}
-		return false
-	}
-	// Policy set: policy decides (can override tool default)
-	return rt.AgentExecution.Tools.ApprovalPolicy.RequiresApproval(t)
-}
-
-func subAgentQueryFromArgs(args map[string]any) string {
-	if args == nil {
-		return ""
-	}
-	q, _ := args[types.SubAgentToolParamQuery].(string)
-	return q
-}
-
 // subAgentChildWorkflowTimeout caps how long the main agent waits on a delegated sub-agent run.
 // Uses the main agent worker's agent timeout (same package as delegateToSubAgent); sub-agent workers may define
 // their own limits separately, but this bounds the child execution from the main agent's perspective.
 func (rt *TemporalRuntime) subAgentChildWorkflowTimeout() time.Duration {
 	return rt.AgentExecution.Limits.Timeout
-}
-
-func mergeLLMUsage(acc *interfaces.LLMUsage, add *interfaces.LLMUsage) *interfaces.LLMUsage {
-	if add == nil {
-		return acc
-	}
-	if acc == nil {
-		return cloneLLMUsagePtr(add)
-	}
-	return &interfaces.LLMUsage{
-		PromptTokens:       acc.PromptTokens + add.PromptTokens,
-		CompletionTokens:   acc.CompletionTokens + add.CompletionTokens,
-		TotalTokens:        acc.TotalTokens + add.TotalTokens,
-		CachedPromptTokens: acc.CachedPromptTokens + add.CachedPromptTokens,
-		ReasoningTokens:    acc.ReasoningTokens + add.ReasoningTokens,
-	}
-}
-
-func cloneLLMUsagePtr(u *interfaces.LLMUsage) *interfaces.LLMUsage {
-	if u == nil {
-		return nil
-	}
-	c := *u
-	return &c
 }
 
 func retryPolicy(maxAttempts int32) *temporal.RetryPolicy {
@@ -1726,28 +1268,5 @@ func retryPolicy(maxAttempts int32) *temporal.RetryPolicy {
 		BackoffCoefficient: 2,
 		MaximumInterval:    10 * time.Minute,
 		MaximumAttempts:    maxAttempts,
-	}
-}
-
-func applyLLMSampling(sampling *types.LLMSampling, req *interfaces.LLMRequest) {
-	if sampling == nil {
-		return
-	}
-	s := sampling
-	if s.Temperature != nil {
-		req.Temperature = s.Temperature
-	}
-	if s.MaxTokens > 0 {
-		req.MaxTokens = s.MaxTokens
-	}
-	if s.TopP != nil {
-		req.TopP = s.TopP
-	}
-	if s.TopK != nil {
-		req.TopK = s.TopK
-	}
-	if s.Reasoning != nil {
-		r := *s.Reasoning
-		req.Reasoning = &r
 	}
 }

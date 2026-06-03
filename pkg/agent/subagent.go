@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 )
@@ -21,9 +21,10 @@ var subAgentToolNameNonIdent = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 // defaultMaxSubAgentDepth is the maximum number of sub-agent hops from this agent when unset.
 const defaultMaxSubAgentDepth = 2
 
-// ErrSubAgentToolNotExecutable is returned by SubAgentTool.Execute.
-// Normal runs delegate via AgentWorkflow child workflows; Execute() is only for misconfigured or direct activity calls.
-var ErrSubAgentToolNotExecutable = errors.New("sub-agent tool must be executed via workflow, not Execute()")
+// ErrSubAgentToolNotExecutable is returned by SubAgentTool.Execute when called outside a managed runtime.
+// Local runtime delegates via SubAgentRunners (in-process); Temporal delegates via child workflows.
+// This error only surfaces if the runtime bypasses the normal SubAgentRunners/workflow delegation path.
+var ErrSubAgentToolNotExecutable = errors.New("sub-agent tool must be delegated via runtime (local: in-process runner, temporal: child workflow)")
 
 // ErrSubAgentNameInvalid is returned when computing a sub-agent delegation tool name from a display name fails
 // for a delegation tool (empty name, or name contains no letters or digits after normalization).
@@ -105,8 +106,8 @@ func (t *subAgentTool) Description() string {
 
 func (t *subAgentTool) Parameters() interfaces.JSONSchema {
 	return tools.Params(map[string]interfaces.JSONSchema{
-		types.SubAgentToolParamQuery: tools.ParamString("Task or question to send to the sub-agent."),
-	}, types.SubAgentToolParamQuery)
+		runtime.SubAgentToolParamQuery: tools.ParamString("Task or question to send to the sub-agent."),
+	}, runtime.SubAgentToolParamQuery)
 }
 
 func (t *subAgentTool) Execute(_ context.Context, _ map[string]any) (any, error) {

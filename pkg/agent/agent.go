@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"log/slog"
@@ -46,7 +45,10 @@ func buildAgent(opts []Option) (*Agent, error) {
 		agentConfig: *cfg,
 	}
 
-	if a.disableLocalWorker && a.streamEnabled && !a.enableRemoteWorkers {
+	// This guard is Temporal-specific: streaming on Temporal requires a local worker unless
+	// remote workers are enabled. LocalRuntime streams in-process via ExecuteStream and needs
+	// no background worker poll loop, so we skip the guard for the local backend.
+	if cfg.hasTemporalRuntime() && a.disableLocalWorker && a.streamEnabled && !a.enableRemoteWorkers {
 		return nil, fmt.Errorf("DisableLocalWorker with streaming requires EnableRemoteWorkers()")
 	}
 
@@ -56,7 +58,10 @@ func buildAgent(opts []Option) (*Agent, error) {
 	}
 	a.runtime = rt
 
-	if !a.disableLocalWorker {
+	// Worker poll loop is only needed for backends that implement WorkerRuntime (e.g. Temporal).
+	// LocalRuntime executes in-process via Execute/ExecuteStream; creating a worker for it would
+	// log a spurious error because LocalRuntime does not implement WorkerRuntime.
+	if !a.disableLocalWorker && cfg.hasTemporalRuntime() {
 		a.localAgentWorker = &AgentWorker{agentConfig: *cfg, runtime: rt}
 	}
 
@@ -297,7 +302,7 @@ func (a *Agent) executeRequest(userPrompt, conversationID string, streaming bool
 		UserPrompt:       userPrompt,
 		ConversationID:   conversationID,
 		StreamingEnabled: streaming,
-		SubAgentRoutes:   a.buildSubAgentRoutes(),
+		SubAgents:        a.buildSubAgentSpecs(),
 		MaxSubAgentDepth: a.maxSubAgentDepth,
 		ApprovalHandler:  a.approvalHandler,
 		AgentSpec:        a.agentSpec(),
@@ -315,44 +320,42 @@ func (a *Agent) agentExecution() *runtime.AgentExecution {
 	return &e
 }
 
-// buildSubAgentRoutes snapshots sub-agent tool names, task queues, and nested routes for runtime delegation (internal).
-func (a *Agent) buildSubAgentRoutes() map[string]types.SubAgentRoute {
+// buildSubAgentSpecs builds the runtime-agnostic sub-agent spec tree for this agent.
+// Each runtime receives this tree via ExecuteRequest.SubAgents and constructs its own
+// internal routing structures (local: *LocalRuntime refs; temporal: task queue + fingerprint).
+func (a *Agent) buildSubAgentSpecs() []*runtime.SubAgentSpec {
 	if a == nil || len(a.subAgents) == 0 {
 		return nil
 	}
-	out := make(map[string]types.SubAgentRoute, len(a.subAgents))
+	out := make([]*runtime.SubAgentSpec, 0, len(a.subAgents))
 	for _, sub := range a.subAgents {
 		if sub == nil {
 			continue
 		}
-		tq := strings.TrimSpace(sub.taskQueue)
-		if tq == "" {
+		toolName, err := subAgentToolName(sub.Name)
+		if err != nil || toolName == "" {
 			continue
 		}
-		name, err := subAgentToolName(sub.Name)
-		if err != nil || name == "" {
-			continue
-		}
-		out[name] = types.SubAgentRoute{
-			Name:             sub.Name,
-			TaskQueue:        tq,
-			ChildRoutes:      sub.buildSubAgentRoutes(),
-			AgentFingerprint: sub.agentConfigFingerprint(),
-		}
+		out = append(out, &runtime.SubAgentSpec{
+			Name:     sub.Name,
+			ToolName: toolName,
+			Runtime:  sub.runtime,
+			Children: sub.buildSubAgentSpecs(),
+		})
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	if a.logger != nil {
 		names := make([]string, 0, len(out))
-		for k := range out {
-			names = append(names, k)
+		for _, s := range out {
+			names = append(names, s.ToolName)
 		}
 		sort.Strings(names)
-		a.logger.Debug(context.Background(), "built sub-agent routes for runtime delegation",
+		a.logger.Debug(context.Background(), "built sub-agent specs for runtime delegation",
 			slog.String("scope", "agent"),
 			slog.Any("subAgentToolNames", names),
-			slog.Int("routeCount", len(out)))
+			slog.Int("specCount", len(out)))
 	}
 	return out
 }

@@ -1,0 +1,16 @@
+# automation/docker/docker-compose.yml
+
+services:
+  temporal:
+    image: temporalio/temporal:latest
+    ports:
+      - "7233:7233"   # Temporal gRPC
+      - "8233:8233"   # Temporal UI
+    command: server start-dev --ip 0.0.0.0
+
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    ports:
+      - "3000:3000"   # Grafana UI
+      - "4317:4317"   # OTEL gRPC
+      - "4318:4318"   # OTEL HTTP

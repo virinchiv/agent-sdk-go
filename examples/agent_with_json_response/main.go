@@ -47,16 +47,11 @@ func main() {
 		agent.WithName("agent-json-response"),
 		agent.WithDescription("Example agent constrained to JSON output via ResponseFormat / JSONSchema"),
 		agent.WithSystemPrompt("You are a precise assistant. Respond only with JSON that matches the configured schema. No markdown fences or extra text."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithResponseFormat(rf),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

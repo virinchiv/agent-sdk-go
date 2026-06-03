@@ -23,15 +23,10 @@ func main() {
 		agent.WithName("simple-agent"),
 		agent.WithDescription("Simple agent with built-in worker"),
 		agent.WithSystemPrompt("You are a helpful assistant that can generate text."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

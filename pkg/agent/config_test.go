@@ -11,6 +11,8 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime/temporal"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
@@ -19,13 +21,42 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestBuildAgentConfig_NeitherTemporalConfigNorClient(t *testing.T) {
-	_, err := buildAgentConfig([]Option{
+// agentConfigFingerprint is a test helper that mirrors the fingerprint computed by the temporal
+// runtime for a given agent config. Lives here (not in production code) since it is only used
+// to assert fingerprint stability in tests.
+func agentConfigFingerprint(c *agentConfig) string {
+	mat := temporal.BuildAgentFingerprintPayload(
+		c.runtimeAgentSpec(),
+		temporal.ToolNamesFromTools(c.toolsList()),
+		toolPolicyFingerprint(c.toolApprovalPolicy),
+		llmSamplingRuntimeView(c.llmSampling),
+		c.conversationSize,
+		runtime.AgentLimits{
+			MaxIterations:   c.maxIterations,
+			Timeout:         c.timeout,
+			ApprovalTimeout: c.approvalTimeout,
+		},
+		mcpConfigFingerprint(c.mcpServers, mcpExtraClientNames(c.mcpClients)),
+		a2aConfigFingerprint(c.a2aServers, a2aExtraClientNames(c.a2aClients)),
+		observabilityConfigFingerprint(c.observabilityConfig),
+		string(c.agentMode),
+		c.agentToolExecutionMode,
+		retrieverConfigFingerprint(c.retrieverMode, c.retrievers),
+	)
+	return temporal.ComputeAgentFingerprint(mat)
+}
+
+func TestBuildAgentConfig_NeitherTemporalConfigNorClient_UsesLocalRuntime(t *testing.T) {
+	// No Temporal config is valid — the local runtime is the default backend.
+	cfg, err := buildAgentConfig([]Option{
 		WithName("test"),
 		WithLLMClient(stubLLM{}),
 	})
-	if err == nil || !strings.Contains(err.Error(), "temporal connection is required") {
-		t.Fatalf("got %v", err)
+	if err != nil {
+		t.Fatalf("expected success with local backend, got: %v", err)
+	}
+	if cfg.hasTemporalRuntime() {
+		t.Fatal("expected local backend (hasTemporalRuntime should be false)")
 	}
 }
 
@@ -812,7 +843,7 @@ func TestAgentConfigFingerprint_RetrieverModeChangesDigest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return cfg.agentConfigFingerprint()
+		return agentConfigFingerprint(cfg)
 	}
 	fpAgentic := build(RetrieverModeAgentic)
 	fpPrefetch := build(RetrieverModePrefetch)
@@ -864,7 +895,7 @@ func TestAgentConfigFingerprint_AgenticRetrieverNamesChangesDigest(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfgNoR.agentConfigFingerprint() == cfgWithR.agentConfigFingerprint() {
+	if agentConfigFingerprint(cfgNoR) == agentConfigFingerprint(cfgWithR) {
 		t.Fatal("expected different fingerprints for agentic mode with vs without retriever names")
 	}
 }
@@ -1107,9 +1138,9 @@ func TestAgentConfigFingerprint_InboundA2AServerIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfgNoInbound.agentConfigFingerprint() != cfgWithInbound.agentConfigFingerprint() {
+	if agentConfigFingerprint(cfgNoInbound) != agentConfigFingerprint(cfgWithInbound) {
 		t.Fatalf("inbound A2AServerConfig should not change agent fingerprint: %q vs %q",
-			cfgNoInbound.agentConfigFingerprint(), cfgWithInbound.agentConfigFingerprint())
+			agentConfigFingerprint(cfgNoInbound), agentConfigFingerprint(cfgWithInbound))
 	}
 }
 

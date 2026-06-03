@@ -317,7 +317,7 @@ func TestAgentConfigFingerprint_RetrieverNamesChangesDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfgNoR.agentConfigFingerprint() == cfgWithR.agentConfigFingerprint() {
+	if agentConfigFingerprint(cfgNoR) == agentConfigFingerprint(cfgWithR) {
 		t.Fatal("expected different fingerprints when retriever names are registered")
 	}
 }

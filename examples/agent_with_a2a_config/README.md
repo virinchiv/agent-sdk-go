@@ -3,7 +3,7 @@
 Outbound A2A: your agent calls **remote** A2A agents as tools.
 
 - **`agent_with_a2a_config`** — `agent.WithA2AConfig(agent.A2AServers{<serverName>: cfg})`; SDK builds the default **[pkg/a2a/client](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/a2a/client)** per server.
-- **`agent_with_a2a_client`** — `a2aclient.NewClient(...)` + **`WithA2AClients`**; same env and testing flow — see **[../agent_with_a2a_client/README.md](../agent_with_a2a_client/README.md)**.
+- **`agent_with_a2a_client`** — `a2aclient.NewClient(...)` + **`WithA2AClients`**; same env and testing flow as above.
 
 ## Prerequisites
 

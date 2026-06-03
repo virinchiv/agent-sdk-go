@@ -108,21 +108,24 @@ func TestComputeAgentFingerprint_observabilityFingerprintChangesDigest(t *testin
 	}
 }
 
+func newFingerprintRT(spec sdkruntime.AgentSpec, exec sdkruntime.AgentExecution, policyFP string, opts ...func(*TemporalRuntime)) *TemporalRuntime {
+	rt := &TemporalRuntime{}
+	rt.AgentSpec = spec
+	rt.AgentExecution = exec
+	rt.policyFingerprint = policyFP
+	for _, o := range opts {
+		o(rt)
+	}
+	rt.agentFingerprint = computeAgentFingerprintFromRuntime(rt)
+	return rt
+}
+
 func TestVerifyAgentFingerprint_mismatch(t *testing.T) {
-	cfg := &TemporalRuntimeConfig{
-		AgentSpec: sdkruntime.AgentSpec{Name: "x"},
-		AgentExecution: sdkruntime.AgentExecution{
-			LLM:     sdkruntime.AgentLLM{},
-			Tools:   sdkruntime.AgentTools{Tools: nil},
-			Session: sdkruntime.AgentSession{},
-			Limits:  sdkruntime.AgentLimits{},
-		},
-		PolicyFingerprint: "require_all",
-	}
-	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: *cfg,
-		agentFingerprint:      computeAgentFingerprintFromRuntimeConfig(cfg),
-	}
+	rt := newFingerprintRT(
+		sdkruntime.AgentSpec{Name: "x"},
+		sdkruntime.AgentExecution{},
+		"require_all",
+	)
 	err := rt.verifyAgentFingerprint("deadbeef")
 	if err == nil {
 		t.Fatal("expected mismatch error")
@@ -137,42 +140,26 @@ func TestVerifyAgentFingerprint_bothEmptyOK(t *testing.T) {
 }
 
 func TestVerifyAgentFingerprint_emptyWantWhenWorkerHasFingerprint(t *testing.T) {
-	cfg := &TemporalRuntimeConfig{
-		AgentSpec: sdkruntime.AgentSpec{Name: "x"},
-		AgentExecution: sdkruntime.AgentExecution{
-			LLM:     sdkruntime.AgentLLM{},
-			Tools:   sdkruntime.AgentTools{Tools: nil},
-			Session: sdkruntime.AgentSession{},
-			Limits:  sdkruntime.AgentLimits{},
-		},
-		PolicyFingerprint: "require_all",
-	}
-	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: *cfg,
-		agentFingerprint:      computeAgentFingerprintFromRuntimeConfig(cfg),
-	}
+	rt := newFingerprintRT(
+		sdkruntime.AgentSpec{Name: "x"},
+		sdkruntime.AgentExecution{},
+		"require_all",
+	)
 	if err := rt.verifyAgentFingerprint(""); err == nil {
 		t.Fatal("expected mismatch when caller fingerprint is empty but worker has one")
 	}
 }
 
 func TestVerifyAgentFingerprint_disableCheckAllowsMismatch(t *testing.T) {
-	cfg := &TemporalRuntimeConfig{
-		AgentSpec:               sdkruntime.AgentSpec{Name: "x"},
-		DisableFingerprintCheck: true,
-		PolicyFingerprint:       "require_all",
-		AgentExecution: sdkruntime.AgentExecution{
-			LLM:     sdkruntime.AgentLLM{},
-			Tools:   sdkruntime.AgentTools{Tools: nil},
-			Session: sdkruntime.AgentSession{},
-			Limits:  sdkruntime.AgentLimits{},
+	rt := newFingerprintRT(
+		sdkruntime.AgentSpec{Name: "x"},
+		sdkruntime.AgentExecution{},
+		"require_all",
+		func(rt *TemporalRuntime) {
+			rt.disableFingerprintCheck = true
+			rt.ToolExecutionMode = "sequential"
 		},
-		AgentToolExecutionMode: "sequential",
-	}
-	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: *cfg,
-		agentFingerprint:      computeAgentFingerprintFromRuntimeConfig(cfg),
-	}
+	)
 	if err := rt.verifyAgentFingerprint("definitely-different"); err != nil {
 		t.Fatalf("expected bypass when skip is enabled, got: %v", err)
 	}

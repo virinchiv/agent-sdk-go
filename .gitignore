@@ -23,4 +23,8 @@ pnpm-debug.log*
 .env.local
 .env*.local
 
+# Reports of example runs
+reports/**
+**/Taskfile.yml
+
 .DS_Store

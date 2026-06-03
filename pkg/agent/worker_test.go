@@ -13,7 +13,7 @@ import (
 
 func TestNewAgentWorker_requiresTemporal(t *testing.T) {
 	_, err := NewAgentWorker(WithName("w"), WithLLMClient(stubLLM{}))
-	if err == nil || !strings.Contains(err.Error(), "temporal connection is required") {
+	if err == nil || !strings.Contains(err.Error(), "AgentWorker requires a Temporal backend") {
 		t.Fatalf("got %v", err)
 	}
 }

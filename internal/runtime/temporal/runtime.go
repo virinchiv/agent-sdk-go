@@ -14,7 +14,9 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	"github.com/google/uuid"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
@@ -44,10 +46,44 @@ var ErrAgentAlreadyRunning = errors.New("agent already has an active run")
 // ErrAgentFingerprintMismatch is returned when workflow input fingerprint does not match the worker.
 var ErrAgentFingerprintMismatch = errors.New("temporal: agent fingerprint mismatch (caller vs worker); redeploy worker or align agent config")
 
+// TemporalRuntime implements [runtime.WorkerRuntime] and [runtime.EventBusRuntime] using
+// Temporal workflows and activities as the execution backend.
+// It embeds [base.Runtime] for the common agent fields (AgentSpec, AgentExecution, Tracer, Metrics,
+// ToolExecutionMode) and holds all Temporal-specific connection and fingerprint state as flat fields.
 type TemporalRuntime struct {
-	TemporalRuntimeConfig
+	base.Runtime // AgentSpec, AgentExecution, Tracer, Metrics, ToolExecutionMode
 
-	// agentFingerprint is ComputeAgentFingerprint(BuildAgentFingerprintPayload(...)) at NewTemporalRuntime; immutable for this runtime.
+	// Temporal connection
+	temporalConfig     *TemporalConfig
+	temporalClient     client.Client
+	taskQueue          string
+	instanceId         string
+	ownsTemporalClient bool
+	// enableRemoteWorkers: start event worker + event workflow in Execute/ExecuteStream (client agent runtime).
+	enableRemoteWorkers bool
+	// remoteWorker: true for NewAgentWorker (polls activities); false for client Agent runtime.
+	remoteWorker bool
+
+	logger logger.Logger
+
+	// Fingerprint inputs captured at construction and consumed by computeAgentFingerprintFromRuntime.
+	policyFingerprint        string
+	mcpFingerprint           string
+	a2aFingerprint           string
+	observabilityFingerprint string
+	// agentMode is the string form of [types.AgentMode] (e.g. "interactive", "autonomous").
+	agentMode            string
+	retrieverFingerprint string
+
+	// Temporal-specific flags
+	// disableLocalWorker mirrors pkg/agent DisableLocalWorker: when false, the client embeds a worker
+	// so Execute/ExecuteStream skip DescribeTaskQueue poller checks.
+	disableLocalWorker bool
+	// disableFingerprintCheck disables activity-time caller-vs-worker fingerprint verification.
+	// Break-glass only: keep false in production for rollout/config safety.
+	disableFingerprintCheck bool
+
+	// agentFingerprint is ComputeAgentFingerprint(BuildAgentFingerprintPayload(...)) at NewTemporalRuntime; immutable.
 	agentFingerprint string
 
 	eventbus              eventbus.EventBus
@@ -67,30 +103,30 @@ type TemporalRuntime struct {
 }
 
 func NewTemporalRuntime(opts ...Option) (*TemporalRuntime, error) {
-	cfg, err := buildTemporalRuntimeConfig(opts...)
+	rt, err := buildTemporalRuntime(opts...)
 	if err != nil {
 		return nil, err
 	}
-	cfg.logger.Info(context.Background(), "runtime created", slog.String("scope", "runtime"), slog.String("name", cfg.AgentSpec.Name), slog.String("taskQueue", cfg.taskQueue))
-	if cfg.DisableFingerprintCheck {
-		cfg.logger.Warn(context.Background(),
+	rt.logger.Info(context.Background(), "runtime created",
+		slog.String("scope", "runtime"),
+		slog.String("name", rt.AgentSpec.Name),
+		slog.String("taskQueue", rt.taskQueue))
+	if rt.disableFingerprintCheck {
+		rt.logger.Warn(context.Background(),
 			"fingerprint verification is disabled (break-glass mode)",
 			slog.String("scope", "runtime"),
-			slog.String("name", cfg.AgentSpec.Name),
-			slog.String("taskQueue", cfg.taskQueue))
+			slog.String("name", rt.AgentSpec.Name),
+			slog.String("taskQueue", rt.taskQueue))
 	}
-	fp := computeAgentFingerprintFromRuntimeConfig(cfg)
-	return &TemporalRuntime{
-		TemporalRuntimeConfig: *cfg,
-		agentFingerprint:      fp,
-		eventbus:              eventbus.NewInmem(cfg.logger),
-	}, nil
+	rt.agentFingerprint = computeAgentFingerprintFromRuntime(rt)
+	rt.eventbus = eventbus.NewInmem(rt.logger)
+	return rt, nil
 }
 
 // verifyAgentFingerprint returns an error when want does not equal the runtime's agent fingerprint
 // (computed at [NewTemporalRuntime]).
 func (rt *TemporalRuntime) verifyAgentFingerprint(want string) error {
-	if rt.DisableFingerprintCheck {
+	if rt.disableFingerprintCheck {
 		return nil
 	}
 	if rt.agentFingerprint != want {
@@ -270,7 +306,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 		AgentFingerprint: rt.agentFingerprint,
 		EventTypes:       []events.AgentEventType{},
 		SubAgentDepth:    0,
-		SubAgentRoutes:   req.SubAgentRoutes,
+		SubAgentRoutes:   buildSubAgentRoutes(req.SubAgents),
 		MaxSubAgentDepth: req.MaxSubAgentDepth,
 	}
 
@@ -452,7 +488,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 		AgentFingerprint: rt.agentFingerprint,
 		EventTypes:       streamEventTypes,
 		SubAgentDepth:    0,
-		SubAgentRoutes:   req.SubAgentRoutes,
+		SubAgentRoutes:   buildSubAgentRoutes(req.SubAgents),
 		MaxSubAgentDepth: req.MaxSubAgentDepth,
 	}
 
@@ -617,20 +653,20 @@ func (rt *TemporalRuntime) resolveEventPipeline(ctx context.Context, agentName s
 // before starting the workflow. Only these paths call Execute/ExecuteStream (client [Agent]; remoteWorker is always false).
 // Skip when mode is autonomous, or when an embedded worker polls in-process ([DisableLocalWorker] false).
 func (rt *TemporalRuntime) skipHasWorkersPrecheck() bool {
-	if rt.AgentMode == string(types.AgentModeAutonomous) {
+	if rt.agentMode == string(types.AgentModeAutonomous) {
 		return true
 	}
-	if !rt.DisableLocalWorker {
+	if !rt.disableLocalWorker {
 		return true
 	}
 	return false
 }
 
 func (rt *TemporalRuntime) hasWorkersPrecheckSkipReason() string {
-	if rt.AgentMode == string(types.AgentModeAutonomous) {
+	if rt.agentMode == string(types.AgentModeAutonomous) {
 		return "autonomous_mode"
 	}
-	if !rt.DisableLocalWorker {
+	if !rt.disableLocalWorker {
 		return "embedded_local_worker"
 	}
 	return ""

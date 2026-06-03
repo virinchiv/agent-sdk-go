@@ -39,12 +39,6 @@ func main() {
 		agent.WithName("agent-with-reasoning"),
 		agent.WithDescription("Example: WithLLMSampling + generic LLMReasoning"),
 		agent.WithSystemPrompt("You are a helpful assistant. Be concise."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithStream(true),
 		agent.WithLLMSampling(&agent.LLMSampling{
@@ -56,6 +50,7 @@ func main() {
 		}),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

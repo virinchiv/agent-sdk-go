@@ -12,8 +12,8 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
-	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	"github.com/nexus-rpc/sdk-go/nexus"
 	"github.com/stretchr/testify/mock"
@@ -110,10 +110,8 @@ func TestSyntheticStreamCompleteEvent(t *testing.T) {
 func TestResolveEventPipeline(t *testing.T) {
 	l := logger.NoopLogger()
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
-			logger:    l,
-			taskQueue: "tq",
-		},
+		logger:    l,
+		taskQueue: "tq",
 	}
 	ewf, etq, err := rt.resolveEventPipeline(context.Background(), "My Agent")
 	if err != nil {
@@ -137,21 +135,21 @@ func TestResolveEventPipeline(t *testing.T) {
 	}
 }
 
-func TestSubAgentQueryFromArgs(t *testing.T) {
-	if subAgentQueryFromArgs(nil) != "" {
+func TestSubAgentQuery(t *testing.T) {
+	if base.SubAgentQuery(nil) != "" {
 		t.Error("nil args")
 	}
-	if subAgentQueryFromArgs(map[string]any{}) != "" {
+	if base.SubAgentQuery(map[string]any{}) != "" {
 		t.Error("empty map")
 	}
-	if got := subAgentQueryFromArgs(map[string]any{"query": "hello"}); got != "hello" {
+	if got := base.SubAgentQuery(map[string]any{"query": "hello"}); got != "hello" {
 		t.Errorf("got %q", got)
 	}
 }
 
 func TestAgent_BeginRunEndRun(t *testing.T) {
 	l := logger.DefaultLogger("error")
-	a := &TemporalRuntime{TemporalRuntimeConfig: TemporalRuntimeConfig{logger: l}}
+	a := &TemporalRuntime{logger: l}
 
 	cleanup, err := a.beginRun("wf1")
 	if err != nil {
@@ -184,58 +182,6 @@ func TestRetryPolicy(t *testing.T) {
 	}
 }
 
-func TestApplyLLMSampling(t *testing.T) {
-	req := &interfaces.LLMRequest{}
-	applyLLMSampling(nil, req)
-	if req.Temperature != nil || req.MaxTokens != 0 {
-		t.Error("nil sampling should not modify request")
-	}
-	temp := 0.3
-	topP := 0.9
-	topK := 5
-	applyLLMSampling(&types.LLMSampling{
-		Temperature: &temp,
-		MaxTokens:   42,
-		TopP:        &topP,
-		TopK:        &topK,
-	}, req)
-	if req.Temperature == nil || *req.Temperature != 0.3 {
-		t.Errorf("Temperature = %v", req.Temperature)
-	}
-	if req.MaxTokens != 42 {
-		t.Errorf("MaxTokens = %d", req.MaxTokens)
-	}
-	if req.TopP == nil || *req.TopP != 0.9 {
-		t.Errorf("TopP = %v", req.TopP)
-	}
-	if req.TopK == nil || *req.TopK != 5 {
-		t.Errorf("TopK = %v", req.TopK)
-	}
-}
-
-func TestApplyLLMSampling_reasoning(t *testing.T) {
-	req := &interfaces.LLMRequest{}
-	applyLLMSampling(&types.LLMSampling{
-		Reasoning: &interfaces.LLMReasoning{
-			Enabled:      true,
-			Effort:       "medium",
-			BudgetTokens: 2048,
-		},
-	}, req)
-	if req.Reasoning == nil {
-		t.Fatal("expected Reasoning")
-	}
-	if req.Reasoning.Effort != "medium" {
-		t.Errorf("Effort = %q", req.Reasoning.Effort)
-	}
-	if req.Reasoning.BudgetTokens != 2048 {
-		t.Errorf("BudgetTokens = %d", req.Reasoning.BudgetTokens)
-	}
-	if !req.Reasoning.Enabled {
-		t.Error("expected Enabled")
-	}
-}
-
 func TestKeyvalsToAny(t *testing.T) {
 	kv := []interface{}{"k", 1}
 	out := keyvalsToAny(kv)
@@ -246,7 +192,7 @@ func TestKeyvalsToAny(t *testing.T) {
 
 func TestTemporalRuntime_SetEventBus_GetEventBus(t *testing.T) {
 	l := logger.NoopLogger()
-	rt := &TemporalRuntime{TemporalRuntimeConfig: TemporalRuntimeConfig{logger: l}}
+	rt := &TemporalRuntime{logger: l}
 	if rt.GetEventBus() != nil {
 		t.Fatal("zero-value runtime should have nil event bus until set")
 	}

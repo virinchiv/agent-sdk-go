@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces/mocks"
@@ -22,7 +23,7 @@ import (
 func testRuntimeForWorkflow(t *testing.T) *TemporalRuntime {
 	t.Helper()
 	return &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "WorkflowTestAgent"},
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM:     sdkruntime.AgentLLM{Client: stubLLM{}},
@@ -30,10 +31,10 @@ func testRuntimeForWorkflow(t *testing.T) *TemporalRuntime {
 				Tools:   sdkruntime.AgentTools{Tools: nil},
 				Session: sdkruntime.AgentSession{},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 }
 
@@ -189,15 +190,15 @@ func TestAgentLLMActivity_MockLLM_TextOnly(t *testing.T) {
 	}, nil)
 
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "ActTest"},
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 
 	actEnv := newActivityTestEnv(t)
@@ -239,16 +240,16 @@ func TestAgentLLMActivity_MockLLM_ToolCalls(t *testing.T) {
 	}, nil)
 
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "ActTest"},
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM:   sdkruntime.AgentLLM{Client: mockLLM},
 				Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{mockTool}, ApprovalPolicy: policy},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 
 	actEnv := newActivityTestEnv(t)
@@ -283,15 +284,15 @@ func TestAgentLLMActivity_MockLLM_UnknownToolError(t *testing.T) {
 	}, nil)
 
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM:   sdkruntime.AgentLLM{Client: mockLLM},
 				Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{}},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 
 	actEnv := newActivityTestEnv(t)
@@ -319,7 +320,7 @@ func TestAgentLLMActivity_MockConversationAndLLM(t *testing.T) {
 	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{Content: "answer"}, nil)
 
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 				Session: sdkruntime.AgentSession{
@@ -327,10 +328,10 @@ func TestAgentLLMActivity_MockConversationAndLLM(t *testing.T) {
 					ConversationSize: 10,
 				},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 
 	actEnv := newActivityTestEnv(t)
@@ -353,15 +354,15 @@ func TestAgentLLMActivity_ConversationNotConfigured(t *testing.T) {
 	mockLLM := mocks.NewMockLLMClient(ctrl)
 
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM:     sdkruntime.AgentLLM{Client: mockLLM},
 				Session: sdkruntime.AgentSession{Conversation: nil},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 
 	actEnv := newActivityTestEnv(t)
@@ -385,15 +386,15 @@ func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
 	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{Content: "gen"}, nil)
 
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "StreamAct"},
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 
 	actEnv := newActivityTestEnv(t)
@@ -490,7 +491,7 @@ func makeRetrieverRuntime(t *testing.T, retrievers []interfaces.Retriever, mode 
 	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
 	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
 	return &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "RetrieverTest"},
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
@@ -499,10 +500,10 @@ func makeRetrieverRuntime(t *testing.T, retrievers []interfaces.Retriever, mode 
 					Mode:       mode,
 				},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 }
 
@@ -644,30 +645,6 @@ func TestAgentRetrieverActivity_EmptyDocs_EmptyContext(t *testing.T) {
 // buildLLMRequest RAG context tests
 // ---------------------------------------------------------------------------
 
-func TestBuildLLMRequest_WithRagContext_AugmentsSystemPrompt(t *testing.T) {
-	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
-			AgentSpec:      sdkruntime.AgentSpec{Name: "Test", SystemPrompt: "You are helpful."},
-			AgentExecution: sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}},
-		},
-	}
-	req, _ := rt.buildLLMRequest(nil, false, "doc context")
-	require.Contains(t, req.SystemMessage, "You are helpful.")
-	require.Contains(t, req.SystemMessage, "Relevant Context:")
-	require.Contains(t, req.SystemMessage, "doc context")
-}
-
-func TestBuildLLMRequest_NoRagContext_UnchangedSystemPrompt(t *testing.T) {
-	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
-			AgentSpec:      sdkruntime.AgentSpec{Name: "Test", SystemPrompt: "You are helpful."},
-			AgentExecution: sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}},
-		},
-	}
-	req, _ := rt.buildLLMRequest(nil, false, "")
-	require.Equal(t, "You are helpful.", req.SystemMessage)
-}
-
 // ---------------------------------------------------------------------------
 // AgentWorkflow + prefetch mode integration
 // ---------------------------------------------------------------------------
@@ -682,7 +659,7 @@ func TestAgentWorkflow_PrefetchMode_CallsRetrieverActivityFirst(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{
+		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "PrefetchAgent", SystemPrompt: "base prompt"},
 			AgentExecution: sdkruntime.AgentExecution{
 				LLM:    sdkruntime.AgentLLM{Client: stubLLM{}},
@@ -692,10 +669,10 @@ func TestAgentWorkflow_PrefetchMode_CallsRetrieverActivityFirst(t *testing.T) {
 					Mode:       types.RetrieverModePrefetch,
 				},
 			},
-			logger:  logger.NoopLogger(),
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
+		logger: logger.NoopLogger(),
 	}
 
 	env.RegisterWorkflow(rt.AgentWorkflow)
@@ -744,24 +721,4 @@ func TestAgentWorkflow_AgenticMode_SkipsRetrieverActivity(t *testing.T) {
 
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
-}
-
-func TestMergeLLMUsage(t *testing.T) {
-	a := &interfaces.LLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
-	b := &interfaces.LLMUsage{PromptTokens: 3, CompletionTokens: 7, TotalTokens: 10, CachedPromptTokens: 2, ReasoningTokens: 1}
-
-	got := mergeLLMUsage(a, b)
-	if got.PromptTokens != 13 || got.CompletionTokens != 12 || got.TotalTokens != 25 {
-		t.Fatalf("mergeLLMUsage: got %+v", got)
-	}
-	if got.CachedPromptTokens != 2 || got.ReasoningTokens != 1 {
-		t.Fatalf("mergeLLMUsage optional fields: got %+v", got)
-	}
-
-	if mergeLLMUsage(nil, nil) != nil {
-		t.Fatal("nil + nil should be nil")
-	}
-	if x := mergeLLMUsage(nil, b); x.PromptTokens != b.PromptTokens {
-		t.Fatal("nil + b should copy b")
-	}
 }

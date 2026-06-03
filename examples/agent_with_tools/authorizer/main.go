@@ -24,18 +24,13 @@ func main() {
 		agent.WithName("agent-with-tool-authorizer"),
 		agent.WithDescription("Agent with a custom tool that uses ToolAuthorizer"),
 		agent.WithSystemPrompt("You are a helpful assistant. Use the protected_note tool when the user asks for the protected note or internal note."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithStream(true),
 		agent.WithTools(NewProtectedNote()),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

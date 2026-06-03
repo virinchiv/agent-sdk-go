@@ -180,20 +180,20 @@ func ToolNamesFromTools(tools []interfaces.Tool) []string {
 	return names
 }
 
-func computeAgentFingerprintFromRuntimeConfig(c *TemporalRuntimeConfig) string {
+func computeAgentFingerprintFromRuntime(rt *TemporalRuntime) string {
 	mat := BuildAgentFingerprintPayload(
-		c.AgentSpec,
-		ToolNamesFromTools(c.AgentExecution.Tools.Tools),
-		c.PolicyFingerprint,
-		c.AgentExecution.LLM.Sampling,
-		c.AgentExecution.Session.ConversationSize,
-		c.AgentExecution.Limits,
-		c.MCPFingerprint,
-		c.A2AFingerprint,
-		c.ObservabilityFingerprint,
-		c.AgentMode,
-		c.AgentToolExecutionMode,
-		c.RetrieverFingerprint,
+		rt.AgentSpec,
+		ToolNamesFromTools(rt.AgentExecution.Tools.Tools),
+		rt.policyFingerprint,
+		rt.AgentExecution.LLM.Sampling,
+		rt.AgentExecution.Session.ConversationSize,
+		rt.AgentExecution.Limits,
+		rt.mcpFingerprint,
+		rt.a2aFingerprint,
+		rt.observabilityFingerprint,
+		rt.agentMode,
+		rt.ToolExecutionMode,
+		rt.retrieverFingerprint,
 	)
 	return ComputeAgentFingerprint(mat)
 }

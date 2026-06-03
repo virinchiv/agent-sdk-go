@@ -53,10 +53,7 @@ func main() {
 		log.Fatalf("weaviate retriever: %v", err)
 	}
 
-	opts := common.AgentOptions(
-		cfg.Host, cfg.Port, cfg.Namespace, cfg.TaskQueue,
-		llmClient, logr, retrieverCfg, "weaviate",
-	)
+	opts := common.AgentOptions(cfg, llmClient, logr, retrieverCfg, "weaviate")
 	opts = append(opts, agent.WithRetrievers(retriever))
 
 	a, err := agent.NewAgent(opts...)

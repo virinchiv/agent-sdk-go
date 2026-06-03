@@ -21,10 +21,38 @@ import (
 )
 
 type Config struct {
+	// Runtime selects the agent execution backend: "local" (default) or "temporal".
+	// Override with AGENT_RUNTIME env var or set runtime: temporal in config.yaml.
+	Runtime  string          `mapstructure:"runtime"`
 	Temporal *TemporalConfig `mapstructure:"temporal"`
 	LLM      *LLMConfig      `mapstructure:"llm"`
 	Logger   *LoggerConfig   `mapstructure:"logger"`
 	MCP      *MCPRootConfig  `mapstructure:"mcp"`
+}
+
+// UseTemporalRuntime reports whether the temporal backend is selected.
+func (c *Config) UseTemporalRuntime() bool {
+	return c != nil && strings.ToLower(strings.TrimSpace(c.Runtime)) == "temporal"
+}
+
+// RuntimeOption returns [agent.WithTemporalConfig] when runtime is "temporal", or nil for
+// the local runtime. Spread into the options slice:
+//
+//	opts = append(opts, RuntimeOption(cfg)...)
+//
+// To hard-code a runtime regardless of config, call [agent.WithTemporalConfig] directly.
+func RuntimeOption(cfg *Config) []agent.Option {
+	if !cfg.UseTemporalRuntime() || cfg.Temporal == nil {
+		return nil
+	}
+	return []agent.Option{
+		agent.WithTemporalConfig(&agent.TemporalConfig{
+			Host:      cfg.Temporal.Host,
+			Port:      cfg.Temporal.Port,
+			Namespace: cfg.Temporal.Namespace,
+			TaskQueue: cfg.Temporal.TaskQueue,
+		}),
+	}
 }
 
 // MCPRootConfig holds optional MCP server definitions for the CLI (see config.sample.yaml).
@@ -202,6 +230,7 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	// Explicit BindEnv so AGENT_* env vars reliably override (AutomaticEnv can be inconsistent with nested keys)
+	_ = v.BindEnv("runtime", "AGENT_RUNTIME")
 	_ = v.BindEnv("temporal.host", "AGENT_TEMPORAL_HOST")
 	_ = v.BindEnv("temporal.port", "AGENT_TEMPORAL_PORT")
 	_ = v.BindEnv("temporal.namespace", "AGENT_TEMPORAL_NAMESPACE")
@@ -217,6 +246,7 @@ func LoadConfig(path string) (*Config, error) {
 	_ = v.BindEnv("logger.tee_stderr", "AGENT_LOGGER_TEE_STDERR")
 
 	// Set defaults so env can override even when file is missing or key absent
+	v.SetDefault("runtime", "local")
 	v.SetDefault("temporal.host", "localhost")
 	v.SetDefault("temporal.port", 7233)
 	v.SetDefault("temporal.namespace", "default")

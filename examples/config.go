@@ -52,6 +52,11 @@ type MCPSettings struct {
 }
 
 type Config struct {
+	// AgentRuntime is "local" (default) or "temporal", loaded from AGENT_RUNTIME.
+	// Use TemporalOption(cfg) in examples instead of hardcoding agent.WithTemporalConfig so
+	// the runtime can be toggled without removing Temporal env vars.
+	AgentRuntime string
+
 	Host      string
 	Port      int
 	Namespace string
@@ -186,15 +191,16 @@ func defaultTaskQueue() string {
 // LoadFromEnv loads config from environment variables. .env is loaded on package init if present.
 func LoadFromEnv() *Config {
 	cfg := &Config{
-		Host:      getEnv("TEMPORAL_HOST", "localhost"),
-		Port:      getEnvInt("TEMPORAL_PORT", 7233),
-		Namespace: getEnv("TEMPORAL_NAMESPACE", "default"),
-		TaskQueue: defaultTaskQueue(),
-		LogLevel:  getEnv("LOG_LEVEL", "error"),
-		Provider:  interfaces.LLMProvider(getEnv("LLM_PROVIDER", "openai")),
-		APIKey:    getEnv("LLM_APIKEY", ""),
-		Model:     getEnv("LLM_MODEL", "gpt-4o"),
-		BaseURL:   getEnv("LLM_BASEURL", ""),
+		AgentRuntime: strings.ToLower(strings.TrimSpace(getEnv("AGENT_RUNTIME", "local"))),
+		Host:         getEnv("TEMPORAL_HOST", "localhost"),
+		Port:         getEnvInt("TEMPORAL_PORT", 7233),
+		Namespace:    getEnv("TEMPORAL_NAMESPACE", "default"),
+		TaskQueue:    defaultTaskQueue(),
+		LogLevel:     getEnv("LOG_LEVEL", "error"),
+		Provider:     interfaces.LLMProvider(getEnv("LLM_PROVIDER", "openai")),
+		APIKey:       getEnv("LLM_APIKEY", ""),
+		Model:        getEnv("LLM_MODEL", "gpt-4o"),
+		BaseURL:      getEnv("LLM_BASEURL", ""),
 		MCP: MCPSettings{
 			Transport:         strings.TrimSpace(strings.ToLower(getEnv("MCP_TRANSPORT", ""))),
 			StreamableHTTPURL: strings.TrimSpace(getEnv("MCP_STREAMABLE_HTTP_URL", "")),
@@ -225,6 +231,33 @@ func LoadFromEnv() *Config {
 		},
 	}
 	return cfg
+}
+
+// UseTemporalRuntime reports whether AGENT_RUNTIME is set to "temporal".
+func (c *Config) UseTemporalRuntime() bool {
+	return c != nil && c.AgentRuntime == "temporal"
+}
+
+// RuntimeOption returns [agent.WithTemporalConfig] when AGENT_RUNTIME=temporal, or nil for
+// the local runtime. Spread into the options slice:
+//
+//	opts = append(opts, config.RuntimeOption(cfg)...)
+//
+// This keeps examples runtime-agnostic: toggle via AGENT_RUNTIME without touching code.
+// If you need to hard-code a specific runtime in a single example, skip this helper and
+// call [agent.WithTemporalConfig] (or nothing) directly.
+func RuntimeOption(cfg *Config) []agent.Option {
+	if cfg == nil || !cfg.UseTemporalRuntime() {
+		return nil
+	}
+	return []agent.Option{
+		agent.WithTemporalConfig(&agent.TemporalConfig{
+			Host:      cfg.Host,
+			Port:      cfg.Port,
+			Namespace: cfg.Namespace,
+			TaskQueue: cfg.TaskQueue,
+		}),
+	}
 }
 
 const (
