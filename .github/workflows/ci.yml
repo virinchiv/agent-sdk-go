@@ -49,3 +49,31 @@ jobs:
 
       - name: Build
         run: make build
+
+  # examples:local — off until if: true and EXAMPLES_* repo secrets (examples/.env.defaults).
+  examples:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install Task
+        run: go install github.com/go-task/task/v3/cmd/task@latest
+
+      - name: Configure examples/.env
+        run: |
+          cat > examples/.env <<EOF
+          LLM_PROVIDER=${{ secrets.EXAMPLES_LLM_PROVIDER }}
+          LLM_MODEL=${{ secrets.EXAMPLES_LLM_MODEL }}
+          LLM_APIKEY=${{ secrets.EXAMPLES_LLM_APIKEY }}
+          EMBEDDING_OPENAI_APIKEY=${{ secrets.EXAMPLES_EMBEDDING_OPENAI_APIKEY }}
+          EOF
+
+      - name: Run examples (local)
+        run: task examples:local

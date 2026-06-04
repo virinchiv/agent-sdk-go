@@ -4,7 +4,7 @@
 //
 //	go run ./examples/agent_with_retriever/weaviate "What do you know about our docs?"
 //
-// See ../README.md and ./README.md for Weaviate setup and env vars.
+// See ../README.md for setup and env vars.
 package main
 
 import (

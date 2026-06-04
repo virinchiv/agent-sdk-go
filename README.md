@@ -461,7 +461,7 @@ defer a.Close()
 
 You may use **Option 1** for some servers and **Option 2** for others on the same agent; keep server names unique across both.
 
-[examples/agent_with_mcp_config](examples/agent_with_mcp_config) and [examples/agent_with_mcp_client](examples/agent_with_mcp_client) show MCP from env (`stdio` or streamable HTTP, URL-only OK, optional bearer/OAuth). Variables: [examples/env.sample](examples/env.sample). Running examples from `examples/`: [examples/README.md](examples/README.md). **MCP transports and testing against real servers:** [examples/agent_with_mcp_config/README.md](examples/agent_with_mcp_config/README.md).
+[examples/agent_with_mcp_config](examples/agent_with_mcp_config) and [examples/agent_with_mcp_client](examples/agent_with_mcp_client) show MCP from env (`stdio` or streamable HTTP, URL-only OK, optional bearer/OAuth). Variables: [examples/.env.defaults](examples/.env.defaults). Running examples from `examples/`: [examples/README.md](examples/README.md). **MCP transports and testing against real servers:** [examples/agent_with_mcp_config/README.md](examples/agent_with_mcp_config/README.md).
 
 ### A2A (Agent-to-Agent)
 
@@ -509,7 +509,7 @@ if err := a.RunA2A(ctx); err != nil {
 }
 ```
 
-[examples/agent_with_a2a_server](examples/agent_with_a2a_server) shows a full server example with env-based config (`A2A_SERVER_HOST`, `A2A_SERVER_PORT`, `A2A_SERVER_BEARER_TOKENS`). Variables: [examples/env.sample](examples/env.sample). Running examples from `examples/`: [examples/README.md](examples/README.md). **Inbound server — curl, `a2a` CLI, bearer, cross-test with `agent_with_a2a_config`:** [examples/agent_with_a2a_server/README.md](examples/agent_with_a2a_server/README.md).
+[examples/agent_with_a2a_server](examples/agent_with_a2a_server) shows a full server example with env-based config (`A2A_SERVER_HOST`, `A2A_SERVER_PORT`, `A2A_SERVER_BEARER_TOKENS`). Variables: [examples/.env.defaults](examples/.env.defaults). Running examples from `examples/`: [examples/README.md](examples/README.md). **Inbound server — curl, `a2a` CLI, bearer, cross-test with `agent_with_a2a_config`:** [examples/agent_with_a2a_server/README.md](examples/agent_with_a2a_server/README.md).
 
 #### A2A Client
 
@@ -590,7 +590,7 @@ defer a.Close()
 
 You may use **Option 1** for some remote agents and **Option 2** for others on the same agent; keep connection names unique across both.
 
-[examples/agent_with_a2a_config](examples/agent_with_a2a_config) and [examples/agent_with_a2a_client](examples/agent_with_a2a_client) show A2A from env (`A2A_URL`, optional bearer/headers/filter). Variables: [examples/env.sample](examples/env.sample). Running examples from `examples/`: [examples/README.md](examples/README.md). **Remote agent setup (e.g. `a2a-samples` helloworld), curl checks:** [examples/agent_with_a2a_config/README.md](examples/agent_with_a2a_config/README.md).
+[examples/agent_with_a2a_config](examples/agent_with_a2a_config) and [examples/agent_with_a2a_client](examples/agent_with_a2a_client) show A2A from env (`A2A_URL`, optional bearer/headers/filter). Variables: [examples/.env.defaults](examples/.env.defaults). Running examples from `examples/`: [examples/README.md](examples/README.md). **Remote agent setup (e.g. `a2a-samples` helloworld), curl checks:** [examples/agent_with_a2a_config/README.md](examples/agent_with_a2a_config/README.md).
 
 ### Retrieval (RAG)
 
@@ -1218,11 +1218,13 @@ Coverage reports (PR and default branch) are on **[Codecov](https://app.codecov.
 ```bash
 git clone <repo-url>
 cd agent-sdk-go
-cp examples/env.sample examples/.env
-# Edit examples/.env: set LLM_APIKEY, LLM_MODEL
+export LLM_APIKEY=your-key
+export LLM_PROVIDER=your-provider
+export LLM_MODEL=your-model
+# LLM_PROVIDER: openai, anthropic, or gemini. Optional overrides in examples/.env
 ```
 
-See **[examples/README.md](examples/README.md)** for how to run examples, env vars ([examples/env.sample](examples/env.sample)), and optional **README.md** files inside specific example directories.
+See **[examples/README.md](examples/README.md)** for how to run examples, env vars ([examples/.env.defaults](examples/.env.defaults)), and optional **README.md** files inside specific example directories.
 
 ### CLI configuration
 

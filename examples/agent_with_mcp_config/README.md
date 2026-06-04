@@ -7,19 +7,19 @@ These two programs use the **same env-driven MCP transport** but wire the agent 
 
 ## Prerequisites
 
-- A **running Temporal** server (see repo root **[temporal-setup.md](../../temporal-setup.md)**).
-- **`examples/.env`** copied from **`examples/env.sample`** with **`LLM_*`** set (same as other examples).
+- **`examples/.env`** with **`LLM_*`** set (see **`../.env.defaults`**; defaults load automatically).
+- **`AGENT_RUNTIME=temporal`** only if you want durable workflows — then Temporal per **[temporal-setup.md](../../temporal-setup.md)** or `task -t examples/Taskfile.yml infra:temporal:up`.
 
 ## Configure MCP
 
-**Transport** must be set with **`MCP_TRANSPORT`**: `stdio` or `streamable_http` (aliases in **`env.sample`**).
+**Transport** must be set with **`MCP_TRANSPORT`**: `stdio` or `streamable_http` (aliases in **`.env.defaults`**).
 
 - **Remote — `streamable_http`:** set **`MCP_STREAMABLE_HTTP_URL`**. Auth optional: **`MCP_BEARER_TOKEN`**, or OAuth trio **`MCP_CLIENT_ID`** + **`MCP_CLIENT_SECRET`** + **`MCP_TOKEN_URL`** (OAuth wins over bearer when all three are set). **`MCP_SKIP_TLS_VERIFY=true`** for dev TLS only.
 - **Local — `stdio`:** set **`MCP_STDIO_COMMAND`** and optional **`MCP_STDIO_ARGS`** (JSON string array) and **`MCP_STDIO_ENV`** (JSON string→string object).
 
 Shared optional knobs: **`MCP_SERVER_NAME`**, **`MCP_TIMEOUT_SECONDS`**, **`MCP_RETRY_ATTEMPTS`**, **`MCP_ALLOW_TOOLS`** / **`MCP_BLOCK_TOOLS`** (comma-separated; only one list type).
 
-See **`../env.sample`** for every variable.
+See **`../.env.defaults`** for every variable.
 
 ## Run
 
@@ -35,7 +35,7 @@ go run ./agent_with_mcp_client "List tools you can call."
 
 ## Testing against real MCP servers
 
-This repo does **not** start an MCP server—you point **`examples/.env`** at **your** server(s). Pick **stdio** or **streamable_http**, set **`MCP_TRANSPORT`**, then fill in **`env.sample`** under **MCP**.
+This repo does **not** start an MCP server—you point **`examples/.env`** at **your** server(s). Pick **stdio** or **streamable_http**, set **`MCP_TRANSPORT`**, then fill in **`.env.defaults`** under **MCP**.
 
 ### Worked example — TypeScript streamable HTTP (`mcp-streamable-http`)
 
@@ -77,15 +77,15 @@ curl -sS -o /dev/null -w "%{http_code}\n" "http://localhost:8123/mcp"
 | **[invariantlabs-ai/mcp-streamable-http](https://github.com/invariantlabs-ai/mcp-streamable-http)** | Reference **streamable HTTP** server (TypeScript example above). Default **8123**, path **`/mcp`**; set **`MCP_STREAMABLE_HTTP_URL`** to the full endpoint URL. |
 | **[modelcontextprotocol/servers](https://github.com/modelcontextprotocol/servers)** | Reference implementations (filesystem, git, fetch, etc.). Often **npx** / **uvx** / **docker** per each server’s README; map into **`MCP_STDIO_COMMAND`** + **`MCP_STDIO_ARGS`**. |
 | **[Model Context Protocol](https://modelcontextprotocol.io)** | Protocol docs; third-party hosts list streamable-HTTP endpoints you can point **`MCP_STREAMABLE_HTTP_URL`** at. |
-| **Your own MCP server** | Any compliant implementation—the examples need **`stdio`** or **`streamable_http`** as wired in **`env.sample`**. |
+| **Your own MCP server** | Any compliant implementation—the examples need **`stdio`** or **`streamable_http`** as wired in **`.env.defaults`**. |
 
 ### Quick checks before running
 
 - **`streamable_http`:** Confirm the URL is reachable from the machine running the example. Example: `curl -sS -o /dev/null -w "%{http_code}\n" "$MCP_STREAMABLE_HTTP_URL"` — status depends on the implementation.
 - **`stdio`:** Run the same command line as **`MCP_STDIO_COMMAND`** / **`MCP_STDIO_ARGS`** in a terminal once to ensure the binary starts.
 
-You still need **Temporal** and **LLM** credentials in **`examples/.env`**.
+You still need **LLM** credentials in **`examples/.env`** (and Temporal when using **`AGENT_RUNTIME=temporal`**).
 
 ## Env vars (MCP)
 
-See the **MCP_*** rows in **[examples/README.md](../README.md#env-vars)** and **`../env.sample`**.
+See the **MCP_*** rows in **[examples/README.md](../README.md#env-vars)** and **`../.env.defaults`**.

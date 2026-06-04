@@ -87,6 +87,7 @@ func main() {
 		agent.WithStream(true),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	mainAgentOpts = append(mainAgentOpts, config.ToolApprovalOptions()...)
 	if cfg.UseTemporalRuntime() {
 		mainAgentOpts = append(mainAgentOpts, agent.WithTemporalConfig(&agent.TemporalConfig{
 			Host:      cfg.Host,

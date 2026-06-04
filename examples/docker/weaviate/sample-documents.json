@@ -1,0 +1,26 @@
+[
+  {
+    "content": "Standard shipping within the continental United States takes 3–5 business days after the order ships. Express shipping (1–2 business days) is available at checkout for an additional fee. Orders placed after 2 p.m. local time ship the next business day.",
+    "source": "kb/shipping-and-delivery"
+  },
+  {
+    "content": "Most items can be returned within 30 days of delivery if they are unused and in original packaging. Refunds are issued to the original payment method within 5–7 business days after we receive and inspect the return. Clearance items are final sale unless defective.",
+    "source": "kb/returns-and-refunds"
+  },
+  {
+    "content": "To reset your account password, open the sign-in page and choose Forgot password. Enter the email on your account; you will receive a link that expires in 24 hours. If you do not see the email, check spam or contact support with your order number.",
+    "source": "kb/account/password-reset"
+  },
+  {
+    "content": "Hardware products include a one-year limited warranty covering manufacturing defects. The warranty does not cover accidental damage, water damage, or normal wear. To start a claim, open a support ticket with your serial number and a short description of the issue.",
+    "source": "kb/warranty/hardware"
+  },
+  {
+    "content": "Pro and Enterprise plans include priority email support with a target first response within one business day. Business hours are Monday–Friday, 9 a.m.–6 p.m. Eastern Time, excluding U.S. federal holidays. Phone support is available on Enterprise plans only.",
+    "source": "kb/support/hours-and-sla"
+  },
+  {
+    "content": "Invoices for subscription plans are emailed on the first of each month. You can download past invoices from Billing → Invoice history in the customer portal. Tax is calculated based on your billing address and local regulations.",
+    "source": "kb/billing/invoices"
+  }
+]

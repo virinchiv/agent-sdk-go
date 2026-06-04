@@ -48,6 +48,7 @@ func main() {
 		agent.WithToolRegistry(reg),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.ToolApprovalOptions()...)
 	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)

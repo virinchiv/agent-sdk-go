@@ -1,0 +1,494 @@
+version: '3'
+
+tasks:
+  # ── Internal ───────────────────────────────────────────────
+
+  require:llm:
+    internal: true
+    desc: Require LLM_APIKEY, LLM_PROVIDER, and LLM_MODEL in the environment
+    preconditions:
+      - sh: test -n "$LLM_APIKEY" && test -n "$LLM_PROVIDER" && test -n "$LLM_MODEL"
+        msg: "LLM_APIKEY, LLM_PROVIDER, and LLM_MODEL are required. Export all three before running example tasks (provider openai, anthropic, or gemini — with a matching model)."
+
+  # Shell wrappers — infra tasks live in examples/Taskfile.yml; structured task+taskfile
+  # resolves against this flattened file and fails with "does not exist".
+  _infra:deps:up:
+    internal: true
+    cmds:
+      - task -t "{{.ROOT_DIR}}/examples/Taskfile.yml" infra:deps:up
+  _infra:deps:down:
+    internal: true
+    cmds:
+      - task -t "{{.ROOT_DIR}}/examples/Taskfile.yml" infra:deps:down
+  _infra:temporal:up:
+    internal: true
+    cmds:
+      - task -t "{{.ROOT_DIR}}/examples/Taskfile.yml" infra:temporal:up
+  _infra:temporal:wait:
+    internal: true
+    cmds:
+      - task -t "{{.ROOT_DIR}}/examples/Taskfile.yml" infra:temporal:wait
+  _infra:temporal:down:
+    internal: true
+    cmds:
+      - task -t "{{.ROOT_DIR}}/examples/Taskfile.yml" infra:temporal:down
+
+  report:header:
+    internal: true
+    desc: Write formatted report header (standalone local/temporal or examples:all)
+    cmds:
+      - |
+        {
+          echo "========================================"
+          echo "Agent SDK — Examples Run"
+          echo "========================================"
+          echo "Date:     $(date)"
+          echo "Runtime:  {{.RUNTIME}}"
+          echo "Logs:     {{.LOG_REPORT}}"
+          {{if eq .PLAN_MODE "true"}}echo "Mode:     plan (no go run, no infra)"{{end}}
+          echo "========================================"
+          echo ""
+        } >> "{{.REPORT_FILE}}"
+
+  report:section:
+    internal: true
+    desc: Write runtime section divider (examples:all append mode)
+    cmds:
+      - |
+        {
+          echo "----------------------------------------"
+          echo "Runtime: {{.RUNTIME}}"
+          echo "----------------------------------------"
+          echo ""
+        } >> "{{.REPORT_FILE}}"
+
+  report:summary:
+    internal: true
+    desc: Write formatted SUMMARY block from COUNT_FILE
+    vars:
+      FAIL_ON_ERROR: '{{.FAIL_ON_ERROR | default "true"}}'
+      PLAN_MODE: '{{.PLAN_MODE | default "false"}}'
+    cmds:
+      - |
+        read -r PASS FAIL < "{{.COUNT_FILE}}"
+        TOTAL=$((PASS + FAIL))
+        if [ "{{.PLAN_MODE}}" = "true" ]; then
+          STATUS_LINE="  Status:   ○ PLAN ONLY (not executed)"
+        elif [ "${FAIL}" -gt 0 ]; then
+          STATUS_LINE="  Status:   ❌ FAILURES (${FAIL})"
+        else
+          STATUS_LINE="  Status:   ✅ ALL PASSED"
+        fi
+        {
+          echo ""
+          echo "========================================"
+          echo "SUMMARY"
+          echo "  Runtime:  {{.RUNTIME}}"
+          echo "  Total:    ${TOTAL}"
+        } >> "{{.REPORT_FILE}}"
+        if [ "{{.PLAN_MODE}}" = "true" ]; then
+          {
+            echo "  Planned:  ${PASS}"
+            echo "  Pass:     0"
+            echo "  Fail:     0"
+          } >> "{{.REPORT_FILE}}"
+        else
+          {
+            echo "  Pass:     ${PASS}"
+            echo "  Fail:     ${FAIL}"
+          } >> "{{.REPORT_FILE}}"
+        fi
+        {
+          echo "${STATUS_LINE}"
+          echo "========================================"
+        } >> "{{.REPORT_FILE}}"
+        if [ "{{.PLAN_MODE}}" = "true" ]; then
+          echo "📊 runtime={{.RUNTIME}} plan=${PASS} (not executed)"
+        else
+          echo "📊 runtime={{.RUNTIME}} total=${TOTAL} pass=${PASS} fail=${FAIL}"
+        fi
+        rm -f "{{.COUNT_FILE}}"
+        if [ "${FAIL}" -gt 0 ] && [ "{{.FAIL_ON_ERROR}}" = "true" ]; then
+          echo "❌ Examples failed: ${FAIL}"
+          exit 1
+        fi
+
+  exec:example:
+    internal: true
+    desc: Run single example and capture output
+    dir: '{{.ROOT_DIR}}/examples'
+    vars:
+      RUNTIME: '{{.RUNTIME | default "local"}}'
+      NAME: '{{.NAME}}'
+      PROMPT: '{{.PROMPT | default ""}}'
+      SKIP_RUN: '{{.SKIP_RUN | default "false"}}'
+    cmds:
+      - |
+        if [ "{{.SKIP_RUN}}" = "true" ]; then
+          RESULT="○ PLAN"
+          if [ -n "{{.PROMPT}}" ]; then
+            echo "○ Plan {{.NAME}} ({{.RUNTIME}}) — go run ./{{.NAME}} \"{{.PROMPT}}\""
+          else
+            echo "○ Plan {{.NAME}} ({{.RUNTIME}}) — go run ./{{.NAME}}"
+          fi
+          if [ -n "{{.REPORT_FILE}}" ]; then
+            echo "$RESULT {{.NAME}}" >> {{.REPORT_FILE}}
+          fi
+          if [ -n "{{.COUNT_FILE}}" ]; then
+            read -r PASS FAIL < "{{.COUNT_FILE}}" 2>/dev/null || PASS=0 FAIL=0
+            PASS=$((PASS + 1))
+            printf '%s %s\n' "$PASS" "$FAIL" > "{{.COUNT_FILE}}"
+          fi
+          exit 0
+        fi
+        echo "🚀 Running {{.NAME}} with {{.RUNTIME}} runtime..."
+        set +e
+        if [ -n "{{.LOG_FILE}}" ]; then
+          if [ -n "{{.PROMPT}}" ]; then
+            go run ./{{.NAME}} "{{.PROMPT}}" >> {{.LOG_FILE}} 2>&1
+          else
+            go run ./{{.NAME}} >> {{.LOG_FILE}} 2>&1
+          fi
+        else
+          if [ -n "{{.PROMPT}}" ]; then
+            go run ./{{.NAME}} "{{.PROMPT}}"
+          else
+            go run ./{{.NAME}}
+          fi
+        fi
+        STATUS=$?
+        set -e
+        if [ $STATUS -eq 0 ]; then
+          RESULT="✅ PASS"
+        else
+          RESULT="❌ FAIL"
+        fi
+        echo "$RESULT {{.NAME}} runtime={{.RUNTIME}}"
+        if [ -n "{{.REPORT_FILE}}" ]; then
+          echo "$RESULT {{.NAME}}" >> {{.REPORT_FILE}}
+        fi
+        if [ -n "{{.COUNT_FILE}}" ]; then
+          read -r PASS FAIL < "{{.COUNT_FILE}}" 2>/dev/null || PASS=0 FAIL=0
+          if [ "$STATUS" -eq 0 ]; then
+            PASS=$((PASS + 1))
+          else
+            FAIL=$((FAIL + 1))
+          fi
+          printf '%s %s\n' "$PASS" "$FAIL" > "{{.COUNT_FILE}}"
+        fi
+    env:
+      AGENT_RUNTIME: '{{.RUNTIME}}'
+      # Batch only — not in .env.defaults; manual go run leaves unset (interactive y/n).
+      EXAMPLES_AUTO_APPROVE: '{{.EXAMPLES_AUTO_APPROVE | default "true"}}'
+
+  exec:examples:
+    internal: true
+    vars:
+      RUNTIME: '{{.RUNTIME | default "local"}}'
+      SKIP_RUN: '{{.SKIP_RUN | default "false"}}'
+      PLAN_MODE: '{{.SKIP_RUN | default "false"}}'
+      WRITE_SUMMARY: '{{.WRITE_SUMMARY | default "true"}}'
+      FAIL_ON_ERROR: '{{.FAIL_ON_ERROR | default "true"}}'
+      EXAMPLES:
+        - simple_agent
+        - agent_with_tools/basic
+        - agent_with_tools/custom
+        - agent_with_tools/authorizer
+        - agent_with_json_response
+        - agent_with_stream
+        - agent_with_reasoning
+        - multiple_agents
+        - agent_with_mcp_config
+        - agent_with_mcp_client
+        - agent_with_a2a_config
+        - agent_with_a2a_client
+        - agent_with_retriever/weaviate
+        - agent_with_retriever/pgvector
+        - agent_with_observability/config
+        - agent_with_observability/objects
+        - agent_with_subagents
+        - agent_with_tools/approval
+        - agent_with_run_async
+      EXAMPLES_WITH_PROMPTS:
+        - agent_with_conversation
+        - agent_with_stream_conversation
+      EXAMPLES_TEMPORAL:
+        - agent_with_temporal_client
+        # TODO: enable — split worker + agent REPL
+        # - durable_agent/worker
+        # - durable_agent/agent
+        # - agent_with_worker/worker
+        # - agent_with_worker/agent
+    cmds:
+      - printf '0 0\n' > {{.COUNT_FILE}}
+      - for:
+          var: EXAMPLES
+        ignore_error: true
+        task: exec:example
+        vars:
+          NAME: '{{.ITEM}}'
+          RUNTIME: '{{.RUNTIME}}'
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE}}'
+          SKIP_RUN: '{{.SKIP_RUN}}'
+      - for:
+          var: EXAMPLES_WITH_PROMPTS
+        ignore_error: true
+        task: exec:example
+        vars:
+          NAME: '{{.ITEM}}'
+          PROMPT: "Hi"
+          RUNTIME: '{{.RUNTIME}}'
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE}}'
+          SKIP_RUN: '{{.SKIP_RUN}}'
+      - for:
+          var: EXAMPLES_TEMPORAL
+        if: '{{eq .RUNTIME "temporal"}}'
+        ignore_error: true
+        task: exec:example
+        vars:
+          NAME: '{{.ITEM}}'
+          RUNTIME: '{{.RUNTIME}}'
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE}}'
+          SKIP_RUN: '{{.SKIP_RUN}}'
+      - task: report:summary
+        if: '{{eq .WRITE_SUMMARY "true"}}'
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE}}'
+          RUNTIME: '{{.RUNTIME}}'
+          FAIL_ON_ERROR: '{{.FAIL_ON_ERROR}}'
+          PLAN_MODE: '{{.PLAN_MODE}}'
+
+  # ── Examples ───────────────────────────────────────────────
+
+  examples:local:
+    desc: Run all examples with local runtime
+    deps:
+      - task: require:llm
+        if: '{{ne .SKIP_RUN "true"}}'
+    vars:
+      TIMESTAMP: '{{now | date "2006-01-02_15-04-05"}}'
+      REPORT_FILE: '{{.REPORT_FILE | default (printf "%s/reports/examples_local_%s.txt" .ROOT_DIR .TIMESTAMP)}}'
+      LOG_FILE: '{{.LOG_FILE | default (printf "%s/reports/examples_local_%s.log" .ROOT_DIR .TIMESTAMP)}}'
+      LOG_REPORT: '{{.LOG_REPORT | default (printf "reports/examples_local_%s.log" .TIMESTAMP)}}'
+      COUNT_FILE: '{{.COUNT_FILE | default (printf "%s/reports/examples_local_%s.count" .ROOT_DIR .TIMESTAMP)}}'
+      REPORT_MODE: '{{.REPORT_MODE | default "standalone"}}'
+      SKIP_RUN: '{{.SKIP_RUN | default "false"}}'
+      SKIP_INFRA: '{{.SKIP_INFRA | default "false"}}'
+      WRITE_SUMMARY: '{{.WRITE_SUMMARY | default "true"}}'
+      FAIL_ON_ERROR: '{{.FAIL_ON_ERROR | default "true"}}'
+    cmds:
+      - mkdir -p reports
+      - touch {{.REPORT_FILE}}
+      - touch {{.LOG_FILE}}
+      - touch {{.COUNT_FILE}}
+      - task: report:section
+        if: '{{eq .REPORT_MODE "section"}}'
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          RUNTIME: local
+          PLAN_MODE: '{{.SKIP_RUN}}'
+      - task: report:header
+        if: '{{eq .REPORT_MODE "standalone"}}'
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          RUNTIME: local
+          LOG_REPORT: '{{.LOG_REPORT}}'
+          PLAN_MODE: '{{.SKIP_RUN}}'
+      - defer: { task: _infra:deps:down }
+        if: '{{ne .SKIP_INFRA "true"}}'
+      - task: _infra:deps:up
+        if: '{{ne .SKIP_INFRA "true"}}'
+      - task: exec:examples
+        vars:
+          RUNTIME: local
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE}}'
+          SKIP_RUN: '{{.SKIP_RUN}}'
+          WRITE_SUMMARY: '{{.WRITE_SUMMARY}}'
+          FAIL_ON_ERROR: '{{.FAIL_ON_ERROR}}'
+      - '{{if eq .REPORT_MODE "standalone"}}echo "📄 Report — {{.REPORT_FILE}}"{{end}}'
+      - '{{if eq .REPORT_MODE "standalone"}}echo "📄 Logs   — {{.LOG_FILE}}"{{end}}'
+
+  examples:local:plan:
+    desc: Plan local examples — write report only (no go run, no infra). Use instead of task --dry to preview the report file.
+    cmds:
+      - task: examples:local
+        vars:
+          SKIP_RUN: "true"
+          SKIP_INFRA: "true"
+          FAIL_ON_ERROR: "false"
+
+  examples:temporal:
+    desc: Run all examples with temporal runtime
+    deps:
+      - task: require:llm
+        if: '{{ne .SKIP_RUN "true"}}'
+    vars:
+      TIMESTAMP: '{{now | date "2006-01-02_15-04-05"}}'
+      REPORT_FILE: '{{.REPORT_FILE | default (printf "%s/reports/examples_temporal_%s.txt" .ROOT_DIR .TIMESTAMP)}}'
+      LOG_FILE: '{{.LOG_FILE | default (printf "%s/reports/examples_temporal_%s.log" .ROOT_DIR .TIMESTAMP)}}'
+      LOG_REPORT: '{{.LOG_REPORT | default (printf "reports/examples_temporal_%s.log" .TIMESTAMP)}}'
+      COUNT_FILE: '{{.COUNT_FILE | default (printf "%s/reports/examples_temporal_%s.count" .ROOT_DIR .TIMESTAMP)}}'
+      REPORT_MODE: '{{.REPORT_MODE | default "standalone"}}'
+      SKIP_RUN: '{{.SKIP_RUN | default "false"}}'
+      SKIP_INFRA: '{{.SKIP_INFRA | default "false"}}'
+      WRITE_SUMMARY: '{{.WRITE_SUMMARY | default "true"}}'
+      FAIL_ON_ERROR: '{{.FAIL_ON_ERROR | default "true"}}'
+    cmds:
+      - mkdir -p reports
+      - touch {{.REPORT_FILE}}
+      - touch {{.LOG_FILE}}
+      - touch {{.COUNT_FILE}}
+      - task: report:section
+        if: '{{eq .REPORT_MODE "section"}}'
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          RUNTIME: temporal
+      - task: report:header
+        if: '{{eq .REPORT_MODE "standalone"}}'
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          RUNTIME: temporal
+          LOG_REPORT: '{{.LOG_REPORT}}'
+          PLAN_MODE: '{{.SKIP_RUN}}'
+      - defer: { task: _infra:temporal:down }
+        if: '{{ne .SKIP_INFRA "true"}}'
+      - defer: { task: _infra:deps:down }
+        if: '{{ne .SKIP_INFRA "true"}}'
+      - task: _infra:temporal:up
+        if: '{{ne .SKIP_INFRA "true"}}'
+      - task: _infra:temporal:wait
+        if: '{{ne .SKIP_INFRA "true"}}'
+      - task: _infra:deps:up
+        if: '{{ne .SKIP_INFRA "true"}}'
+      - task: exec:examples
+        vars:
+          RUNTIME: temporal
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE}}'
+          SKIP_RUN: '{{.SKIP_RUN}}'
+          WRITE_SUMMARY: '{{.WRITE_SUMMARY}}'
+          FAIL_ON_ERROR: '{{.FAIL_ON_ERROR}}'
+      - '{{if eq .REPORT_MODE "standalone"}}echo "📄 Report — {{.REPORT_FILE}}"{{end}}'
+      - '{{if eq .REPORT_MODE "standalone"}}echo "📄 Logs   — {{.LOG_FILE}}"{{end}}'
+
+  examples:temporal:plan:
+    desc: Plan temporal examples — write report only (no go run, no infra). Use instead of task --dry to preview the report file.
+    cmds:
+      - task: examples:temporal
+        vars:
+          SKIP_RUN: "true"
+          SKIP_INFRA: "true"
+          FAIL_ON_ERROR: "false"
+
+  examples:all:
+    desc: Run all examples on both runtimes
+    deps:
+      - task: require:llm
+        if: '{{ne .PLAN_MODE "true"}}'
+    vars:
+      TIMESTAMP: '{{now | date "2006-01-02_15-04-05"}}'
+      REPORT_FILE: '{{.REPORT_FILE | default (printf "%s/reports/examples_all_%s.txt" .ROOT_DIR .TIMESTAMP)}}'
+      LOG_FILE: '{{.LOG_FILE | default (printf "%s/reports/examples_all_%s.log" .ROOT_DIR .TIMESTAMP)}}'
+      LOG_REPORT: '{{printf "reports/examples_all_%s.log" .TIMESTAMP}}'
+      COUNT_FILE_LOCAL: '{{printf "%s/reports/examples_all_%s.local.count" .ROOT_DIR .TIMESTAMP}}'
+      COUNT_FILE_TEMPORAL: '{{printf "%s/reports/examples_all_%s.temporal.count" .ROOT_DIR .TIMESTAMP}}'
+      PLAN_MODE: '{{.PLAN_MODE | default "false"}}'
+    cmds:
+      - mkdir -p reports
+      - touch {{.REPORT_FILE}}
+      - touch {{.LOG_FILE}}
+      - task: report:header
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          RUNTIME: all (local + temporal)
+          LOG_REPORT: '{{.LOG_REPORT}}'
+          PLAN_MODE: '{{.PLAN_MODE}}'
+      - task: examples:local
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE_LOCAL}}'
+          REPORT_MODE: section
+          SKIP_RUN: '{{.PLAN_MODE}}'
+          SKIP_INFRA: '{{.PLAN_MODE}}'
+          WRITE_SUMMARY: "false"
+          FAIL_ON_ERROR: "false"
+      - task: examples:temporal
+        vars:
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE_TEMPORAL}}'
+          REPORT_MODE: section
+          SKIP_RUN: '{{.PLAN_MODE}}'
+          SKIP_INFRA: '{{.PLAN_MODE}}'
+          WRITE_SUMMARY: "false"
+          FAIL_ON_ERROR: "false"
+      - |
+        read -r LPASS LFAIL < "{{.COUNT_FILE_LOCAL}}" 2>/dev/null || LPASS=0 LFAIL=0
+        read -r TPASS TFAIL < "{{.COUNT_FILE_TEMPORAL}}" 2>/dev/null || TPASS=0 TFAIL=0
+        PASS=$((LPASS + TPASS))
+        FAIL=$((LFAIL + TFAIL))
+        TOTAL=$((PASS + FAIL))
+        if [ "{{.PLAN_MODE}}" = "true" ]; then
+          STATUS_LINE="  Status:   ○ PLAN ONLY (not executed)"
+        elif [ "${FAIL}" -gt 0 ]; then
+          STATUS_LINE="  Status:   ❌ FAILURES (${FAIL})"
+        else
+          STATUS_LINE="  Status:   ✅ ALL PASSED"
+        fi
+        {
+          echo ""
+          echo "========================================"
+          echo "SUMMARY"
+          echo "  Runtimes: local + temporal"
+          echo "  Total:    ${TOTAL}"
+        } >> "{{.REPORT_FILE}}"
+        if [ "{{.PLAN_MODE}}" = "true" ]; then
+          {
+            echo "  Planned:  ${PASS}"
+            echo "  Pass:     0"
+            echo "  Fail:     0"
+            echo "    local:    planned=${LPASS}"
+            echo "    temporal: planned=${TPASS}"
+          } >> "{{.REPORT_FILE}}"
+        else
+          {
+            echo "  Pass:     ${PASS}"
+            echo "  Fail:     ${FAIL}"
+            echo "    local:    pass=${LPASS} fail=${LFAIL}"
+            echo "    temporal: pass=${TPASS} fail=${TFAIL}"
+          } >> "{{.REPORT_FILE}}"
+        fi
+        {
+          echo "${STATUS_LINE}"
+          echo "========================================"
+        } >> "{{.REPORT_FILE}}"
+        rm -f "{{.COUNT_FILE_LOCAL}}" "{{.COUNT_FILE_TEMPORAL}}"
+        if [ "{{.PLAN_MODE}}" = "true" ]; then
+          echo "📊 plan=${PASS} (not executed) (local=${LPASS}, temporal=${TPASS})"
+        else
+          echo "📊 total=${TOTAL} pass=${PASS} fail=${FAIL} (local pass=${LPASS} fail=${LFAIL}, temporal pass=${TPASS} fail=${TFAIL})"
+        fi
+        if [ "${FAIL}" -gt 0 ]; then
+          echo "❌ Examples failed: ${FAIL}"
+          exit 1
+        fi
+      - echo "📄 Report — {{.REPORT_FILE}}"
+      - echo "📄 Logs   — {{.LOG_FILE}}"
+
+  examples:all:plan:
+    desc: Plan all examples — combined report only (no go run, no infra)
+    cmds:
+      - task: examples:all
+        vars:
+          PLAN_MODE: "true"

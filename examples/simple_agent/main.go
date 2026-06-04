@@ -36,7 +36,7 @@ func main() {
 
 	prompt := strings.Join(os.Args[1:], " ")
 	if prompt == "" {
-		prompt = "Hello, what can you do?"
+		prompt = "Hi"
 	}
 	fmt.Println("user:", prompt)
 	result, err := a.Run(context.Background(), prompt, "")

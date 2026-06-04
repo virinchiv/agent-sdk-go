@@ -19,11 +19,11 @@ func OpenAIEmbedFunc(settings *Settings) (pgretriever.EmbedFunc, error) {
 		return nil, fmt.Errorf("embed: settings is nil")
 	}
 	if settings.EmbeddingAPIKey == "" {
-		return nil, fmt.Errorf("embed: EMBEDDING_APIKEY or LLM_APIKEY is required for pgvector")
+		return nil, fmt.Errorf("embed: EMBEDDING_OPENAI_APIKEY is required for pgvector")
 	}
 	model := strings.TrimSpace(settings.EmbeddingModel)
 	if model == "" {
-		return nil, fmt.Errorf("embed: EMBEDDING_MODEL is required")
+		return nil, fmt.Errorf("embed: EMBEDDING_OPENAI_MODEL is required")
 	}
 	base := strings.TrimRight(strings.TrimSpace(settings.EmbeddingBaseURL), "/")
 	client := &http.Client{Timeout: 60 * time.Second}

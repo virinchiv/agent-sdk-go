@@ -125,11 +125,53 @@ func getEnvInt(key string, def int) int {
 	return def
 }
 
+// ToolApprovalOptions applies AutoToolApprovalPolicy when EXAMPLES_AUTO_APPROVE
+// is set (task batch runs). Manual go run leaves it unset (default require-all + prompts).
+func ToolApprovalOptions() []agent.Option {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("EXAMPLES_AUTO_APPROVE"))) {
+	case "1", "true", "yes", "y":
+		return []agent.Option{agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy())}
+	default:
+		return nil
+	}
+}
+
 func init() {
-	// Try .env in cwd, then parent (project root when run from examples/)
-	err := godotenv.Load(".env")
+	loadEnvFiles()
+}
+
+// loadEnvFiles loads .env.defaults then optional .env under examples/ (cwd or ./examples/).
+// Load order: defaults → .env overrides → process environment (export / Task / CI) wins.
+func loadEnvFiles() {
+	pairs := [][2]string{
+		{".env.defaults", ".env"},
+		{"./examples/.env.defaults", "./examples/.env"},
+	}
+	for _, pair := range pairs {
+		defaultsPath, envPath := pair[0], pair[1]
+		if _, err := os.Stat(defaultsPath); err != nil {
+			continue
+		}
+		applyEnvFiles(defaultsPath, envPath)
+		return
+	}
+}
+
+func applyEnvFiles(defaultsPath, envPath string) {
+	defaults, err := godotenv.Read(defaultsPath)
 	if err != nil {
-		_ = godotenv.Load("./examples/.env")
+		return
+	}
+	merged := defaults
+	if env, err := godotenv.Read(envPath); err == nil {
+		for k, v := range env {
+			merged[k] = v
+		}
+	}
+	for k, v := range merged {
+		if _, exists := os.LookupEnv(k); !exists {
+			_ = os.Setenv(k, v)
+		}
 	}
 }
 
@@ -188,7 +230,7 @@ func defaultTaskQueue() string {
 	return prefix + "-" + suffix
 }
 
-// LoadFromEnv loads config from environment variables. .env is loaded on package init if present.
+// LoadFromEnv loads config from environment variables. .env.defaults and optional .env are loaded on package init.
 func LoadFromEnv() *Config {
 	cfg := &Config{
 		AgentRuntime: strings.ToLower(strings.TrimSpace(getEnv("AGENT_RUNTIME", "local"))),
@@ -319,7 +361,7 @@ func A2ADefaultServerName(cfg *Config) string {
 // A2ABuildAgentConfig builds [agent.A2AConfig] from env. Requires non-empty A2A_URL.
 func A2ABuildAgentConfig(cfg *Config) (agent.A2AConfig, error) {
 	if cfg == nil || strings.TrimSpace(cfg.A2A.URL) == "" {
-		return agent.A2AConfig{}, fmt.Errorf("a2a: A2A_URL is required; see examples/env.sample")
+		return agent.A2AConfig{}, fmt.Errorf("a2a: A2A_URL is required; see examples/.env.defaults or examples/README.md#env-vars")
 	}
 	hdrs, err := parseMCPJSONStringMap(cfg.A2A.HeadersRaw)
 	if err != nil {
@@ -374,7 +416,7 @@ func ApplyMCPStreamableHTTPAuth(transport *mcp.MCPStreamableHTTP, m *MCPSettings
 func normalizeMCPTransport(raw string) (string, error) {
 	s := strings.TrimSpace(strings.ToLower(raw))
 	if s == "" {
-		return "", fmt.Errorf("mcp: MCP_TRANSPORT is required (stdio or streamable_http); see examples/env.sample")
+		return "", fmt.Errorf("mcp: MCP_TRANSPORT is required (stdio or streamable_http); see examples/.env.defaults or examples/README.md#env-vars")
 	}
 	switch s {
 	case "stdio", "local":

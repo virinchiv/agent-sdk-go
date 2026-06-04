@@ -7,57 +7,69 @@ These programs exercise **agent-sdk-go** (`github.com/agenticenv/agent-sdk-go`).
 | Mode | How to enable | Requirement |
 |------|--------------|-------------|
 | `local` (default) | `AGENT_RUNTIME=local` (or unset) | Nothing — runs in-process |
-| `temporal` | `AGENT_RUNTIME=temporal` | Running Temporal server — see **[Temporal setup](../temporal-setup.md)** |
+| `temporal` | `AGENT_RUNTIME=temporal` | **`task infra:temporal:up`** + **`infra:temporal:wait`** from `examples/`, or **[Temporal setup](../temporal-setup.md)** |
 
 When using Temporal the examples read `TEMPORAL_HOST`, `TEMPORAL_PORT`, and `TEMPORAL_NAMESPACE` from `.env` (default: localhost, 7233, default).
 
 ## Examples overview
 
+From **`examples/`**, use [Task](https://taskfile.dev) and [`Taskfile.yml`](Taskfile.yml) for infra in the table below, then **`go run ./<example>`**. Install **`task`**, infra targets, and batch runs: [Setup](#setup). Third-party MCP/A2A servers stay manual — see each example’s README.
+
 ### Works with both runtimes
 
-These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=temporal`. No Temporal server needed to try them.
+These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=temporal`.
 
-| Example | What it demonstrates |
-|---------|---------------------|
-| `simple_agent` | Minimal agent, no tools — system prompt, LLM client, single `Run()`; prints `AgentResponse.Usage` (token counts) when the provider reports them |
-| `agent_with_conversation` | In-memory conversation with `WithConversation` — multi-turn context, same `conversationID` for `Run` |
-| `agent_with_tools/basic` | Built-in tools (echo, calculator, weather, wikipedia, search) with auto-approval |
-| `agent_with_tools/approval` | Tools + `WithApprovalHandler` — user approves or rejects each tool run (`Run` only) |
-| `agent_with_tools/authorizer` | Custom tool authorization via `interfaces.ToolAuthorizer` — denied calls surface as `tool_result` with `denied` status |
-| `agent_with_tools/custom` | Custom tools via `WithTools` — implementing `interfaces.Tool` |
-| `agent_with_stream` | Streaming with `Stream` — **`TEXT_MESSAGE_*`**, **`TOOL_CALL_*`**, **`RUN_FINISHED`**; prints token usage from **`RUN_FINISHED`** result when present |
-| `agent_with_agui` | Go **`POST /agui` SSE** + **Next.js + CopilotKit** ([`agent_with_agui/README.md`](agent_with_agui/README.md)) — two processes: agent server, then `ui/` dev server |
-| `agent_with_stream_conversation` | Stream + conversation; avoid printing the same text twice (**`TEXT_MESSAGE_CONTENT`** deltas vs **`RUN_FINISHED`** body) |
-| `agent_with_run_async` | `RunAsync` — `resultCh` + `approvalCh`; use `req.Respond` (no `WithApprovalHandler`) |
-| `multiple_agents` | Multiple agents with `WithInstanceId` — sequential or concurrent |
-| `agent_with_subagents` | Main agent + math specialist — `WithSubAgents`; prints **`STEP_STARTED` / `STEP_FINISHED`** (sub-agent name) around each child run when using `Stream` |
-| `agent_with_json_response` | Structured LLM output — `WithResponseFormat` + `interfaces.JSONSchema` (JSON with schema; no tools) |
-| `agent_with_reasoning` | Generic `interfaces.LLMReasoning` via `WithLLMSampling` — `Stream` to observe `thinking_delta` (e.g. Anthropic) |
-| `agent_with_mcp_config` | MCP via `WithMCPConfig` — transport from env; see **`env.sample`** — **[README](agent_with_mcp_config/README.md)** (testing & sample servers) |
-| `agent_with_mcp_client` | Same as above via `mcpclient.NewClient` + `WithMCPClients` — **[README](agent_with_mcp_client/README.md)** |
-| `agent_with_a2a_config` | Outbound A2A via `WithA2AConfig` — **`A2A_URL`** etc.; **[README](agent_with_a2a_config/README.md)** |
-| `agent_with_a2a_client` | Same env, explicit **`pkg/a2a/client`** — see `agent_with_a2a_config` for setup |
-| `agent_with_a2a_server` | **Inbound** A2A server — **`A2A_SERVER_*`**; **[README](agent_with_a2a_server/README.md)** (curl, **`a2a` CLI**, client example) |
-| `agent_with_observability` | OpenTelemetry OTLP exports — **`config/`** ([`WithObservabilityConfig`](../pkg/agent/config.go)) vs **`objects/`** (pre-built tracer/metrics); **[README](agent_with_observability/README.md)** (collector endpoint) |
-| `agent_with_retriever` | Vector retrievers — **`weaviate/`** or **`pgvector/`** backends; modes **`agentic`**, **`prefetch`**, **`hybrid`** via **`RETRIEVER_MODE`** — **[README](agent_with_retriever/README.md)** |
+**Temporal runtime:** set `AGENT_RUNTIME=temporal` in `.env`, then run **`task infra:temporal:up`** and **`task infra:temporal:wait`** before `go run` (for every row below, in addition to the infra in the third column).
+
+| Example | What it demonstrates | Infra (Task, from `examples/`) |
+|---------|---------------------|--------------------------------|
+| `simple_agent` | Minimal agent, no tools — system prompt, LLM client, single `Run()`; prints `AgentResponse.Usage` (token counts) when the provider reports them | — |
+| `agent_with_conversation` | In-memory conversation with `WithConversation` — multi-turn context, same `conversationID` for `Run` | — |
+| `agent_with_tools/basic` | Built-in tools (echo, calculator, weather, wikipedia, search) with auto-approval | — |
+| `agent_with_tools/approval` | Tools + `WithApprovalHandler` — user approves or rejects each tool run (`Run` only) | — |
+| `agent_with_tools/authorizer` | Custom tool authorization via `interfaces.ToolAuthorizer` — denied calls surface as `tool_result` with `denied` status | — |
+| `agent_with_tools/custom` | Custom tools via `WithTools` — implementing `interfaces.Tool` | — |
+| `agent_with_stream` | Streaming with `Stream` — **`TEXT_MESSAGE_*`**, **`TOOL_CALL_*`**, **`RUN_FINISHED`**; prints token usage from **`RUN_FINISHED`** result when present | — |
+| `agent_with_agui` | Go **`POST /agui` SSE** + **Next.js + CopilotKit** ([`agent_with_agui/README.md`](agent_with_agui/README.md)) — agent server, then `ui/` dev server | UI manual (`npm run dev` in `ui/`) |
+| `agent_with_stream_conversation` | Stream + conversation; avoid printing the same text twice (**`TEXT_MESSAGE_CONTENT`** deltas vs **`RUN_FINISHED`** body) | — |
+| `agent_with_run_async` | `RunAsync` — `resultCh` + `approvalCh`; use `req.Respond` (no `WithApprovalHandler`) | — |
+| `multiple_agents` | Multiple agents with `WithInstanceId` — sequential or concurrent | — |
+| `agent_with_subagents` | Main agent + math specialist — `WithSubAgents`; prints **`STEP_STARTED` / `STEP_FINISHED`** (sub-agent name) around each child run when using `Stream` | — |
+| `agent_with_json_response` | Structured LLM output — `WithResponseFormat` + `interfaces.JSONSchema` (JSON with schema; no tools) | — |
+| `agent_with_reasoning` | Generic `interfaces.LLMReasoning` via `WithLLMSampling` — `Stream` to observe `thinking_delta` (e.g. Anthropic) | — |
+| `agent_with_mcp_config` | MCP via `WithMCPConfig` — transport from env; **[README](agent_with_mcp_config/README.md)** | stdio: — (`.env.defaults`); remote MCP: manual |
+| `agent_with_mcp_client` | Same via `mcpclient.NewClient` + `WithMCPClients` — **[README](agent_with_mcp_client/README.md)** | same as `mcp_config` |
+| `agent_with_a2a_config` | Outbound A2A via `WithA2AConfig` — **`A2A_URL`**; **[README](agent_with_a2a_config/README.md)** | `infra:a2a:up` or external A2A (manual) |
+| `agent_with_a2a_client` | Same env, explicit **`pkg/a2a/client`** | same as `a2a_config` |
+| `agent_with_a2a_server` | **Inbound** A2A server — **`A2A_SERVER_*`**; **[README](agent_with_a2a_server/README.md)** | `go run` or `infra:a2a:up` |
+| `agent_with_observability` | OTLP — **`config/`** vs **`objects/`**; **[README](agent_with_observability/README.md)** | `infra:lgtm:up` (or manual collector) |
+| `agent_with_retriever` | **`weaviate/`** or **`pgvector/`**; **`RETRIEVER_MODE`** — **[README](agent_with_retriever/README.md)** | `infra:weaviate:up` or `infra:pgvector:up` |
 
 ### Temporal only
 
-These examples **always require** `AGENT_RUNTIME=temporal` and a running Temporal server. They demonstrate features that are only meaningful with durable workflow execution.
+Set **`AGENT_RUNTIME=temporal`**. Start **`task infra:temporal:up`** and **`task infra:temporal:wait`** before `go run`.
 
-| Example | What it demonstrates |
-|---------|---------------------|
-| `agent_with_temporal_client` | Caller-owned Temporal client — `WithTemporalClient` + `WithTaskQueue`; create and close client yourself (TLS, API key, Cloud) |
-| `agent_with_worker` | Agent and worker in **separate processes** — `DisableLocalWorker` + `NewAgentWorker`; agent uses **`Stream`** |
-| `durable_agent` | Same split-process layout with durability scenarios — workflow replay, mid-run failures; **[README](durable_agent/README.md)** |
+| Example | What it demonstrates | Infra (Task, from `examples/`) |
+|---------|---------------------|--------------------------------|
+| `agent_with_temporal_client` | Caller-owned Temporal client — `WithTemporalClient` + `WithTaskQueue`; TLS, API key, Cloud | `infra:temporal:up`, `infra:temporal:wait` |
+| `agent_with_worker` | Agent and worker in **separate processes** — `DisableLocalWorker` + `NewAgentWorker`; **`Stream`** | `infra:temporal:up`, `infra:temporal:wait` |
+| `durable_agent` | Split-process durability scenarios — **[README](durable_agent/README.md)** | `infra:temporal:up`, `infra:temporal:wait` |
 
 ## Setup
 
+**`.env.defaults`** is loaded automatically: valid values for local Task infra (stdio MCP, A2A on `:9999`, Weaviate/pgvector ports, OTLP to LGTM). Create optional **`examples/.env`** (gitignored) for secrets and overrides:
+
 ```bash
-cp env.sample .env
-# Edit .env: set LLM_APIKEY, LLM_MODEL (see LLM_PROVIDER: openai, anthropic, or gemini)
-# Default runtime is local — set AGENT_RUNTIME=temporal to use Temporal
+# From examples/ — at minimum set keys; override anything else as needed
+cat >> .env <<'EOF'
+LLM_APIKEY=your-key
+EMBEDDING_OPENAI_APIKEY=your-openai-embeddings-key
+EOF
 ```
+
+Override **`LLM_PROVIDER`** / **`LLM_MODEL`**, **`MCP_TRANSPORT=streamable_http`** + **`MCP_STREAMABLE_HTTP_URL`**, a remote **`A2A_URL`**, or retriever vars when not using the default local stack. Process environment (export / root **`Taskfile.yml`** `dotenv`) wins over both files. See [env vars](#env-vars) and **`examples/.env.defaults`**.
+
+**Task** — not installed by default; install via **[Task installation](https://taskfile.dev/installation/)** (platform-specific). Not needed for **`go run ./<example>`** when the overview table has no infra. Compose infra also needs **Docker**. From **`examples/`**: **`task infra:status`**, **`infra:deps:up`** / **`down`**, **`infra:*:up`** / **`down`**. From **repo root**: **`task examples:local`**, **`task examples:temporal`**. **`task --dry`** only prints commands (no report file). To preview the report layout without running examples or infra, use **`task examples:local:plan`**, **`task examples:temporal:plan`**, or **`task examples:all:plan`**.
 
 ## Run examples
 
@@ -145,7 +157,7 @@ go run ./multiple_agents concurrent "What is 7 times 8?"
 
 ### MCP (`agent_with_mcp_config`, `agent_with_mcp_client`)
 
-Same **`MCP_*`** env (see **`env.sample`**); differs only in **`WithMCPConfig`** vs **`mcpclient.NewClient`** + **`WithMCPClients`**.
+Same **`MCP_*`** env (see **`.env.defaults`**); differs only in **`WithMCPConfig`** vs **`mcpclient.NewClient`** + **`WithMCPClients`**.
 
 ```bash
 go run ./agent_with_mcp_config
@@ -158,7 +170,7 @@ go run ./agent_with_mcp_client "List tools you can call."
 
 ### A2A client (`agent_with_a2a_config`, `agent_with_a2a_client`)
 
-Outbound A2A tools — set **`A2A_URL`** (and optional **`A2A_*`** in **`env.sample`**).
+Outbound A2A tools — set **`A2A_URL`** (and optional **`A2A_*`** in **`.env.defaults`**).
 
 ```bash
 go run ./agent_with_a2a_config
@@ -192,13 +204,13 @@ Details and collector notes: **[agent_with_observability/README.md](agent_with_o
 
 ### Vector retriever (`agent_with_retriever`)
 
-Requires a running vector store (Weaviate **or** Postgres with pgvector). Set backend-specific vars in **`env.sample`**.
+Requires a running vector store (Weaviate **or** Postgres with pgvector). Set backend-specific vars in **`.env.defaults`**.
 
 ```bash
-# Weaviate (run ./agent_with_retriever/weaviate/setup.sh; ./cleanup.sh when done)
+# Weaviate (task infra:weaviate:up first; task infra:weaviate:down when done)
 go run ./agent_with_retriever/weaviate "What is the return policy?"
 
-# pgvector (run ./agent_with_retriever/pgvector/setup.sh; ./cleanup.sh when done)
+# pgvector (task infra:pgvector:up first; task infra:pgvector:down when done)
 go run ./agent_with_retriever/pgvector "What is the return policy?"
 
 RETRIEVER_MODE=prefetch go run ./agent_with_retriever/weaviate "What are the return and shipping rules?"
@@ -261,7 +273,7 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 |---------|-------------|
 | `AGENT_RUNTIME` | `local` (default) or `temporal` — selects the execution backend |
 | `TEMPORAL_HOST`, `TEMPORAL_PORT`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASKQUEUE` | Temporal connection (used when `AGENT_RUNTIME=temporal`) |
-| `LLM_PROVIDER` | `openai`, `anthropic`, or `gemini` (see `env.sample`) |
+| `LLM_PROVIDER` | `openai`, `anthropic`, or `gemini` (see `.env.defaults`) |
 | `LLM_APIKEY` | API key |
 | `LLM_MODEL` | e.g. `gpt-4o`, `claude-3-5-sonnet-20241022` |
 | `LLM_BASEURL` | Optional (custom/proxy endpoints) |
@@ -293,5 +305,5 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 | `OTLP_PROTOCOL` | Optional: **`grpc`** (default) or **`http`** — must match how the collector listens |
 | `OTLP_INSECURE` | Optional: **`true`** for plaintext export (typical for local collectors without TLS) |
 | `RETRIEVER_MODE` | For **`agent_with_retriever`**: **`agentic`** (default), **`prefetch`**, or **`hybrid`** |
-| `WEAVIATE_HOST`, `WEAVIATE_SCHEME`, `WEAVIATE_CLASS`, … | Weaviate backend — see **`env.sample`** and **[agent_with_retriever/weaviate/README.md](agent_with_retriever/weaviate/README.md)** |
-| `PGVECTOR_DSN`, `PGVECTOR_TABLE`, `EMBEDDING_MODEL`, … | pgvector backend — **`PGVECTOR_DSN` required**; see **[agent_with_retriever/pgvector/README.md](agent_with_retriever/pgvector/README.md)** |
+| `WEAVIATE_HOST`, `WEAVIATE_SCHEME`, `WEAVIATE_CLASS`, … | Weaviate backend — **`.env.defaults`** and **[agent_with_retriever/README.md#weaviate](agent_with_retriever/README.md#weaviate)** |
+| `PGVECTOR_DSN`, `PGVECTOR_TABLE`, `EMBEDDING_OPENAI_MODEL`, … | pgvector backend — **`PGVECTOR_DSN` required**; **[agent_with_retriever/README.md#pgvector](agent_with_retriever/README.md#pgvector)** |

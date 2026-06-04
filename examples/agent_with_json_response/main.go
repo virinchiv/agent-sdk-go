@@ -61,7 +61,7 @@ func main() {
 
 	prompt := strings.Join(os.Args[1:], " ")
 	if prompt == "" {
-		prompt = "What is the capital of France?"
+		prompt = "Hi"
 	}
 
 	fmt.Println("user:", prompt)

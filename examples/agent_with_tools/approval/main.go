@@ -28,7 +28,6 @@ func main() {
 	reg.Register(echo.New())
 	reg.Register(calculator.New())
 
-	// Single stdin reader: same pattern as cmd for consistency and timeout handling
 	lineCh := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
@@ -47,6 +46,7 @@ func main() {
 		agent.WithApprovalHandler(makeApprovalHandler(lineCh)),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.ToolApprovalOptions()...)
 	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)

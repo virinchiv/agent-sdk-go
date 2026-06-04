@@ -4,7 +4,7 @@
 //
 //	go run ./examples/agent_with_retriever/pgvector "What do you know about our docs?"
 //
-// See ../README.md and ./README.md for Postgres/pgvector setup and env vars.
+// See ../README.md for setup and env vars.
 package main
 
 import (
@@ -27,9 +27,9 @@ func main() {
 		log.Fatalf("retriever config: %v", err)
 	}
 	if retrieverCfg.PGDSN == "" {
-		log.Fatal("PGVECTOR_DSN is required for the pgvector example; see ./README.md")
+		log.Fatal("PGVECTOR_DSN is required for the pgvector example; see ../README.md")
 	}
-	if err := common.ValidateEmbeddingConfig(cfg.Provider, retrieverCfg); err != nil {
+	if err := common.ValidateEmbeddingConfig(retrieverCfg); err != nil {
 		log.Fatalf("embedding config: %v", err)
 	}
 

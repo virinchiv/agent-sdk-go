@@ -89,11 +89,13 @@ make test-coverage
 
 ### 6. Run examples (optional)
 
-Copy the env sample and set your LLM API key:
+Examples load **`examples/.env.defaults`** automatically. Set LLM credentials via environment or an optional override file:
 
 ```bash
-cp examples/env.sample examples/.env
-# Edit examples/.env: set LLM_APIKEY, LLM_MODEL
+export LLM_APIKEY=your-key
+export LLM_PROVIDER=your-provider
+export LLM_MODEL=your-model
+# LLM_PROVIDER: openai, anthropic, or gemini. Or append the same keys to examples/.env
 ```
 
 Then run any example:
@@ -102,7 +104,7 @@ Then run any example:
 go run ./examples/simple_agent "Hello"
 ```
 
-See [examples/README.md](examples/README.md) for all examples and env vars.
+See [examples/README.md](examples/README.md) for all examples, env vars, Task install, and infra commands (`task infra:*`, `task examples:local`).
 
 ## Ways to Contribute
 

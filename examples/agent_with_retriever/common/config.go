@@ -91,15 +91,12 @@ func LoadSettings() (*Settings, error) {
 		PGTopK:          getEnvInt("PGVECTOR_TOP_K", 0),
 		// Example default 0.35 — sample KB often scores 0.3–0.6 per topic; 0.5 drops secondary docs on combined queries.
 		PGMinScore:       getEnvFloat("PGVECTOR_MIN_SCORE", 0.35),
-		EmbeddingModel:   getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
-		EmbeddingBaseURL: strings.TrimSpace(getEnv("EMBEDDING_BASEURL", "")),
-		EmbeddingAPIKey:  strings.TrimSpace(getEnv("EMBEDDING_APIKEY", "")),
+		EmbeddingModel:   getEnv("EMBEDDING_OPENAI_MODEL", "text-embedding-3-small"),
+		EmbeddingBaseURL: strings.TrimSpace(getEnv("EMBEDDING_OPENAI_BASEURL", "")),
+		EmbeddingAPIKey:  strings.TrimSpace(getEnv("EMBEDDING_OPENAI_APIKEY", "")),
 	}
 	if s.EmbeddingBaseURL == "" {
 		s.EmbeddingBaseURL = strings.TrimSpace(getEnv("LLM_BASEURL", "https://api.openai.com/v1"))
-	}
-	if s.EmbeddingAPIKey == "" {
-		s.EmbeddingAPIKey = strings.TrimSpace(getEnv("LLM_APIKEY", ""))
 	}
 	return s, nil
 }
