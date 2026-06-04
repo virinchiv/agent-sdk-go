@@ -1,5 +1,4 @@
 dist/
-examples/.env
 cmd/config.yaml
 cmd/bin/
 logs/
@@ -19,8 +18,17 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Local env overrides (never commit secrets)
+# Local env overrides (never commit secrets) — .env at any path in the repo
+.env
 .env.local
 .env*.local
+# Committed templates stay tracked: .env.defaults, etc.
+
+# Reports of example runs
+reports/**
+
+# Examples infra runtime files
+examples/.a2a-server.pid
+examples/logs/
 
 .DS_Store

@@ -68,6 +68,19 @@ type EventBusRuntime interface {
 	GetEventBus() eventbus.EventBus
 }
 
+// SubAgentToolParamQuery is the tool/JSON parameter name for the query sent to a sub-agent.
+const SubAgentToolParamQuery = "query"
+
+// SubAgentSpec describes one sub-agent in the delegation tree passed from pkg/agent to a runtime.
+// The runtime builds its own internal routing structures from this tree; no runtime-specific fields
+// are present here. ToolName is the sanitised tool name derived from Name and used as the map key.
+type SubAgentSpec struct {
+	Name     string  // human-readable agent name
+	ToolName string  // tool name used to invoke this sub-agent (key in runtime route maps)
+	Runtime  Runtime // the sub-agent's runtime instance
+	Children []*SubAgentSpec
+}
+
 // AgentSpec describes agent identity and structured-output preferences for one run.
 // It is attached to [ExecuteRequest.AgentSpec] so custom Runtime implementations can read name, prompts,
 // and response format without importing pkg/agent.
@@ -139,7 +152,7 @@ type ExecuteRequest struct {
 	StreamingEnabled bool
 	// EventTypes filters streamed events; empty means default (implementation-defined, often all types).
 	EventTypes       []events.AgentEventType
-	SubAgentRoutes   map[string]types.SubAgentRoute
+	SubAgents        []*SubAgentSpec
 	MaxSubAgentDepth int
 
 	ApprovalHandler types.ApprovalHandler

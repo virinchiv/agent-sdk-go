@@ -51,3 +51,28 @@ func (a logAdapter) Error(msg string, keyvals ...interface{}) {
 }
 
 var _ tlog.Logger = logAdapter{}
+
+// activityLogAdapter wraps a Temporal activity/workflow logger (tlog.Logger) so it satisfies
+// pkg/logger.Logger. Activities obtain their logger via activity.GetLogger(ctx), which attaches
+// workflow and activity metadata automatically; this bridge lets base-package methods reuse it.
+type activityLogAdapter struct{ l tlog.Logger }
+
+// newActivityLogger returns a logger.Logger backed by the Temporal tlog.Logger l.
+func newActivityLogger(l tlog.Logger) logger.Logger {
+	return activityLogAdapter{l: l}
+}
+
+func (a activityLogAdapter) Debug(ctx context.Context, msg string, args ...any) {
+	a.l.Debug(msg, args...)
+}
+func (a activityLogAdapter) Info(ctx context.Context, msg string, args ...any) {
+	a.l.Info(msg, args...)
+}
+func (a activityLogAdapter) Warn(ctx context.Context, msg string, args ...any) {
+	a.l.Warn(msg, args...)
+}
+func (a activityLogAdapter) Error(ctx context.Context, msg string, args ...any) {
+	a.l.Error(msg, args...)
+}
+
+var _ logger.Logger = activityLogAdapter{}

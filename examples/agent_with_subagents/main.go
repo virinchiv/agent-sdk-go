@@ -49,47 +49,54 @@ func main() {
 	mathReg := tools.NewRegistry()
 	mathReg.Register(calculator.New())
 
-	mathSpecialist, err := agent.NewAgent(
+	mathAgentOpts := []agent.Option{
 		agent.WithName("MathSpecialist"),
 		agent.WithDescription("Arithmetic specialist with calculator tool."),
 		agent.WithSystemPrompt("You are a math specialist. Use the calculator tool for arithmetic. Reply with a short final answer."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: mathQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithToolRegistry(mathReg),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
-	)
+	}
+	if cfg.UseTemporalRuntime() {
+		mathAgentOpts = append(mathAgentOpts, agent.WithTemporalConfig(&agent.TemporalConfig{
+			Host:      cfg.Host,
+			Port:      cfg.Port,
+			Namespace: cfg.Namespace,
+			TaskQueue: mathQueue,
+		}))
+	}
+	mathSpecialist, err := agent.NewAgent(mathAgentOpts...)
 	if err != nil {
 		log.Fatal(config.FormatNewAgentError("math specialist agent", err))
 	}
 	defer mathSpecialist.Close()
 
-	mainAgent, err := agent.NewAgent(
+	mainAgentOpts := []agent.Option{
 		agent.WithName("Main agent"),
 		agent.WithDescription("General assistant."),
 		agent.WithSystemPrompt(
-			"You are the main assistant. For arithmetic, delegate using the MathSpecialist sub-agent tool. "+
-				"When the specialist's answer comes back, do not stop there: continue as the main agent—give the user a concise final reply that includes the result, "+
-				"then add one short sentence of your own (e.g. sanity check, related tip, or offer to help further). "+
+			"You are the main assistant. For arithmetic, delegate using the MathSpecialist sub-agent tool. " +
+				"When the specialist's answer comes back, do not stop there: continue as the main agent—give the user a concise final reply that includes the result, " +
+				"then add one short sentence of your own (e.g. sanity check, related tip, or offer to help further). " +
 				"Always produce visible assistant text after delegation completes.",
 		),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: mainQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithSubAgents(mathSpecialist),
 		agent.WithMaxSubAgentDepth(2),
 		agent.WithStream(true),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
-	)
+	}
+	mainAgentOpts = append(mainAgentOpts, config.ToolApprovalOptions()...)
+	if cfg.UseTemporalRuntime() {
+		mainAgentOpts = append(mainAgentOpts, agent.WithTemporalConfig(&agent.TemporalConfig{
+			Host:      cfg.Host,
+			Port:      cfg.Port,
+			Namespace: cfg.Namespace,
+			TaskQueue: mainQueue,
+		}))
+	}
+	mainAgent, err := agent.NewAgent(mainAgentOpts...)
 	if err != nil {
 		log.Fatal(config.FormatNewAgentError("main agent", err))
 	}

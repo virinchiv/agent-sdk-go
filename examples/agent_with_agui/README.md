@@ -1,4 +1,4 @@
-# CopilotKit + agent streaming (minimal)
+# AG-UI / CopilotKit agent streaming (minimal)
 
 A tiny **Go HTTP server** streams agent events as **SSE** (`POST /agui`). A **Next.js** UI uses **CopilotKit** with the usual **`/api/copilotkit`** runtime route; that route forwards requests to the Go agent via **`@ag-ui/client` `HttpAgent`**.
 
@@ -13,7 +13,7 @@ CopilotKit expects its **runtime** handler, not a raw Go URL, in `runtimeUrl`—
 From the **agent-sdk-go** repo root (or this example’s parent with `go` module in path):
 
 ```bash
-go run ./examples/agent_copilotkit/server
+go run ./examples/agent_with_agui/server
 ```
 
 Listens on **`:8787`** by default (override with `PORT=` — avoids conflicting with apps on 8080). Health: `GET http://localhost:8787/health`.  
@@ -22,7 +22,7 @@ Stream: `POST http://localhost:8787/agui` with JSON `{"prompt":"Hello"}` or `{"m
 ## 2) Start the UI
 
 ```bash
-cd examples/agent_copilotkit/ui
+cd examples/agent_with_agui/ui
 npm install
 npm run dev
 ```
@@ -49,5 +49,5 @@ You should see `data: {...}` lines (AG-UI-style JSON from `event.ToJSON()`).
 ## Notes
 
 - **`ui/node_modules`** and **`ui/.next`** are listed in the repo root `.gitignore` — run `npm install` in `ui/` after clone; do not commit those directories.
-- Keep **Temporal** and the **Go server** running before using the chat UI.
+- Keep the **Go server** running before using the chat UI. Temporal is only needed when `AGENT_RUNTIME=temporal`.
 - CopilotKit / `@ag-ui/client` versions may need to stay compatible; if the UI errors, check [CopilotKit AG-UI docs](https://docs.copilotkit.ai) and align package versions.

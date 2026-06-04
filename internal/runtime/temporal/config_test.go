@@ -80,12 +80,12 @@ func TestNewTemporalTracingInterceptor_otelTracer_nonNil(t *testing.T) {
 	}
 }
 
-func TestBuildTemporalRuntimeConfig_userProvidedTemporalClient_otelTracer_warns(t *testing.T) {
+func TestBuildTemporalRuntime_userProvidedTemporalClient_otelTracer_warns(t *testing.T) {
 	var buf bytes.Buffer
 	log := logger.NewWriterLogger(&buf, "warn", "text", false)
 	tc := temporalmocks.NewClient(t)
 
-	_, err := buildTemporalRuntimeConfig(
+	_, err := buildTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithLogger(log),
 		WithTracer(newTestOTelTracer()),
@@ -100,12 +100,12 @@ func TestBuildTemporalRuntimeConfig_userProvidedTemporalClient_otelTracer_warns(
 	}
 }
 
-func TestBuildTemporalRuntimeConfig_userProvidedTemporalClient_defaultTracer_noManualInterceptorWarn(t *testing.T) {
+func TestBuildTemporalRuntime_userProvidedTemporalClient_defaultTracer_noManualInterceptorWarn(t *testing.T) {
 	var buf bytes.Buffer
 	log := logger.NewWriterLogger(&buf, "warn", "text", false)
 	tc := temporalmocks.NewClient(t)
 
-	_, err := buildTemporalRuntimeConfig(
+	_, err := buildTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithLogger(log),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "x"}),
@@ -119,12 +119,12 @@ func TestBuildTemporalRuntimeConfig_userProvidedTemporalClient_defaultTracer_noM
 	}
 }
 
-func TestBuildTemporalRuntimeConfig_userProvidedTemporalClient_explicitNoopTracer_noManualInterceptorWarn(t *testing.T) {
+func TestBuildTemporalRuntime_userProvidedTemporalClient_explicitNoopTracer_noManualInterceptorWarn(t *testing.T) {
 	var buf bytes.Buffer
 	log := logger.NewWriterLogger(&buf, "warn", "text", false)
 	tc := temporalmocks.NewClient(t)
 
-	_, err := buildTemporalRuntimeConfig(
+	_, err := buildTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithLogger(log),
 		WithTracer(observability.DefaultNoopTracer),
@@ -139,7 +139,7 @@ func TestBuildTemporalRuntimeConfig_userProvidedTemporalClient_explicitNoopTrace
 	}
 }
 
-func TestBuildTemporalRuntimeConfig_RequiresTemporalOrClient(t *testing.T) {
+func TestBuildTemporalRuntime_RequiresTemporalOrClient(t *testing.T) {
 	// Neither WithTemporalConfig nor WithTemporalClient: must fail fast without dialing a server.
 	options := []Option{
 		WithLogger(logger.NoopLogger()),
@@ -153,15 +153,15 @@ func TestBuildTemporalRuntimeConfig_RequiresTemporalOrClient(t *testing.T) {
 			LLM: sdkruntime.AgentLLM{Client: stubLLM{}},
 		}),
 	}
-	_, err := buildTemporalRuntimeConfig(options...)
+	_, err := buildTemporalRuntime(options...)
 	if err == nil || !strings.Contains(err.Error(), "temporal config or client is required") {
 		t.Fatalf("got %v", err)
 	}
 }
 
-func TestBuildTemporalRuntimeConfig_RequiresLLMClient(t *testing.T) {
+func TestBuildTemporalRuntime_RequiresLLMClient(t *testing.T) {
 	tc := temporalmocks.NewClient(t)
-	_, err := buildTemporalRuntimeConfig(
+	_, err := buildTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithLogger(logger.NoopLogger()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "x"}),
@@ -172,9 +172,9 @@ func TestBuildTemporalRuntimeConfig_RequiresLLMClient(t *testing.T) {
 	}
 }
 
-func TestBuildTemporalRuntimeConfig_InstanceIdSuffix(t *testing.T) {
+func TestBuildTemporalRuntime_InstanceIdSuffix(t *testing.T) {
 	tc := temporalmocks.NewClient(t)
-	cfg, err := buildTemporalRuntimeConfig(
+	rt, err := buildTemporalRuntime(
 		WithTemporalClient(tc, "myq"),
 		WithInstanceId("pod1"),
 		WithLogger(logger.NoopLogger()),
@@ -184,7 +184,7 @@ func TestBuildTemporalRuntimeConfig_InstanceIdSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.taskQueue != "myq-pod1" {
-		t.Fatalf("taskQueue = %q, want myq-pod1", cfg.taskQueue)
+	if rt.taskQueue != "myq-pod1" {
+		t.Fatalf("taskQueue = %q, want myq-pod1", rt.taskQueue)
 	}
 }

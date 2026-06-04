@@ -1,0 +1,209 @@
+version: '3'
+
+# Load secrets for compose interpolation and seed scripts (paths relative to this file).
+dotenv: ['.env']
+
+vars:
+  A2A_HEALTH_URL: '{{.A2A_HEALTH_URL | default "http://localhost:9999/.well-known/agent-card.json"}}'
+  A2A_PID_FILE: '{{.TASKFILE_DIR}}/.a2a-server.pid'
+  MCP_TRANSPORT: stdio
+  MCP_STDIO_COMMAND: node
+  MCP_STDIO_ARGS: '["-y","@modelcontextprotocol/server-filesystem","{{.TASKFILE_DIR}}/mcp-filesystem-sandbox"]'
+
+tasks:
+  # ── Prerequisites ──────────────────────────────────────────
+
+  prereq:check:
+    internal: true
+    silent: true
+    desc: Check tools required for examples infra and integration deps
+    cmds:
+      - |
+        for c in docker go node curl jq; do
+          command -v "$c" >/dev/null || { echo "❌ $c not installed"; exit 1; }
+        done
+
+  # ── Infra ──────────────────────────────────────────────────
+
+  infra:up:
+    desc: Start all infrastructure
+    deps: [prereq:check]
+    cmds:
+      - task infra:temporal:up
+      - task infra:lgtm:up
+
+  infra:down:
+    desc: Stop all infrastructure
+    deps: [prereq:check]
+    cmds:
+      - task infra:temporal:down
+      - task infra:lgtm:down
+
+  infra:status:
+    desc: Show status of example infra
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        COMPOSE="docker/docker-compose.yml"
+        compose_svc() {
+          local svc="$1"
+          if [ -n "$(docker compose -f "$COMPOSE" ps -q "$svc" 2>/dev/null)" ]; then
+            echo "✅ $svc (compose)"
+          else
+            echo "❌ $svc (compose)"
+          fi
+        }
+
+        echo "Examples infra"
+        echo "──────────────"
+        A2A_URL="{{.A2A_HEALTH_URL}}"
+
+        compose_svc temporal
+        compose_svc otel-lgtm
+        compose_svc weaviate
+        compose_svc pgvector
+        if curl -sf "$A2A_URL" >/dev/null 2>&1; then
+          echo "✅ A2A server"
+        else
+          echo "❌ A2A server"
+        fi
+
+  infra:temporal:up:
+    desc: Start Temporal
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml up -d temporal
+
+  infra:temporal:down:
+    desc: Stop Temporal
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml down temporal
+
+  infra:temporal:wait:
+    desc: Wait for Temporal to be ready
+    deps: [prereq:check]
+    cmds:
+      - echo "⏳ waiting for Temporal..."
+      - |
+        for i in $(seq 1 30); do
+          if docker compose -f docker/docker-compose.yml exec temporal temporal operator cluster health 2>/dev/null; then
+            echo "✅ Temporal ready"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "❌ Temporal not ready after 60s"
+        exit 1
+
+  infra:lgtm:up:
+    desc: Start LGTM (OpenTelemetry collector)
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml up -d otel-lgtm
+
+  infra:lgtm:down:
+    desc: Stop LGTM
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml down otel-lgtm
+
+  # ── Shared deps (local + temporal examples) ─────────────────
+
+  infra:deps:up:
+    desc: Start shared example deps (LGTM, Weaviate, pgvector, A2A server)
+    deps: [prereq:check]
+    cmds:
+      - task: infra:lgtm:up
+      - task: infra:weaviate:up
+      - task: infra:pgvector:up
+      - task: infra:a2a:up
+
+  infra:deps:down:
+    desc: Stop shared example deps
+    deps: [prereq:check]
+    cmds:
+      - task: infra:a2a:down
+      - task: infra:pgvector:down
+      - task: infra:weaviate:down
+      - task: infra:lgtm:down
+
+  infra:weaviate:up:
+    desc: Start Weaviate (compose) and seed sample data
+    deps: [prereq:check]
+    preconditions:
+      - sh: test -n "$EMBEDDING_OPENAI_APIKEY"
+        msg: "EMBEDDING_OPENAI_APIKEY is required in examples/.env (or your environment) before starting Weaviate."
+    cmds:
+      - docker compose -f docker/docker-compose.yml up -d --wait weaviate
+      - docker/weaviate/seed.sh
+
+  infra:weaviate:down:
+    desc: Stop Weaviate (compose)
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml down weaviate
+
+  infra:pgvector:up:
+    desc: Start pgvector Postgres (compose) and seed sample data
+    deps: [prereq:check]
+    preconditions:
+      - sh: test -n "$EMBEDDING_OPENAI_APIKEY"
+        msg: "EMBEDDING_OPENAI_APIKEY is required in examples/.env (or your environment) before seeding pgvector."
+    cmds:
+      - docker compose -f docker/docker-compose.yml up -d --wait pgvector
+      - docker/pgvector/seed.sh
+
+  infra:pgvector:down:
+    desc: Stop pgvector (compose)
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml down pgvector
+
+  infra:a2a:up:
+    desc: Start agent_with_a2a_server in background
+    deps: [prereq:check]
+    cmds:
+      - |
+        if curl -sf "{{.A2A_HEALTH_URL}}" >/dev/null 2>&1; then
+          echo "✅ A2A server already running ({{.A2A_HEALTH_URL}})"
+          exit 0
+        fi
+        mkdir -p "{{.TASKFILE_DIR}}/logs"
+        echo "🚀 Starting A2A server..."
+        go run ./agent_with_a2a_server >> "{{.TASKFILE_DIR}}/logs/a2a-server.log" 2>&1 &
+        printf '%s\n' "$!" > "{{.A2A_PID_FILE}}"
+      - task: infra:a2a:wait
+
+  infra:a2a:wait:
+    desc: Wait for A2A server health endpoint
+    deps: [prereq:check]
+    cmds:
+      - echo "⏳ waiting for A2A server..."
+      - |
+        for i in $(seq 1 30); do
+          if curl -sf "{{.A2A_HEALTH_URL}}" >/dev/null; then
+            echo "✅ A2A server ready ({{.A2A_HEALTH_URL}})"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "❌ A2A server not ready after 60s"
+        exit 1
+
+  infra:a2a:down:
+    desc: Stop agent_with_a2a_server started by infra:a2a:up
+    cmds:
+      - |
+        if [ -f "{{.A2A_PID_FILE}}" ]; then
+          PID="$(cat "{{.A2A_PID_FILE}}" | tr -d '[:space:]')"
+          if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+            kill "$PID" 2>/dev/null || true
+            sleep 1
+            kill -9 "$PID" 2>/dev/null || true
+          fi
+          rm -f "{{.A2A_PID_FILE}}"
+        fi
+        pkill -f 'go run ./agent_with_a2a_server' 2>/dev/null || true
+        pkill -f 'agent_with_a2a_server' 2>/dev/null || true

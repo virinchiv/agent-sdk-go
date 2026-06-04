@@ -4,7 +4,7 @@
 //
 //	go run ./examples/agent_with_retriever/weaviate "What do you know about our docs?"
 //
-// See ../README.md and ./README.md for Weaviate setup and env vars.
+// See ../README.md for setup and env vars.
 package main
 
 import (
@@ -53,10 +53,7 @@ func main() {
 		log.Fatalf("weaviate retriever: %v", err)
 	}
 
-	opts := common.AgentOptions(
-		cfg.Host, cfg.Port, cfg.Namespace, cfg.TaskQueue,
-		llmClient, logr, retrieverCfg, "weaviate",
-	)
+	opts := common.AgentOptions(cfg, llmClient, logr, retrieverCfg, "weaviate")
 	opts = append(opts, agent.WithRetrievers(retriever))
 
 	a, err := agent.NewAgent(opts...)

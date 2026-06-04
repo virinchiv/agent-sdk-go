@@ -19,8 +19,8 @@ func TestEventPublishActivity_PublishesToEventBus(t *testing.T) {
 	l := logger.NoopLogger()
 	bus := eventbus.NewInmem(l)
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{logger: l},
-		eventbus:              bus,
+		logger:   l,
+		eventbus: bus,
 	}
 	ctx := context.Background()
 	chName := "agent_event_unit_test"
@@ -65,8 +65,8 @@ func TestEventPublishActivity_PublishesToEventBus(t *testing.T) {
 func TestEventPublishActivity_NilEventErrors(t *testing.T) {
 	l := logger.NoopLogger()
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{logger: l},
-		eventbus:              eventbus.NewInmem(l),
+		logger:   l,
+		eventbus: eventbus.NewInmem(l),
 	}
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.EventPublishActivity)
@@ -80,8 +80,8 @@ func TestSubscribeToAgentEvents_RoundTrip(t *testing.T) {
 	l := logger.NoopLogger()
 	bus := eventbus.NewInmem(l)
 	rt := &TemporalRuntime{
-		TemporalRuntimeConfig: TemporalRuntimeConfig{logger: l},
-		eventbus:              bus,
+		logger:   l,
+		eventbus: bus,
 	}
 	ctx := context.Background()
 	chName := "agent_event_sub_test"

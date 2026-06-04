@@ -13,9 +13,9 @@ Do not combine **`WithObservabilityConfig`** with injected **`WithTracer` / `Wit
 
 ## Prerequisites
 
-1. **Temporal** — same variables as other examples (`TEMPORAL_HOST`, `TEMPORAL_PORT`, `TEMPORAL_NAMESPACE`, task queue). See [`temporal-setup.md`](../../temporal-setup.md) at the repository root.
+1. **LLM** — `LLM_PROVIDER`, `LLM_APIKEY`, `LLM_MODEL`, optional `LLM_BASEURL` per [`../.env.defaults`](../.env.defaults). Add secrets in **`examples/.env`**.
 
-2. **LLM** — `LLM_PROVIDER`, `LLM_APIKEY`, `LLM_MODEL`, optional `LLM_BASEURL` per [`../env.sample`](../env.sample). Optional: copy to `examples/.env`.
+2. **Temporal** — only when **`AGENT_RUNTIME=temporal`** (`TEMPORAL_HOST`, `TEMPORAL_PORT`, `TEMPORAL_NAMESPACE`, task queue). See [`temporal-setup.md`](../../temporal-setup.md).
 
 3. **OTLP collector** — accepts OpenTelemetry Protocol on **gRPC** (default) or **HTTP/protobuf**. Use **host:port only** (no `http://` scheme). See the table below.
 

@@ -3,11 +3,11 @@
 Outbound A2A: your agent calls **remote** A2A agents as tools.
 
 - **`agent_with_a2a_config`** — `agent.WithA2AConfig(agent.A2AServers{<serverName>: cfg})`; SDK builds the default **[pkg/a2a/client](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/a2a/client)** per server.
-- **`agent_with_a2a_client`** — `a2aclient.NewClient(...)` + **`WithA2AClients`**; same env and testing flow — see **[../agent_with_a2a_client/README.md](../agent_with_a2a_client/README.md)**.
+- **`agent_with_a2a_client`** — `a2aclient.NewClient(...)` + **`WithA2AClients`**; same env and testing flow as above.
 
 ## Prerequisites
 
-- **Temporal** + **LLM** in **`examples/.env`** (see **`../env.sample`**).
+- **LLM** in **`examples/.env`** (see **`../.env.defaults`**). **Temporal** only when **`AGENT_RUNTIME=temporal`**.
 
 **Required for A2A:** **`A2A_URL`** — base URL of the remote agent (scheme + host + port, **no path**). Optional: **`A2A_SERVER_NAME`**, **`A2A_TOKEN`**, **`A2A_HEADERS`** (JSON), **`A2A_TIMEOUT_SECONDS`**, **`A2A_SKIP_TLS_VERIFY`** (dev), **`A2A_ALLOW_SKILLS`** / **`A2A_BLOCK_SKILLS`** (comma-separated; mutually exclusive).
 
@@ -65,4 +65,4 @@ curl -sS "http://localhost:9999/.well-known/agent-card.json" | head
 
 ## Env vars (A2A client)
 
-See **`A2A_*`** rows in **[examples/README.md](../README.md#env-vars)** and **`../env.sample`**.
+See **`A2A_*`** rows in **[examples/README.md](../README.md#env-vars)** and **`../.env.defaults`**.

@@ -28,7 +28,6 @@ func main() {
 	reg.Register(echo.New())
 	reg.Register(calculator.New())
 
-	// Single stdin reader: same pattern as cmd for consistency and timeout handling
 	lineCh := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
@@ -42,17 +41,13 @@ func main() {
 		agent.WithName("agent-with-tools-approval"),
 		agent.WithDescription("Agent with tools that require user approval before execution"),
 		agent.WithSystemPrompt("You are a helpful assistant. Use the echo or calculator tool when asked."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithToolRegistry(reg),
 		agent.WithApprovalHandler(makeApprovalHandler(lineCh)),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.ToolApprovalOptions()...)
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

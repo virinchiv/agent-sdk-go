@@ -87,12 +87,6 @@ func main() {
 	opts := []agent.Option{
 		agent.WithName("agentctl"),
 		agent.WithSystemPrompt("You are a helpful assistant."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Temporal.Host,
-			Port:      cfg.Temporal.Port,
-			Namespace: cfg.Temporal.Namespace,
-			TaskQueue: cfg.Temporal.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithStream(true),
 		agent.WithToolRegistry(reg),
@@ -100,6 +94,7 @@ func main() {
 		agent.WithConversationSize(20),
 		agent.WithLogger(lgr),
 	}
+	opts = append(opts, RuntimeOption(cfg)...)
 	if len(mcpServers) > 0 {
 		opts = append(opts,
 			agent.WithMCPConfig(mcpServers),

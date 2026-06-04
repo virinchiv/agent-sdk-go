@@ -1,0 +1,19 @@
+version: '3'
+
+dotenv: ['examples/.env']
+
+includes:
+  examples:
+    taskfile: taskfiles/examples.yml
+    flatten: true
+  reports:
+    taskfile: taskfiles/reports.yml
+    flatten: true
+
+tasks:
+  # ── Default ───────────────────────────────────────────────
+
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list

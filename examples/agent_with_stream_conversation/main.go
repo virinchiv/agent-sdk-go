@@ -37,12 +37,6 @@ func main() {
 		agent.WithName("agent-stream-conversation"),
 		agent.WithDescription("Stream with conversation; shows event handling pattern to avoid duplicate output"),
 		agent.WithSystemPrompt("You are a helpful assistant. Remember context. Use tools: echo, calculator."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithStream(true),
 		agent.WithToolRegistry(reg),
@@ -51,6 +45,7 @@ func main() {
 		agent.WithConversationSize(20),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

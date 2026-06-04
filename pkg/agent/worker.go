@@ -18,10 +18,14 @@ type AgentWorker struct {
 
 // NewAgentWorker creates an AgentWorker that polls and executes runs for the configured backend.
 // Same options as [NewAgent]. Use when the agent is created with [DisableLocalWorker].
+// AgentWorker requires a Temporal backend (WithTemporalConfig or WithTemporalClient).
 func NewAgentWorker(opts ...Option) (*AgentWorker, error) {
 	cfg, err := buildAgentConfig(opts)
 	if err != nil {
 		return nil, err
+	}
+	if !cfg.hasTemporalRuntime() {
+		return nil, fmt.Errorf("AgentWorker requires a Temporal backend: use WithTemporalConfig or WithTemporalClient")
 	}
 	cfg.remoteWorker = true
 	if cfg.disableFingerprintCheck {

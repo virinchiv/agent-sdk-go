@@ -1,5 +1,5 @@
--- Optional DDL for the pgvector example (run against PGVECTOR_DSN database).
--- Embedding dimension must match EMBEDDING_MODEL (text-embedding-3-small → 1536).
+-- Schema for the pgvector example (applied by docker/pgvector/seed.sh).
+-- Embedding dimension must match EMBEDDING_OPENAI_MODEL (text-embedding-3-small → 1536).
 
 CREATE EXTENSION IF NOT EXISTS vector;
 

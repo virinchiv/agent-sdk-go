@@ -48,18 +48,13 @@ func main() {
 		agent.WithName("agent-with-mcp-client"),
 		agent.WithDescription("Agent with MCP from env: stdio or streamable HTTP (WithMCPClients)"),
 		agent.WithSystemPrompt("You are a helpful assistant. Use MCP or other tools from your tool list when they help answer the user."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithMCPClients(mcpClient),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 		agent.WithLogLevel(cfg.LogLevel),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

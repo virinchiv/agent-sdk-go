@@ -1,0 +1,8 @@
+version: '3'
+
+tasks:
+  reports:clean:
+    desc: Clean all report files
+    cmds:
+      - rm -rf "{{.ROOT_DIR}}/reports/"
+      - echo "🗑️ Reports cleaned"

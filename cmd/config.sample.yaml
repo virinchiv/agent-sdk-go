@@ -9,6 +9,12 @@
 # Environment variables with AGENT_ prefix override file values.
 # Example: AGENT_LLM_APIKEY=sk-xxx AGENT_LLM_PROVIDER=openai go run ./cmd
 
+# Runtime: local (default) or temporal.
+# local    — runs entirely in-process; no Temporal server required.
+# temporal — durable execution via Temporal; requires a running Temporal server.
+# Override per-run: AGENT_RUNTIME=temporal go run ./cmd
+runtime: local
+
 # Temporal connection (for durable agent execution)
 temporal:
   host: localhost       # Temporal server host; use AGENT_TEMPORAL_HOST to override

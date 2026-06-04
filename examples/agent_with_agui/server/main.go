@@ -49,16 +49,10 @@ func main() {
 	reg.Register(echo.New())
 	reg.Register(calculator.New())
 
-	a, err := agent.NewAgent(
-		agent.WithName("copilotkit-demo-agent"),
-		agent.WithDescription("Streaming demo for CopilotKit / AG-UI"),
+	agentOpts := []agent.Option{
+		agent.WithName("agui-demo-agent"),
+		agent.WithDescription("Streaming demo for AG-UI / CopilotKit"),
 		agent.WithSystemPrompt("You are a helpful assistant. Be concise."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithStream(true),
 		agent.WithLLMSampling(&agent.LLMSampling{
@@ -71,7 +65,9 @@ func main() {
 		agent.WithToolRegistry(reg),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
-	)
+	}
+	agentOpts = append(agentOpts, config.RuntimeOption(cfg)...)
+	a, err := agent.NewAgent(agentOpts...)
 	if err != nil {
 		log.Fatal(config.FormatNewAgentError("agent", err))
 	}

@@ -1,9 +1,7 @@
 package agent
 
 import (
-	"fmt"
-
-	"github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime/local"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/temporal"
 )
 
@@ -12,16 +10,7 @@ func (cfg *agentConfig) hasTemporalRuntime() bool {
 	return cfg.temporalConfig != nil || cfg.temporalClient != nil
 }
 
-// buildAgentRuntime constructs the execution backend from agentConfig.
-// Extend with additional branches when new [runtime.Runtime] implementations are added.
-func (cfg *agentConfig) buildAgentRuntime(remoteWorker bool) (runtime.Runtime, error) {
-	if cfg.hasTemporalRuntime() {
-		return cfg.buildTemporalRuntime(remoteWorker)
-	}
-	return nil, fmt.Errorf("no runtime configured: use WithTemporalConfig or WithTemporalClient")
-}
-
-func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (runtime.Runtime, error) {
+func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (*temporal.TemporalRuntime, error) {
 	options := []temporal.Option{
 		temporal.WithLogger(cfg.logger),
 		temporal.WithAgentSpec(cfg.runtimeAgentSpec()),
@@ -52,4 +41,16 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (runtime.Runtime
 	enableRemote := !remoteWorker && cfg.enableRemoteWorkers
 	options = append(options, temporal.WithEnableRemoteWorkers(enableRemote))
 	return temporal.NewTemporalRuntime(options...)
+}
+
+func (cfg *agentConfig) buildLocalRuntime() (*local.LocalRuntime, error) {
+	options := []local.Option{
+		local.WithLogger(cfg.logger),
+		local.WithToolExecutionMode(cfg.agentToolExecutionMode),
+		local.WithAgentSpec(cfg.runtimeAgentSpec()),
+		local.WithAgentExecution(cfg.runtimeAgentExecution()),
+		local.WithTracer(cfg.tracer),
+		local.WithMetrics(cfg.metrics),
+	}
+	return local.NewLocalRuntime(options...)
 }

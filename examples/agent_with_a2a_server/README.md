@@ -4,7 +4,7 @@ Runs **your** agent as an **inbound** A2A HTTP server (dynamic agent card + **JS
 
 ## Prerequisites
 
-- **Temporal** + **LLM** in **`examples/.env`** (see **`../env.sample`**).
+- **LLM** in **`examples/.env`** (see **`../.env.defaults`**). **Temporal** only when **`AGENT_RUNTIME=temporal`**.
 - Optional **`A2A_SERVER_HOST`**, **`A2A_SERVER_PORT`** (defaults **localhost:9999**).
 - Optional **`A2A_SERVER_BEARER_TOKENS`** — comma-separated secrets; JSON-RPC calls must send **`Authorization: Bearer <token>`** (agent card GET stays unauthenticated).
 
@@ -52,4 +52,4 @@ Full flags: **`a2a help`**; reference: [**a2a-go** `cmd/README.md`](https://gith
 
 ## Env vars (inbound server)
 
-See **`A2A_SERVER_*`** rows in **[examples/README.md](../README.md#env-vars)** and **`../env.sample`**.
+See **`A2A_SERVER_*`** rows in **[examples/README.md](../README.md#env-vars)** and **`../.env.defaults`**.

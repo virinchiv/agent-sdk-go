@@ -235,60 +235,87 @@ func (m *mockConversation) ListMessages(ctx context.Context, id string, opts ...
 func (m *mockConversation) Clear(ctx context.Context, id string) error { return nil }
 func (m *mockConversation) IsDistributed() bool                        { return false }
 
-func TestBuildWorkflowSubAgentRoutes_flat(t *testing.T) {
-	child := &Agent{agentConfig: agentConfig{Name: "Child", taskQueue: "q-child"}}
-	parent := &Agent{agentConfig: agentConfig{Name: "Parent", taskQueue: "q-parent", subAgents: []*Agent{child}}}
-	got := parent.buildSubAgentRoutes()
-	if got == nil {
-		t.Fatal("expected routes")
+// stubRuntime is a minimal Runtime implementation for tests.
+type stubRuntime struct{}
+
+func (s *stubRuntime) Execute(_ context.Context, _ *runtime.ExecuteRequest) (*types.AgentRunResult, error) {
+	return nil, nil
+}
+func (s *stubRuntime) ExecuteStream(_ context.Context, _ *runtime.ExecuteRequest) (<-chan events.AgentEvent, error) {
+	return nil, nil
+}
+func (s *stubRuntime) Approve(_ context.Context, _ string, _ types.ApprovalStatus) error { return nil }
+func (s *stubRuntime) Close()                                                            {}
+
+func TestBuildSubAgentSpecs_flat(t *testing.T) {
+	childRT := &stubRuntime{}
+	child := &Agent{agentConfig: agentConfig{Name: "Child"}, runtime: childRT}
+	parent := &Agent{agentConfig: agentConfig{Name: "Parent", subAgents: []*Agent{child}}, runtime: &stubRuntime{}}
+
+	got := parent.buildSubAgentSpecs()
+	if len(got) != 1 {
+		t.Fatalf("want 1 spec, got %d", len(got))
 	}
 	key, err := subAgentToolName(child.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, ok := got[key]
-	if !ok {
-		t.Fatalf("missing %q in %v", key, got)
+	spec := got[0]
+	if spec.ToolName != key {
+		t.Fatalf("ToolName = %q, want %q", spec.ToolName, key)
 	}
-	if r.TaskQueue != "q-child" || r.ChildRoutes != nil {
-		t.Fatalf("route = %+v", r)
+	if spec.Name != child.Name {
+		t.Fatalf("Name = %q, want %q", spec.Name, child.Name)
 	}
-}
-
-func TestBuildWorkflowSubAgentRoutes_nested(t *testing.T) {
-	leaf := &Agent{agentConfig: agentConfig{Name: "Leaf", taskQueue: "q-leaf"}}
-	mid := &Agent{agentConfig: agentConfig{Name: "Mid", taskQueue: "q-mid", subAgents: []*Agent{leaf}}}
-	root := &Agent{agentConfig: agentConfig{Name: "Root", taskQueue: "q-root", subAgents: []*Agent{mid}}}
-	got := root.buildSubAgentRoutes()
-	midKey, err := subAgentToolName(mid.Name)
-	if err != nil {
-		t.Fatal(err)
+	if spec.Runtime != childRT {
+		t.Fatal("Runtime mismatch")
 	}
-	rMid, ok := got[midKey]
-	if !ok {
-		t.Fatalf("missing mid %q", midKey)
-	}
-	if rMid.ChildRoutes == nil {
-		t.Fatal("expected nested child routes")
-	}
-	leafKey, err := subAgentToolName(leaf.Name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rLeaf, ok := rMid.ChildRoutes[leafKey]
-	if !ok {
-		t.Fatalf("missing leaf %q", leafKey)
-	}
-	if rLeaf.TaskQueue != "q-leaf" || len(rLeaf.ChildRoutes) != 0 {
-		t.Fatalf("leaf route = %+v", rLeaf)
+	if spec.Children != nil {
+		t.Fatalf("expected no children, got %v", spec.Children)
 	}
 }
 
-func TestBuildWorkflowSubAgentRoutes_skipsEmptyTaskQueue(t *testing.T) {
-	skip := &Agent{agentConfig: agentConfig{Name: "X", taskQueue: "  "}}
-	parent := &Agent{agentConfig: agentConfig{subAgents: []*Agent{skip}}}
-	if got := parent.buildSubAgentRoutes(); len(got) != 0 {
-		t.Fatalf("want empty, got %v", got)
+func TestBuildSubAgentSpecs_nested(t *testing.T) {
+	leafRT := &stubRuntime{}
+	leaf := &Agent{agentConfig: agentConfig{Name: "Leaf"}, runtime: leafRT}
+	midRT := &stubRuntime{}
+	mid := &Agent{agentConfig: agentConfig{Name: "Mid", subAgents: []*Agent{leaf}}, runtime: midRT}
+	root := &Agent{agentConfig: agentConfig{Name: "Root", subAgents: []*Agent{mid}}, runtime: &stubRuntime{}}
+
+	got := root.buildSubAgentSpecs()
+	if len(got) != 1 {
+		t.Fatalf("want 1 top-level spec, got %d", len(got))
+	}
+	midSpec := got[0]
+	if midSpec.Runtime != midRT {
+		t.Fatal("mid Runtime mismatch")
+	}
+	if len(midSpec.Children) != 1 {
+		t.Fatalf("want 1 child spec, got %d", len(midSpec.Children))
+	}
+	leafSpec := midSpec.Children[0]
+	if leafSpec.Runtime != leafRT {
+		t.Fatal("leaf Runtime mismatch")
+	}
+	if len(leafSpec.Children) != 0 {
+		t.Fatalf("leaf should have no children, got %d", len(leafSpec.Children))
+	}
+}
+
+func TestBuildSubAgentSpecs_noRuntimeStillBuilds(t *testing.T) {
+	// Sub-agent with no runtime still gets a spec — runtime decides what to do with it.
+	sub := &Agent{agentConfig: agentConfig{Name: "X"}}
+	parent := &Agent{agentConfig: agentConfig{subAgents: []*Agent{sub}}}
+
+	got := parent.buildSubAgentSpecs()
+	if len(got) != 1 {
+		t.Fatalf("want 1 spec, got %v", got)
+	}
+	if got[0].ToolName != "subagent_X" {
+		t.Fatalf("ToolName = %q", got[0].ToolName)
+	}
+	if got[0].Runtime != nil {
+		t.Fatalf("expected nil runtime, got %v", got[0].Runtime)
 	}
 }
 

@@ -53,18 +53,13 @@ func main() {
 		agent.WithName("agent-with-a2a-client"),
 		agent.WithDescription("Agent with A2A from env (WithA2AClients)"),
 		agent.WithSystemPrompt("You are a helpful assistant. Use A2A tools from your tool list when they help answer the user."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llmClient),
 		agent.WithA2AClients(cl),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 		agent.WithLogger(logCfg),
 		agent.WithLogLevel(cfg.LogLevel),
 	}
+	opts = append(opts, config.RuntimeOption(cfg)...)
 
 	a, err := agent.NewAgent(opts...)
 	if err != nil {

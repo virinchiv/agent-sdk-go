@@ -52,22 +52,17 @@ func BaseAgentOptions(cfg *excfg.Config, llm interfaces.LLMClient) []agent.Optio
 	reg := tools.NewRegistry()
 	reg.Register(calculator.New())
 
-	return []agent.Option{
+	opts := []agent.Option{
 		agent.WithName("observability-example-agent"),
 		agent.WithDescription("Agent demonstrating OTLP wiring (see examples/agent_with_observability)."),
 		agent.WithSystemPrompt("You are a concise assistant."),
-		agent.WithTemporalConfig(&agent.TemporalConfig{
-			Host:      cfg.Host,
-			Port:      cfg.Port,
-			Namespace: cfg.Namespace,
-			TaskQueue: cfg.TaskQueue,
-		}),
 		agent.WithLLMClient(llm),
 		agent.WithToolRegistry(reg),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 		agent.WithLogLevel(cfg.LogLevel),
 		//agent.WithLogger(excfg.NewLoggerFromLogConfig(cfg)),
 	}
+	return append(opts, excfg.RuntimeOption(cfg)...)
 }
 
 // UserPrompt returns command-line text after the program name, or a default line if empty.

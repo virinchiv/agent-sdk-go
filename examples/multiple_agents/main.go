@@ -22,34 +22,31 @@ func main() {
 	}
 
 	// TaskQueue must be unique per agent. Use WithInstanceId when running multiple agents in same process.
-	temporalCfg := &agent.TemporalConfig{
-		Host:      cfg.Host,
-		Port:      cfg.Port,
-		Namespace: cfg.Namespace,
-		TaskQueue: cfg.TaskQueue,
-	}
+	temporalOpts := config.RuntimeOption(cfg)
 
-	agent1, err := agent.NewAgent(
+	agent1Opts := []agent.Option{
 		agent.WithName("agent-1"),
 		agent.WithSystemPrompt("You are a helpful math assistant. Keep answers brief."),
-		agent.WithTemporalConfig(temporalCfg),
 		agent.WithInstanceId("agent-1"),
 		agent.WithLLMClient(llmClient),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
-	)
+	}
+	agent1Opts = append(agent1Opts, temporalOpts...)
+	agent1, err := agent.NewAgent(agent1Opts...)
 	if err != nil {
 		log.Fatal(config.FormatNewAgentError("failed to create agent 1", err))
 	}
 	defer agent1.Close()
 
-	agent2, err := agent.NewAgent(
+	agent2Opts := []agent.Option{
 		agent.WithName("agent-2"),
 		agent.WithSystemPrompt("You are a creative writing assistant. Be expressive."),
-		agent.WithTemporalConfig(temporalCfg),
 		agent.WithInstanceId("agent-2"),
 		agent.WithLLMClient(llmClient),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
-	)
+	}
+	agent2Opts = append(agent2Opts, temporalOpts...)
+	agent2, err := agent.NewAgent(agent2Opts...)
 	if err != nil {
 		log.Fatal(config.FormatNewAgentError("failed to create agent 2", err))
 	}

@@ -3,7 +3,7 @@
 Separate **agent** and **worker** processes: `DisableLocalWorker` / `EnableRemoteWorkers` on the agent, `NewAgentWorker` on the worker, shared options in [`opts/opts.go`](opts/opts.go). The agent uses **`Stream`** with `WithStream(true)`; the sample prints streaming event types (`AgentEventTypeTextMessageContent`, tool events, **`AgentEventTypeCustom`** for approvals, **`AgentEventTypeRunFinished`**, etc.—see [`agent/main.go`](agent/main.go)).
 
 ```bash
-# From examples/ (after cp env.sample .env and Temporal is up)
+# From examples/ (LLM_* in .env; task -t Taskfile.yml infra:temporal:up or Temporal running)
 go run ./durable_agent/worker  # Run on terminal 1
 go run ./durable_agent/agent "Hello from remote agent!" # Run on terminal 2
 ```
