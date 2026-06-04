@@ -1,10 +1,12 @@
 dist/
+examples/.env
 cmd/config.yaml
 cmd/bin/
 logs/
 cmd/logs/
 coverage.out
 coverage.html
+reports/
 
 # Node.js / Next.js (examples such as agent_copilotkit/ui)
 node_modules/
@@ -18,17 +20,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Local env overrides (never commit secrets) — .env at any path in the repo
-.env
+# Local env overrides (never commit secrets)
 .env.local
 .env*.local
-# Committed templates stay tracked: .env.defaults, etc.
-
-# Reports of example runs
-reports/**
-
-# Examples infra runtime files
-examples/.a2a-server.pid
-examples/logs/
 
 .DS_Store
