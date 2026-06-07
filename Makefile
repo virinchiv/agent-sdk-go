@@ -64,10 +64,15 @@ fmt-check:
 	fi
 	@echo "==> gofmt -s OK"
 
-# Typos in source (same family of checks as Go Report Card "misspell"; no extra install — uses go run)
+# Typos in tracked source only (skips node_modules, .next, and other gitignored paths).
 spell:
 	@echo "==> misspell"
-	go run github.com/client9/misspell/cmd/misspell@latest -error .
+	@files=$$(git ls-files -z -- '*.go' '*.md' '*.yaml' '*.yml'); \
+	if [ -z "$$files" ]; then \
+		echo "No files to spell-check"; \
+	else \
+		printf '%s' "$$files" | xargs -0 go run github.com/client9/misspell/cmd/misspell@latest -error; \
+	fi
 
 # Run linters (gofmt -s, misspell, go vet + golangci-lint).
 # Use golangci-lint v2 when go.mod is 1.26+ — v1.x binaries error on newer language targets.

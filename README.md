@@ -52,6 +52,7 @@
 - [Development](#development)
   - [Code Coverage](#code-coverage)
 - [Setup and run examples](#setup-and-run-examples)
+- [Benchmarks](#benchmarks)
 - [Production Readiness Checklist](#production-readiness-checklist)
 - [Disclaimer](#disclaimer)
 
@@ -1243,6 +1244,12 @@ Or run with a custom config path: `go run ./cmd -config /path/to/config.yaml`.
 - **Env overrides** — `AGENT_LLM_APIKEY`, `AGENT_TEMPORAL_HOST`, etc. override file values
 
 See **[cmd/README.md](cmd/README.md)** for CLI details and env vars.
+
+## Benchmarks
+
+Config-driven benchmark suite to measure agent performance in your environment.
+
+See [benchmarks/README.md](benchmarks/README.md).
 
 ## Production Readiness Checklist
 
