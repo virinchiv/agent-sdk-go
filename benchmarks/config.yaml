@@ -1,0 +1,41 @@
+runtime: local          # local or temporal
+
+temporal:
+  host: localhost
+  port: 7233
+  namespace: default
+  task_queue: agent-sdk-go
+  workers_count: 0   # 0 = embedded worker only; 1+ = spawn external root workers
+
+llm:
+  latency_ms: 200
+  jitter_ms: 50    # random +/- added to latency
+  mock_tokens: 500
+
+tool:
+  latency_ms: 50
+  jitter_ms: 10
+
+agent:
+  runs: 100
+  concurrent: false
+  concurrent_count: 10  # only if concurrent: true
+
+  tools:
+    count: 3
+    execution: parallel  # sequential or parallel
+
+  subagents:
+    count: 2
+    levels: 1             # 1 or 2
+
+logger:
+  enabled: false          # true writes SDK logs under benchmarks/logs
+  dir: benchmarks/logs
+  level: info             # debug | info | warn | error
+
+output:
+  console: true
+  file: true
+  dir: benchmarks/reports  # output directory for reports
+  format: text             # json or text
