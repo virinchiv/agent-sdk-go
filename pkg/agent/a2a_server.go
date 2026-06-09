@@ -451,7 +451,7 @@ func (e *agentA2AExecutor) Execute(ctx context.Context, execCtx *a2asrv.Executor
 
 		if !streaming {
 			// Non-streaming: one blocking Run, one Message reply.
-			result, err := e.agent.Run(ctx, inputText, "")
+			result, err := e.agent.Run(ctx, inputText, nil)
 			if err != nil {
 				sp.RecordError(err)
 				errMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(err.Error()))
@@ -470,7 +470,7 @@ func (e *agentA2AExecutor) Execute(ctx context.Context, execCtx *a2asrv.Executor
 			return
 		}
 
-		streamCh, err := e.agent.Stream(ctx, inputText, "")
+		streamCh, err := e.agent.Stream(ctx, inputText, nil)
 		if err != nil {
 			sp.RecordError(err)
 			errMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(err.Error()))

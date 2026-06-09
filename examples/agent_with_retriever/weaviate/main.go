@@ -71,7 +71,7 @@ func main() {
 	fmt.Printf("hint: %s\n", common.ModeHint(retrieverCfg.RetrieverMode))
 	fmt.Println("user:", prompt)
 
-	result, err := a.Run(context.Background(), prompt, "")
+	result, err := a.Run(context.Background(), prompt, nil)
 	if err != nil {
 		log.Printf("run failed: %v", err)
 		return

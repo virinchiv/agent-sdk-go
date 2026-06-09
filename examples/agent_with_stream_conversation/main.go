@@ -70,7 +70,12 @@ func main() {
 func runSingleTurn(ctx context.Context, a *agent.Agent, prompt, convID string) {
 	fmt.Println("user:", prompt)
 	fmt.Println("assistant:")
-	eventCh, err := a.Stream(ctx, prompt, convID)
+	opts := &agent.AgentRunOptions{
+		ConversationOptions: &agent.ConversationOptions{
+			ID: convID,
+		},
+	}
+	eventCh, err := a.Stream(ctx, prompt, opts)
 	if err != nil {
 		log.Printf("Stream failed: %v", err)
 		return
@@ -94,7 +99,12 @@ func runInteractive(ctx context.Context, a *agent.Agent, convID string) {
 		if prompt == "exit" || prompt == "quit" || prompt == "bye" {
 			break
 		}
-		eventCh, err := a.Stream(ctx, prompt, convID)
+		opts := &agent.AgentRunOptions{
+			ConversationOptions: &agent.ConversationOptions{
+				ID: convID,
+			},
+		}
+		eventCh, err := a.Stream(ctx, prompt, opts)
 		if err != nil {
 			log.Printf("Stream failed: %v", err)
 			continue

@@ -91,7 +91,7 @@ func runBenchmark(ctx context.Context, cfg *setup.Config, llm *setup.MockLLMClie
 
 func executeRun(ctx context.Context, a *agent.Agent, rng *rand.Rand) runOutcome {
 	start := time.Now()
-	_, err := a.Run(ctx, setup.RandomUserPrompt(rng), "")
+	_, err := a.Run(ctx, setup.RandomUserPrompt(rng), nil)
 	return runOutcome{
 		latencyMs: float64(time.Since(start).Milliseconds()),
 		success:   err == nil,

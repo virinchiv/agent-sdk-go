@@ -646,8 +646,12 @@ func TestExecute_PersistsConversationMessages(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{
-		UserPrompt:     "remember this",
-		ConversationID: "conv-1",
+		UserPrompt: "remember this",
+		RunOptions: &types.AgentRunOptions{
+			ConversationOptions: &types.ConversationOptions{
+				ID: "conv-1",
+			},
+		},
 	})
 	require.NoError(t, err)
 }

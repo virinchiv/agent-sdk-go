@@ -56,27 +56,43 @@ git checkout -b <branch-name>
 
 Keep your branch short and descriptive. Sync with `main` before opening a PR: `git pull upstream main` (or rebase if you prefer). Push your branch to your fork and open a PR against `main`.
 
-### 3. Run tests
+### 3. Run checks before a PR
+
+```bash
+make check
+```
+
+Runs `fmt-check`, spell check, `make lint`, `make test`, `make build`, and `make secrets-scan` — same core gates as CI (coverage is CI-only; use `make test-coverage` locally if you want a report).
+
+Also run the full example suite on any code change to catch regressions unit tests may miss:
+
+```bash
+task examples:all
+```
+
+Requires Task, Docker, and LLM credentials — see [examples/README.md](examples/README.md).
+
+**CI runs automatically** on pull requests and on pushes to branches other than `main`. Pushes or merges to `main` do not trigger CI automatically; use **workflow_dispatch** in GitHub Actions when you need an on-demand run. `make check` and CI must pass before merge — fix any failures in your PR.
+
+To run only tests (e.g. while iterating):
 
 ```bash
 make test
 ```
 
-**CI runs automatically** on pull requests and on pushes to branches other than `main`. Pushes or merges to `main` do not trigger CI automatically; use **workflow_dispatch** in GitHub Actions when you need an on-demand run. Lint and test must pass before merge — fix any CI failures in your PR.
-
-Or run tests for a specific package:
+Or a specific package:
 
 ```bash
 go test ./pkg/agent/... -count=1 -v
 ```
 
-### 4. Run linters
+### 4. Run linters (included in `make check`)
 
 ```bash
 make lint
 ```
 
-This runs `go vet` and `golangci-lint`. All contributions must pass lint with zero errors.
+This runs `gofmt -s` check, `misspell`, `go vet`, and `golangci-lint`. Use when debugging a lint failure without re-running the full `make check`.
 
 **golangci-lint vs Go version:** If you see `the Go language version used to build golangci-lint is lower than the targeted Go version`, your `golangci-lint` binary is too old for this module (Go 1.26+ requires **golangci-lint v2**). Reinstall: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`, ensure `$(go env GOPATH)/bin` is on `PATH` ahead of any older install, then run `golangci-lint version` — it should report **v2.x** and a Go build **≥ 1.26**.
 
@@ -87,7 +103,7 @@ make test-coverage
 # Open coverage.html in a browser
 ```
 
-### 6. Run examples (optional)
+### 6. Run examples
 
 Examples load **`examples/.env.defaults`** automatically. Set LLM credentials via environment or an optional override file:
 
@@ -98,7 +114,15 @@ export LLM_MODEL=your-model
 # LLM_PROVIDER: openai, anthropic, or gemini. Or append the same keys to examples/.env
 ```
 
-Then run any example:
+Run the full example suite before a PR (local + temporal, with reports):
+
+```bash
+task examples:all
+```
+
+When you add a new example, register it in **`taskfiles/examples.yml`** if it can run non-interactively via Task (one-shot `go run`, no REPL, no split worker process). See existing lists (`EXAMPLES`, `EXAMPLES_WITH_PROMPTS`, `EXAMPLES_TEMPORAL`) and commented TODOs for patterns.
+
+Or run a single example:
 
 ```bash
 go run ./examples/simple_agent "Hello"
@@ -140,7 +164,9 @@ Using the SDK and ran into issues, unclear docs, or confusing behavior? **Raise 
 ## What Contributors Must Follow
 
 1. **Code quality**
-   - Run `make lint` and `make test` before submitting a PR. PRs must pass both.
+   - Run `make check` before submitting a PR (format, spell, lint, test, build, secrets scan). PRs must pass.
+   - Run `task examples:all` before submitting a PR to verify nothing in the example suite breaks (any code change — not only example edits). Requires Task, Docker, and LLM credentials — see [examples/README.md](examples/README.md).
+   - New examples that support batch runs must be added to **`taskfiles/examples.yml`** (see §6).
    - Run `make tidy` before committing if you add or remove dependencies.
 
 2. **Tests**

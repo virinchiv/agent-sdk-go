@@ -89,7 +89,7 @@ func main() {
 }
 
 func runStream(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, prompt string) {
-	eventCh, err := a.Stream(ctx, prompt, "")
+	eventCh, err := a.Stream(ctx, prompt, nil)
 	if err != nil {
 		fmt.Printf("[error] failed to start stream: %v\n\n", err)
 		return

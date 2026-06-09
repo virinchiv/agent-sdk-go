@@ -46,7 +46,7 @@ func main() {
 	fmt.Println("user:", prompt)
 	fmt.Println("tip: set ALLOW_PROTECTED_NOTE=1 to authorize the tool")
 
-	eventCh, err := a.Stream(context.Background(), prompt, "")
+	eventCh, err := a.Stream(context.Background(), prompt, nil)
 	if err != nil {
 		log.Printf("stream failed: %v", err)
 		return

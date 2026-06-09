@@ -125,7 +125,12 @@ func main() {
 			break
 		}
 
-		eventCh, err := a.Stream(context.Background(), line, convID)
+		opts := &agent.AgentRunOptions{
+			ConversationOptions: &agent.ConversationOptions{
+				ID: convID,
+			},
+		}
+		eventCh, err := a.Stream(context.Background(), line, opts)
 		if err != nil {
 			log.Printf("agent error: %v", err)
 			continue

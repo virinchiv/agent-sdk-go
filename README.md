@@ -188,7 +188,7 @@ a, _ := agent.NewAgent(
 )
 defer a.Close()
 
-result, err := a.Run(ctx, "Hello", "")
+result, err := a.Run(ctx, "Hello", nil)
 // result.Content, result.AgentName, result.Model
 ```
 
@@ -205,7 +205,7 @@ a, _ := agent.NewAgent(
 )
 defer a.Close()
 
-result, err := a.Run(ctx, "Hello", "")
+result, err := a.Run(ctx, "Hello", nil)
 ```
 
 [examples/simple_agent](examples/simple_agent)
@@ -297,7 +297,7 @@ a, _ := agent.NewAgent(
 )
 defer a.Close()
 
-eventCh, err := a.Stream(ctx, "What's 17 * 23?", "")
+eventCh, err := a.Stream(ctx, "What's 17 * 23?", nil)
 for ev := range eventCh {
     if ev == nil {
         continue
@@ -363,7 +363,7 @@ a, _ := agent.NewAgent(
 )
 defer a.Close()
 
-result, _ := a.Run(ctx, "What's the weather in Tokyo?", "")
+result, _ := a.Run(ctx, "What's the weather in Tokyo?", nil)
 ```
 
 [examples/agent_with_tools](examples/agent_with_tools)
@@ -694,7 +694,7 @@ mainAgent, _ := agent.NewAgent(
 )
 defer mainAgent.Close()
 
-result, _ := mainAgent.Run(ctx, "What is 144 divided by 12?", "")
+result, _ := mainAgent.Run(ctx, "What is 144 divided by 12?", nil)
 ```
 
 [examples/agent_with_subagents](examples/agent_with_subagents)
@@ -755,7 +755,7 @@ a, _ := agent.NewAgent(
     }),
     // ...
 )
-a.Run(ctx, prompt, "")
+a.Run(ctx, prompt, nil)
 ```
 
 **Stream** — approval and delegation requests are `**CUSTOM`** events (`[AgentEventTypeCustom](pkg/agent/event.go)`). Parse with `[ParseCustomEventApproval](pkg/agent/event.go)` / `[ParseCustomEventDelegation](pkg/agent/event.go)`, then call `[OnApproval](pkg/agent/approval.go)` with the token from the value field (see [examples/durable_agent/agent/main.go](examples/durable_agent/agent/main.go)):
@@ -780,7 +780,7 @@ for ev := range eventCh {
 **RunAsync** — channel-based completion without streaming. Do not set `WithApprovalHandler` for this path (it is replaced for the duration of the run). Receive each pending approval on `approvalCh` and call `req.Respond` (same idea as `WithApprovalHandler`):
 
 ```go
-resultCh, approvalCh, err := a.RunAsync(ctx, prompt, "")
+resultCh, approvalCh, err := a.RunAsync(ctx, prompt, nil)
 if err != nil { /* validation error before goroutine started */ }
 
 go func() {
@@ -825,7 +825,7 @@ a, _ := agent.NewAgent(
     agent.WithTimeout(5 * time.Minute),
     // ...
 )
-result, err := a.Run(context.Background(), "Hello", "")
+result, err := a.Run(context.Background(), "Hello", nil)
 ```
 
 **Notes:**
@@ -933,7 +933,7 @@ a, _ := agent.NewAgent(
     agent.WithLLMClient(...),
     agent.DisableLocalWorker(),
 )
-result, _ := a.Run(ctx, "Hello", "")
+result, _ := a.Run(ctx, "Hello", nil)
 ```
 
 [examples/agent_with_worker](examples/agent_with_worker) · [examples/durable_agent](examples/durable_agent)
@@ -947,7 +947,7 @@ result, _ := a.Run(ctx, "Hello", "")
 
 Pass `agent.WithConversation(conv)` to persist message history for multi-turn context. Use `agent.WithConversationSize(n)` to limit how many messages are fetched for LLM context (default 20).
 
-**Conversation ID:** When the agent is configured with a conversation, pass the same `conversationID` to both `Run(ctx, prompt, conversationID)` and `Stream(ctx, prompt, conversationID)` for the same session—so history is shared across turns.
+**Conversation ID:** When the agent is configured with a conversation, pass an `*agent.AgentRunOptions` with `ConversationOptions.ID` set to the same session ID on every call to `Run`, `RunAsync`, and `Stream`—so history is shared across turns.
 
 Choose implementation by deployment:
 
@@ -973,7 +973,8 @@ a, _ := agent.NewAgent(
     agent.WithConversation(conv),
     agent.WithConversationSize(20), // optional; default 20
 )
-result, _ := a.Run(ctx, "Hello", "session-1")
+opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
+result, _ := a.Run(ctx, "Hello", opts)
 
 // Worker process
 convW, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
@@ -994,7 +995,8 @@ a, _ := agent.NewAgent(
     agent.DisableLocalWorker(),
     agent.WithConversation(convA),
 )
-result, _ := a.Run(ctx, "Hello", "session-1")
+opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
+result, _ := a.Run(ctx, "Hello", opts)
 ```
 
 **Lifecycle:** You own the conversation. Call `Clear` when ending a session or when you no longer need the history. The agent never calls `Clear`.
@@ -1016,9 +1018,9 @@ a, _ := agent.NewAgent(
 )
 defer a.Close()
 
-convID := "session-1"
-a.Run(ctx, "I'm Alice. Remember that.", convID)
-a.Run(ctx, "What's my name?", convID) // agent uses history: "Alice"
+opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
+a.Run(ctx, "I'm Alice. Remember that.", opts)
+a.Run(ctx, "What's my name?", opts) // agent uses history: "Alice"
 ```
 
 [examples/agent_with_conversation](examples/agent_with_conversation)
@@ -1032,7 +1034,7 @@ Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASO
 For a complete server + UI reference, see [examples/agent_with_agui](examples/agent_with_agui) (Go SSE server in `server/main.go`, Next.js + CopilotKit bridge in `ui/app/api/copilotkit/route.ts`).
 
 ```go
-ch, err := a.Stream(ctx, prompt, conversationID)
+ch, err := a.Stream(ctx, prompt, nil) // pass &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: id}} when using conversation
 if err != nil {
     return err
 }
@@ -1173,7 +1175,7 @@ A Temporal connection (`WithTemporalConfig` or `WithTemporalClient`) is **option
 - **WithTemporalClient**: Pre-configured Temporal client. Use for TLS, API key auth, Temporal Cloud. Requires `WithTaskQueue`. Agent does not close the client.
 - **WithTaskQueue**: Task queue name. Required when using `WithTemporalClient`. Ignored when using `WithTemporalConfig`.
 - **WithResponseFormat**: LLM response format. Omit for text-only. Use `&interfaces.ResponseFormat{Type, Name, Schema}` for JSON with schema. See [Response format](#response-format).
-- **WithConversation**: Message history store. Use `inmem` for single process; `redis` for remote workers. Pass same `conversationID` to `Run` and `Stream` for a session. See [Conversation](#conversation-message-history).
+- **WithConversation**: Message history store. Use `inmem` for single process; `redis` for remote workers. Pass the conversation ID via `AgentRunOptions` to `Run`, `RunAsync`, and `Stream` to share history across turns. See [Conversation](#conversation-message-history).
 - **WithConversationSize**: Max messages to fetch for LLM context (default 20). Only applies when `WithConversation` is set.
 - **EnableRemoteWorkers**: Pass `EnableRemoteWorkers()` when using `DisableLocalWorker` with approval or streaming (starts the event worker/workflow path).
 - **WithSubAgents**: Attach specialist agents the main agent can delegate to. Each needs its own task queue and worker. See [Sub-agents](#sub-agents).
