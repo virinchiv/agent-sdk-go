@@ -111,7 +111,7 @@ func main() {
 	fmt.Println("All approvals (main agent delegation + sub-agent calculator) are handled here.")
 	fmt.Println()
 
-	eventCh, err := mainAgent.Stream(context.Background(), prompt, "")
+	eventCh, err := mainAgent.Stream(context.Background(), prompt, nil)
 	if err != nil {
 		log.Fatalf("run stream failed: %v", err)
 	}

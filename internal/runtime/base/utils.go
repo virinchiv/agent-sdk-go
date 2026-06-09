@@ -91,3 +91,10 @@ func ApplyLLMSampling(s *types.LLMSampling, req *interfaces.LLMRequest) {
 		req.Reasoning = &r
 	}
 }
+
+func GetConversationID(req *runtime.ExecuteRequest) string {
+	if req != nil && req.RunOptions != nil && req.RunOptions.ConversationOptions != nil {
+		return req.RunOptions.ConversationOptions.ID
+	}
+	return ""
+}

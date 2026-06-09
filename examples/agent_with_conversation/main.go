@@ -68,7 +68,12 @@ func main() {
 
 func runSingleTurn(ctx context.Context, a *agent.Agent, prompt, convID string) {
 	fmt.Println("user:", prompt)
-	result, err := a.Run(ctx, prompt, convID)
+	opts := &agent.AgentRunOptions{
+		ConversationOptions: &agent.ConversationOptions{
+			ID: convID,
+		},
+	}
+	result, err := a.Run(ctx, prompt, opts)
 	if err != nil {
 		log.Printf("run failed: %v", err)
 		return
@@ -91,7 +96,12 @@ func runInteractive(ctx context.Context, a *agent.Agent, convID string) {
 		if prompt == "exit" || prompt == "quit" || prompt == "bye" {
 			break
 		}
-		result, err := a.Run(ctx, prompt, convID)
+		opts := &agent.AgentRunOptions{
+			ConversationOptions: &agent.ConversationOptions{
+				ID: convID,
+			},
+		}
+		result, err := a.Run(ctx, prompt, opts)
 		if err != nil {
 			log.Printf("run failed: %v", err)
 			continue

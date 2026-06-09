@@ -1,6 +1,5 @@
 # CI: lint, test, coverage, build
-# - Push to branches (not main): full checks + coverage (no Codecov upload)
-# - PR to main: same + Codecov upload
+# - PR to main: full checks + Codecov upload
 # - workflow_dispatch: same + Codecov upload (on-demand coverage report)
 # - Push / merge to main: no workflow (already validated on the PR)
 # (Secret scanning: run `make secrets-scan` locally.)
@@ -9,9 +8,6 @@ name: CI
 on:
   pull_request:
     branches: [main]
-  push:
-    branches-ignore:
-      - main
   workflow_dispatch:
 
 jobs:

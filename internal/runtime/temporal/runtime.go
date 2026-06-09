@@ -279,9 +279,11 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 		defer cancel()
 	}
 
+	conversationID := base.GetConversationID(req)
 	runID := uuid.New().String()
-	threadID := req.ConversationID
-	if threadID != "" {
+
+	threadID := conversationID
+	if threadID == "" {
 		threadID = rt.instanceId
 		if threadID == "" {
 			threadID = runID
@@ -302,7 +304,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 		StreamingEnabled: false,
 		EventWorkflowID:  "",
 		LocalChannelName: eventChannelName(workflowID),
-		ConversationID:   req.ConversationID,
+		ConversationID:   conversationID,
 		AgentFingerprint: rt.agentFingerprint,
 		EventTypes:       []events.AgentEventType{},
 		SubAgentDepth:    0,
@@ -438,8 +440,10 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.ExecuteRequest) (<-chan events.AgentEvent, error) {
 	rt.logger.Debug(ctx, "runtime stream run dispatch", slog.String("scope", "runtime"), slog.String("agent", agentNameFromExecuteRequest(req)), slog.Int("inputLen", len(req.UserPrompt)))
 
+	conversationID := base.GetConversationID(req)
 	runID := uuid.New().String()
-	threadID := req.ConversationID
+
+	threadID := conversationID
 	if threadID == "" {
 		threadID = rt.instanceId
 		if threadID == "" {
@@ -484,7 +488,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 		EventTaskQueue:   eventTaskQueue,
 		LocalChannelName: eventChannelName(workflowID),
 		StreamingEnabled: req.StreamingEnabled,
-		ConversationID:   req.ConversationID,
+		ConversationID:   conversationID,
 		AgentFingerprint: rt.agentFingerprint,
 		EventTypes:       streamEventTypes,
 		SubAgentDepth:    0,

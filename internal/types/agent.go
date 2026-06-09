@@ -1,5 +1,22 @@
 package types
 
+// AgentRunOptions holds per-call options passed to [Agent.Run], [Agent.RunAsync], and [Agent.Stream].
+// A nil pointer is valid and means no options (no conversation, default behaviour).
+// Add new per-call knobs here as nested option structs; keep agent-level settings on [agentConfig].
+type AgentRunOptions struct {
+	// ConversationOptions selects a conversation session for this call.
+	// Required when the agent was configured with WithConversation; must be nil otherwise.
+	ConversationOptions *ConversationOptions `json:"conversation_options,omitempty"`
+}
+
+// ConversationOptions identifies a conversation session for one call.
+// ID must be a non-empty, stable string that is the same across all turns of a session
+// (e.g. a user or chat ID). The agent loads history for this ID before the LLM call
+// and persists the new messages after it completes.
+type ConversationOptions struct {
+	ID string
+}
+
 // AgentRunResult is the structured result of a completed run (content, model, metadata).
 type AgentRunResult struct {
 	Content   string         `json:"content"`

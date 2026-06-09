@@ -59,7 +59,7 @@ func main() {
 		prompt = "Hello, what can you do?"
 	}
 	fmt.Println("user:", prompt)
-	result, err := a.Run(context.Background(), prompt, "")
+	result, err := a.Run(context.Background(), prompt, nil)
 	if err != nil {
 		log.Printf("agent run failed: %v", err)
 		return

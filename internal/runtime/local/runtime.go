@@ -116,10 +116,12 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 		}
 	}
 
+	conversationID := base.GetConversationID(req)
 	runID := uuid.New().String()
+
 	loopResult, err := rt.RunAgentLoop(runCtx, AgentLoopInput{
 		UserPrompt:       req.UserPrompt,
-		ConversationID:   req.ConversationID,
+		ConversationID:   conversationID,
 		StreamingEnabled: false,
 		ChannelName:      "",
 		ApprovalHandler:  req.ApprovalHandler,
@@ -150,8 +152,10 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 		slog.String("agent", agentName),
 		slog.Int("inputLen", len(req.UserPrompt)))
 
+	conversationID := base.GetConversationID(req)
 	runID := uuid.New().String()
-	threadID := req.ConversationID
+
+	threadID := conversationID
 	if threadID == "" {
 		threadID = runID
 	}
@@ -201,7 +205,7 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 
 		result, loopErr := rt.RunAgentLoop(runCtx, AgentLoopInput{
 			UserPrompt:       req.UserPrompt,
-			ConversationID:   req.ConversationID,
+			ConversationID:   conversationID,
 			StreamingEnabled: req.StreamingEnabled,
 			ChannelName:      channel,
 			ApprovalHandler:  req.ApprovalHandler,

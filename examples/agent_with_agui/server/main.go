@@ -125,7 +125,7 @@ func streamHandler(a *agent.Agent) http.HandlerFunc {
 		w.Header().Set("Connection", "keep-alive")
 
 		ctx := r.Context()
-		ch, err := a.Stream(ctx, prompt, "")
+		ch, err := a.Stream(ctx, prompt, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

@@ -28,6 +28,12 @@ type Agent struct {
 // ErrAgentAlreadyRunning is returned when Run, RunAsync, or Stream is called while a run is already in progress.
 var ErrAgentAlreadyRunning = errors.New("agent already has an active run")
 
+// AgentRunOptions is the options to use runtime execution
+type AgentRunOptions = types.AgentRunOptions
+
+// ConversationOptions is the options to use for the conversation
+type ConversationOptions = types.ConversationOptions
+
 // AgentRunResult is the structured result of [Agent.Run] and [Agent.RunAsync] ([RunAsyncResult.Result]).
 type AgentRunResult = types.AgentRunResult
 
@@ -142,8 +148,10 @@ func (a *Agent) Close() {
 // Run starts one execution and returns the result. Use [WithApprovalHandler] when tools require approval for Run (handler uses req.Respond); [Stream] uses approval events and [Agent.OnApproval].
 // Use [WithTimeout] or a context with deadline to avoid blocking.
 // When using [WithConversation], pass the conversation ID; agent and worker must use the same ID.
-func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*AgentRunResult, error) {
+func (a *Agent) Run(ctx context.Context, input string, opts *AgentRunOptions) (*AgentRunResult, error) {
 	a.logger.Debug(ctx, "agent run started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
+
+	conversationID := conversationIDFromOpts(opts)
 
 	start := time.Now()
 	ctx, sp := a.tracer.StartSpan(ctx, "agent.run",
@@ -169,7 +177,7 @@ func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*
 		return nil, err
 	}
 
-	req := a.executeRequest(input, conversationID, false)
+	req := a.executeRequest(input, opts, false)
 
 	result, err := a.runtime.Execute(ctx, req)
 	if err != nil {
@@ -191,8 +199,10 @@ func (a *Agent) Run(ctx context.Context, input string, conversationID string) (*
 //
 // WithApprovalHandler is temporarily replaced for the duration of the run; restore happens when the run finishes.
 // If tools do not require approval, approvalCh is still closed immediately with no values.
-func (a *Agent) RunAsync(ctx context.Context, input string, conversationID string) (resultCh <-chan AgentRunAsyncResult, approvalCh <-chan *ApprovalRequest, err error) {
+func (a *Agent) RunAsync(ctx context.Context, input string, opts *AgentRunOptions) (resultCh <-chan AgentRunAsyncResult, approvalCh <-chan *ApprovalRequest, err error) {
 	a.logger.Debug(ctx, "agent run async started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
+
+	conversationID := conversationIDFromOpts(opts)
 
 	if err := a.validateConversationID(conversationID); err != nil {
 		return nil, nil, err
@@ -224,7 +234,7 @@ func (a *Agent) RunAsync(ctx context.Context, input string, conversationID strin
 			defer func() { a.approvalHandler = saved }()
 		}
 
-		resp, runErr := a.Run(ctx, input, conversationID)
+		resp, runErr := a.Run(ctx, input, opts)
 		if runErr != nil {
 			resCh <- AgentRunAsyncResult{Error: runErr}
 			return
@@ -253,8 +263,10 @@ func copyApprovalArgs(src map[string]any) map[string]any {
 // For approvals (tool or delegation), receive [AgentEventTypeCustom] ([AgentCustomEvent]), parse with
 // [ParseCustomEventApproval] / [ParseCustomEventDelegation], then call [Agent.OnApproval] with the token from Value.
 // When using [WithConversation], pass the conversation ID.
-func (a *Agent) Stream(ctx context.Context, input string, conversationID string) (<-chan events.AgentEvent, error) {
+func (a *Agent) Stream(ctx context.Context, input string, opts *AgentRunOptions) (<-chan events.AgentEvent, error) {
 	a.logger.Debug(ctx, "agent run stream started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
+
+	conversationID := conversationIDFromOpts(opts)
 
 	start := time.Now()
 	ctx, sp := a.tracer.StartSpan(ctx, "agent.stream",
@@ -272,7 +284,7 @@ func (a *Agent) Stream(ctx context.Context, input string, conversationID string)
 		return nil, err
 	}
 
-	req := a.executeRequest(input, conversationID, true)
+	req := a.executeRequest(input, opts, true)
 
 	streamCh, err := a.runtime.ExecuteStream(ctx, req)
 	if err != nil {
@@ -286,6 +298,13 @@ func (a *Agent) Stream(ctx context.Context, input string, conversationID string)
 	return streamCh, nil
 }
 
+func conversationIDFromOpts(opts *AgentRunOptions) string {
+	if opts != nil && opts.ConversationOptions != nil {
+		return opts.ConversationOptions.ID
+	}
+	return ""
+}
+
 func (a *Agent) validateConversationID(conversationID string) error {
 	if conversationID != "" && a.conversation == nil {
 		return fmt.Errorf("conversationID %s requires conversation configuration", conversationID)
@@ -297,10 +316,10 @@ func (a *Agent) validateConversationID(conversationID string) error {
 }
 
 // executeRequest builds [runtime.ExecuteRequest] with per-run fields plus AgentSpec and AgentExecution for custom Runtime implementations.
-func (a *Agent) executeRequest(userPrompt, conversationID string, streaming bool) *runtime.ExecuteRequest {
+func (a *Agent) executeRequest(userPrompt string, opts *AgentRunOptions, streaming bool) *runtime.ExecuteRequest {
 	return &runtime.ExecuteRequest{
 		UserPrompt:       userPrompt,
-		ConversationID:   conversationID,
+		RunOptions:       opts,
 		StreamingEnabled: streaming,
 		SubAgents:        a.buildSubAgentSpecs(),
 		MaxSubAgentDepth: a.maxSubAgentDepth,

@@ -147,18 +147,21 @@ type AgentLimits struct {
 // can read identity (including agent name on AgentSpec.Name), prompts, LLM, tools, and policies
 // for this run. Implementations may ignore fields they do not use.
 type ExecuteRequest struct {
-	UserPrompt       string
-	ConversationID   string
-	StreamingEnabled bool
+	UserPrompt string `json:"user_prompt"`
+	// RunOptions is the per-call options forwarded from pkg/agent (e.g. conversation session). May be nil.
+	// Runtimes must use [base.GetConversationID] to safely extract the conversation ID rather than
+	// accessing the nested fields directly, so the nil-check is centralised.
+	RunOptions       *types.AgentRunOptions `json:"run_options,omitempty"`
+	StreamingEnabled bool                   `json:"streaming_enabled"`
 	// EventTypes filters streamed events; empty means default (implementation-defined, often all types).
-	EventTypes       []events.AgentEventType
-	SubAgents        []*SubAgentSpec
-	MaxSubAgentDepth int
+	EventTypes       []events.AgentEventType `json:"event_types,omitempty"`
+	SubAgents        []*SubAgentSpec         `json:"sub_agents,omitempty"`
+	MaxSubAgentDepth int                     `json:"max_sub_agent_depth"`
 
-	ApprovalHandler types.ApprovalHandler
+	ApprovalHandler types.ApprovalHandler `json:"approval_handler"`
 
 	// AgentSpec is identity and output-format metadata for this run (name, description, system prompt, response format).
-	AgentSpec *AgentSpec
+	AgentSpec *AgentSpec `json:"agent_spec"`
 	// AgentExecution is LLM, tools, conversation, sampling, and policy for this run.
-	AgentExecution *AgentExecution
+	AgentExecution *AgentExecution `json:"agent_execution"`
 }

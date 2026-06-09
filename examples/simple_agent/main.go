@@ -39,7 +39,7 @@ func main() {
 		prompt = "Hi"
 	}
 	fmt.Println("user:", prompt)
-	result, err := a.Run(context.Background(), prompt, "")
+	result, err := a.Run(context.Background(), prompt, nil)
 	if err != nil {
 		log.Printf("agent foreground run failed: %v", err)
 		return

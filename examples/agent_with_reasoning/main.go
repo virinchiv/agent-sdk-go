@@ -66,7 +66,7 @@ func main() {
 	fmt.Println("user:", prompt)
 	fmt.Println("--- stream (REASONING_MESSAGE_CONTENT may appear before assistant text) ---")
 
-	eventCh, err := a.Stream(context.Background(), prompt, "")
+	eventCh, err := a.Stream(context.Background(), prompt, nil)
 	if err != nil {
 		log.Fatalf("Stream: %v", err)
 	}

@@ -51,7 +51,7 @@ func TestAgent_Run_ForwardsRequestAndReturnsResponse(t *testing.T) {
 	})
 
 	a := testAgentWithRuntime(mockRT)
-	resp, err := a.Run(context.Background(), "hello", "")
+	resp, err := a.Run(context.Background(), "hello", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestAgent_Stream_SetsStreamingEnabled(t *testing.T) {
 	})
 
 	a := testAgentWithRuntime(mockRT)
-	ch, err := a.Stream(context.Background(), "prompt", "")
+	ch, err := a.Stream(context.Background(), "prompt", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestAgent_RunAsync_DeliversResult(t *testing.T) {
 	mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).Return(&types.AgentRunResult{Content: "mock", AgentName: "TestAgent", Model: "stub"}, nil)
 
 	a := testAgentWithRuntime(mockRT)
-	resCh, apprCh, err := a.RunAsync(context.Background(), "async", "")
+	resCh, apprCh, err := a.RunAsync(context.Background(), "async", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestAgent_Stream_CustomStreamFn(t *testing.T) {
 	})
 
 	a := testAgentWithRuntime(mockRT)
-	ch, err := a.Stream(context.Background(), "x", "")
+	ch, err := a.Stream(context.Background(), "x", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +201,52 @@ func TestCopyApprovalArgs(t *testing.T) {
 	src["c"] = 99
 	if _, ok := dst["c"]; ok {
 		t.Error("copyApprovalArgs should return a copy, not share the map")
+	}
+}
+
+func TestConversationIDFromOpts(t *testing.T) {
+	if got := conversationIDFromOpts(nil); got != "" {
+		t.Errorf("nil opts: got %q", got)
+	}
+	if got := conversationIDFromOpts(&AgentRunOptions{}); got != "" {
+		t.Errorf("nil ConversationOptions: got %q", got)
+	}
+	opts := &AgentRunOptions{ConversationOptions: &ConversationOptions{ID: "session-1"}}
+	if got := conversationIDFromOpts(opts); got != "session-1" {
+		t.Errorf("got %q, want session-1", got)
+	}
+}
+
+func TestAgent_Run_ForwardsRunOptions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockRT := rtmocks.NewMockRuntime(ctrl)
+
+	opts := &AgentRunOptions{ConversationOptions: &ConversationOptions{ID: "conv-1"}}
+	mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, req *runtime.ExecuteRequest) (*types.AgentRunResult, error) {
+		if req.RunOptions == nil || req.RunOptions.ConversationOptions == nil {
+			t.Fatal("Run must forward RunOptions with ConversationOptions")
+		}
+		if req.RunOptions.ConversationOptions.ID != "conv-1" {
+			t.Errorf("ConversationOptions.ID = %q", req.RunOptions.ConversationOptions.ID)
+		}
+		return &types.AgentRunResult{Content: "ok"}, nil
+	})
+
+	a := testAgentWithRuntime(mockRT)
+	a.conversation = &mockConversation{}
+	_, err := a.Run(context.Background(), "hello", opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgent_Stream_RejectsMissingConversationID(t *testing.T) {
+	a := testAgentWithRuntime(&stubRuntime{})
+	a.conversation = &mockConversation{}
+	_, err := a.Stream(context.Background(), "prompt", nil)
+	if err == nil {
+		t.Fatal("expected error when conversation configured but opts nil")
 	}
 }
 
@@ -349,7 +395,7 @@ func TestAgent_Run_RequiresApprovalHandlerWhenToolsNeedApproval(t *testing.T) {
 		},
 		runtime: mockRT,
 	}
-	_, err := a.Run(context.Background(), "hi", "")
+	_, err := a.Run(context.Background(), "hi", nil)
 	if err == nil || !strings.Contains(err.Error(), "WithApprovalHandler") {
 		t.Fatalf("got %v", err)
 	}

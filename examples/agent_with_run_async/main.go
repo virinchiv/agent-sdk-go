@@ -63,7 +63,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	resultCh, approvalCh, err := a.RunAsync(ctx, prompt, "")
+	resultCh, approvalCh, err := a.RunAsync(ctx, prompt, nil)
 	if err != nil {
 		log.Fatalf("RunAsync: %v", err)
 	}
