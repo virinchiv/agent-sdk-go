@@ -72,7 +72,7 @@ task examples:all
 
 Requires Task, Docker, and LLM credentials — see [examples/README.md](examples/README.md).
 
-**CI runs automatically** on pull requests and on pushes to branches other than `main`. Pushes or merges to `main` do not trigger CI automatically; use **workflow_dispatch** in GitHub Actions when you need an on-demand run. `make check` and CI must pass before merge — fix any failures in your PR.
+**CI runs automatically** on pull requests to `main` (open a PR or push updates to an existing PR to re-run checks). Pushes or merges to `main` do not trigger CI; use **workflow_dispatch** in GitHub Actions for an on-demand run. Run `make check` locally before opening a PR; CI must pass on the PR before merge.
 
 To run only tests (e.g. while iterating):
 
