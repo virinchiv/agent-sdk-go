@@ -947,6 +947,8 @@ result, _ := a.Run(ctx, "Hello", nil)
 
 Pass `agent.WithConversation(conv)` to persist message history for multi-turn context. Use `agent.WithConversationSize(n)` to limit how many messages are fetched for LLM context (default 20).
 
+By default, messages from the current run are saved once when the run finishes. Use `agent.EnableConversationSaveOnIteration()` when external consumers (e.g. a UI polling Redis) need live updates **during** a multi-step run—after each tool round, not only at the end. This adds extra store writes. For Temporal remote workers, set it on **`AgentWorker`** (where `WithConversation` and persistence run); the agent caller process does not need it.
+
 **Conversation ID:** When the agent is configured with a conversation, pass an `*agent.AgentRunOptions` with `ConversationOptions.ID` set to the same session ID on every call to `Run`, `RunAsync`, and `Stream`—so history is shared across turns.
 
 Choose implementation by deployment:
@@ -1177,6 +1179,7 @@ A Temporal connection (`WithTemporalConfig` or `WithTemporalClient`) is **option
 - **WithResponseFormat**: LLM response format. Omit for text-only. Use `&interfaces.ResponseFormat{Type, Name, Schema}` for JSON with schema. See [Response format](#response-format).
 - **WithConversation**: Message history store. Use `inmem` for single process; `redis` for remote workers. Pass the conversation ID via `AgentRunOptions` to `Run`, `RunAsync`, and `Stream` to share history across turns. See [Conversation](#conversation-message-history).
 - **WithConversationSize**: Max messages to fetch for LLM context (default 20). Only applies when `WithConversation` is set.
+- **EnableConversationSaveOnIteration**: Persist conversation messages after each tool round instead of batching at run end. For live visibility (e.g. Redis UI) during long runs. Set on `AgentWorker` for Temporal remote workers.
 - **EnableRemoteWorkers**: Pass `EnableRemoteWorkers()` when using `DisableLocalWorker` with approval or streaming (starts the event worker/workflow path).
 - **WithSubAgents**: Attach specialist agents the main agent can delegate to. Each needs its own task queue and worker. See [Sub-agents](#sub-agents).
 - **WithMaxSubAgentDepth**: Maximum delegation hops from this agent (default 2). See [Sub-agents](#sub-agents).

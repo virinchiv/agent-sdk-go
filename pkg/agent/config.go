@@ -450,8 +450,7 @@ func WithConversationSize(size int) Option {
 // storage (e.g. Redis) between iterations. This degrades performance.
 //
 // For Temporal, set this on [AgentWorker] (worker process) where [WithConversation] is configured;
-// the agent caller process does not need it. It is intentionally omitted from the agent fingerprint
-// so caller and worker may differ (same as the conversation store itself).
+// the agent caller process does not need it.
 func EnableConversationSaveOnIteration() Option {
 	return func(c *agentConfig) { c.conversationSaveOnIteration = true }
 }

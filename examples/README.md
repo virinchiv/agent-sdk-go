@@ -24,7 +24,7 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | Example | What it demonstrates | Infra (Task, from `examples/`) |
 |---------|---------------------|--------------------------------|
 | `simple_agent` | Minimal agent, no tools — system prompt, LLM client, single `Run()`; prints `AgentResponse.Usage` (token counts) when the provider reports them | — |
-| `agent_with_conversation` | In-memory conversation with `WithConversation` — multi-turn context, same `conversationID` for `Run` | — |
+| `agent_with_conversation` | Redis conversation with `WithConversation` — multi-turn context, same `conversationID` for `Run` | `infra:redis:up` (or `infra:deps:up`) |
 | `agent_with_tools/basic` | Built-in tools (echo, calculator, weather, wikipedia, search) with auto-approval | — |
 | `agent_with_tools/approval` | Tools + `WithApprovalHandler` — user approves or rejects each tool run (`Run` only) | — |
 | `agent_with_tools/authorizer` | Custom tool authorization via `interfaces.ToolAuthorizer` — denied calls surface as `tool_result` with `denied` status | — |
@@ -81,9 +81,10 @@ go run ./simple_agent "Hello, what can you do?"
 
 ### Agent with conversation (multi-turn)
 
-Uses in-memory conversation. Run **interactive mode** (no args) for multi-turn in one process—history is shared across turns. With args, runs a single turn (useful for testing).
+Uses Redis (`REDIS_ADDR`, default `localhost:6379`). Start Redis first: `task infra:redis:up`. Run **interactive mode** (no args) for multi-turn in one process—history is shared across turns. With args, runs a single turn (useful for testing).
 
 ```bash
+task infra:redis:up
 # Interactive: type prompts, get responses; history shared. Type 'exit' to end.
 go run ./agent_with_conversation
 
@@ -273,6 +274,8 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 |---------|-------------|
 | `AGENT_RUNTIME` | `local` (default) or `temporal` — selects the execution backend |
 | `TEMPORAL_HOST`, `TEMPORAL_PORT`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASKQUEUE` | Temporal connection (used when `AGENT_RUNTIME=temporal`) |
+| `REDIS_ADDR` | Redis address for `agent_with_conversation` (default: `localhost:6379`) |
+| `CONVERSATION_ID` | Optional session id override for conversation examples |
 | `LLM_PROVIDER` | `openai`, `anthropic`, or `gemini` (see `.env.defaults`) |
 | `LLM_APIKEY` | API key |
 | `LLM_MODEL` | e.g. `gpt-4o`, `claude-3-5-sonnet-20241022` |

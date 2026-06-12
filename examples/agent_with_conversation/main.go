@@ -32,7 +32,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create Redis conversation: %v", err)
 	}
-	defer conv.Close()
+	defer func() { _ = conv.Close() }()
 
 	reg := tools.NewRegistry()
 	reg.Register(echo.New())
