@@ -10,7 +10,7 @@ import (
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
-	"github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
+	"github.com/agenticenv/agent-sdk-go/pkg/conversation/redis"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
@@ -24,8 +24,15 @@ func main() {
 		log.Fatalf("failed to create LLM client: %v", err)
 	}
 
-	// In-memory conversation for multi-turn context (single process only).
-	conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+	// Redis conversation (start with task infra:redis:up or docker compose redis service).
+	conv, err := redis.NewRedisConversation(
+		redis.WithAddr(redisAddrFromEnv()),
+		redis.WithMaxSize(100),
+	)
+	if err != nil {
+		log.Fatalf("failed to create Redis conversation: %v", err)
+	}
+	defer func() { _ = conv.Close() }()
 
 	reg := tools.NewRegistry()
 	reg.Register(echo.New())
@@ -33,13 +40,14 @@ func main() {
 
 	opts := []agent.Option{
 		agent.WithName("agent-with-conversation"),
-		agent.WithDescription("Agent with in-memory conversation and tools for multi-turn context"),
+		agent.WithDescription("Agent with Redis conversation and tools for multi-turn context"),
 		agent.WithSystemPrompt("You are a helpful assistant. Remember the conversation context. Use tools when helpful: echo for repeating, calculator for math."),
 		agent.WithLLMClient(llmClient),
 		agent.WithToolRegistry(reg),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
 		agent.WithConversation(conv),
 		agent.WithConversationSize(20),
+		agent.EnableConversationSaveOnIteration(),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
 	opts = append(opts, config.RuntimeOption(cfg)...)
@@ -64,6 +72,13 @@ func main() {
 	}
 
 	runInteractive(context.Background(), a, convID)
+}
+
+func redisAddrFromEnv() string {
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		return addr
+	}
+	return "localhost:6379"
 }
 
 func runSingleTurn(ctx context.Context, a *agent.Agent, prompt, convID string) {

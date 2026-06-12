@@ -31,6 +31,7 @@ tasks:
     cmds:
       - task infra:temporal:up
       - task infra:lgtm:up
+      - task infra:redis:up
 
   infra:down:
     desc: Stop all infrastructure
@@ -38,6 +39,7 @@ tasks:
     cmds:
       - task infra:temporal:down
       - task infra:lgtm:down
+      - task infra:redis:down
 
   infra:status:
     desc: Show status of example infra
@@ -61,6 +63,7 @@ tasks:
 
         compose_svc temporal
         compose_svc otel-lgtm
+        compose_svc redis
         compose_svc weaviate
         compose_svc pgvector
         if curl -sf "$A2A_URL" >/dev/null 2>&1; then
@@ -109,13 +112,26 @@ tasks:
     cmds:
       - docker compose -f docker/docker-compose.yml down otel-lgtm
 
+  infra:redis:up:
+    desc: Start Redis (conversation memory for remote workers)
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml up -d --wait redis
+
+  infra:redis:down:
+    desc: Stop Redis
+    deps: [prereq:check]
+    cmds:
+      - docker compose -f docker/docker-compose.yml down redis
+
   # ── Shared deps (local + temporal examples) ─────────────────
 
   infra:deps:up:
-    desc: Start shared example deps (LGTM, Weaviate, pgvector, A2A server)
+    desc: Start shared example deps (LGTM, Redis, Weaviate, pgvector, A2A server)
     deps: [prereq:check]
     cmds:
       - task: infra:lgtm:up
+      - task: infra:redis:up
       - task: infra:weaviate:up
       - task: infra:pgvector:up
       - task: infra:a2a:up
@@ -127,6 +143,7 @@ tasks:
       - task: infra:a2a:down
       - task: infra:pgvector:down
       - task: infra:weaviate:down
+      - task: infra:redis:down
       - task: infra:lgtm:down
 
   infra:weaviate:up:

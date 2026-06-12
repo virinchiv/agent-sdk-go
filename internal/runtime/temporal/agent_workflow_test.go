@@ -352,6 +352,9 @@ func TestAgentLLMActivity_ConversationNotConfigured(t *testing.T) {
 	defer ctrl.Finish()
 
 	mockLLM := mocks.NewMockLLMClient(ctrl)
+	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
+	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
+	mockLLM.EXPECT().Generate(gomock.Any(), gomock.Any()).Return(&interfaces.LLMResponse{Content: "ok"}, nil)
 
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
@@ -367,12 +370,14 @@ func TestAgentLLMActivity_ConversationNotConfigured(t *testing.T) {
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMActivity)
-	_, err := actEnv.ExecuteActivity(rt.AgentLLMActivity, AgentLLMInput{
+	val, err := actEnv.ExecuteActivity(rt.AgentLLMActivity, AgentLLMInput{
 		ConversationID: "any",
 		Messages:       []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "x"}},
 	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "conversation is not configured")
+	require.NoError(t, err)
+	var result AgentLLMResult
+	require.NoError(t, val.Get(&result))
+	require.Equal(t, "ok", result.Content)
 }
 
 func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
