@@ -624,6 +624,18 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 		messages = append(messages, toolResults...)
 
+		if rt.conversationMemoryEnabled(input.ConversationID) && rt.AgentExecution.Session.ConversationSaveOnIteration && len(messages) > 0 {
+			if err := workflow.ExecuteActivity(convCtx, rt.AddConversationMessagesActivity, AddConversationMessagesInput{
+				ConversationID:   input.ConversationID,
+				Messages:         messages,
+				AgentFingerprint: input.AgentFingerprint,
+			}).Get(convCtx, nil); err != nil {
+				logger.Warn("workflow: persist conversation failed", "scope", "workflow", "conversationID", input.ConversationID, "messagesCount", len(messages), "error", err)
+			} else {
+				messages = []interfaces.Message{}
+			}
+		}
+
 		// History-driven ContinueAsNew (same iteration boundary as tool results). Skipped when the LLM
 		// returns no tools (final answer path breaks earlier in the loop).
 		info := workflow.GetInfo(ctx)
@@ -644,17 +656,15 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		}
 	}
 
-	// Add all accumulated messages to conversation after execution completes (only when conversationID set)
-	if input.ConversationID != "" {
-		if len(messages) == 0 {
-			logger.Debug("workflow: no conversation messages to persist", "scope", "workflow", "conversationID", input.ConversationID)
-		} else {
-			if err := workflow.ExecuteActivity(convCtx, rt.AddConversationMessagesActivity, AddConversationMessagesInput{
-				ConversationID:   input.ConversationID,
-				Messages:         messages,
-				AgentFingerprint: input.AgentFingerprint,
-			}).Get(convCtx, nil); err != nil {
-				logger.Warn("workflow: persist conversation failed", "scope", "workflow", "conversationID", input.ConversationID, "messagesCount", len(messages), "error", err)
+	// Persist unsaved workflow messages. Flag off: full batch. Flag on: per-iteration saves cleared state; only the final assistant may remain.
+	if rt.conversationMemoryEnabled(input.ConversationID) && len(messages) > 0 {
+		if err := workflow.ExecuteActivity(convCtx, rt.AddConversationMessagesActivity, AddConversationMessagesInput{
+			ConversationID:   input.ConversationID,
+			Messages:         messages,
+			AgentFingerprint: input.AgentFingerprint,
+		}).Get(convCtx, nil); err != nil {
+			logger.Warn("workflow: persist conversation failed", "scope", "workflow", "conversationID", input.ConversationID, "messagesCount", len(messages), "error", err)
+			if !rt.AgentExecution.Session.ConversationSaveOnIteration {
 				return nil, err
 			}
 		}
@@ -665,6 +675,10 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	return &types.AgentRunResult{
 		Content: lastContent, AgentName: agentName, Model: model, Metadata: map[string]any{}, Usage: runUsage,
 	}, nil
+}
+
+func (rt *TemporalRuntime) conversationMemoryEnabled(conversationID string) bool {
+	return conversationID != "" && rt.AgentExecution.Session.Conversation != nil
 }
 
 // newAgentToolCallInput builds activity contexts for one tool-call branch.
@@ -917,7 +931,7 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 	agentName := strings.TrimSpace(input.AgentName)
 
 	messages := input.Messages
-	if input.ConversationID != "" {
+	if rt.conversationMemoryEnabled(input.ConversationID) {
 		convMessages, err := rt.FetchConversationMessages(ctx, actLog, input.ConversationID)
 		if err != nil {
 			return nil, err
@@ -963,7 +977,7 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 	agentName := strings.TrimSpace(input.AgentName)
 
 	messages := input.Messages
-	if input.ConversationID != "" {
+	if rt.conversationMemoryEnabled(input.ConversationID) {
 		convMessages, err := rt.FetchConversationMessages(ctx, actLog, input.ConversationID)
 		if err != nil {
 			return nil, err

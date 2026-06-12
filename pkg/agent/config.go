@@ -185,7 +185,7 @@ type ObservabilityConfig struct {
 //   - AgentWorker only: (none; worker inherits options passed to NewAgentWorker)
 //   - Both: WithName, WithDescription, WithSystemPrompt, WithTemporalConfig, WithTemporalClient,
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
-//     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize,
+//     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize, EnableConversationSaveOnIteration,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
 //     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithRetrievers, WithRetrieverMode, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
 //     WithObservabilityConfig, WithTracer, WithMetrics, WithLogs
@@ -213,8 +213,9 @@ type agentConfig struct {
 	timeout            time.Duration
 	approvalTimeout    time.Duration // max wait per tool approval; must be < timeout when tools require approval
 
-	conversation     interfaces.Conversation
-	conversationSize int // max messages to fetch for LLM context (default 20)
+	conversation                interfaces.Conversation
+	conversationSize            int  // max messages to fetch for LLM context (default 20)
+	conversationSaveOnIteration bool // save the conversation on each iteration, defaults to false
 
 	// responseFormat: when set, LLM requests use it; otherwise use text-only (no JSON schema).
 	responseFormat *interfaces.ResponseFormat
@@ -442,6 +443,17 @@ func WithConversation(conv interfaces.Conversation) Option {
 // WithConversationSize sets the max messages to fetch for LLM context (default 20).
 func WithConversationSize(size int) Option {
 	return func(c *agentConfig) { c.conversationSize = size }
+}
+
+// EnableConversationSaveOnIteration persists conversation messages after each tool round instead of
+// batching the full run at the end. Use when external consumers need live updates from conversation
+// storage (e.g. Redis) between iterations. This degrades performance.
+//
+// For Temporal, set this on [AgentWorker] (worker process) where [WithConversation] is configured;
+// the agent caller process does not need it. It is intentionally omitted from the agent fingerprint
+// so caller and worker may differ (same as the conversation store itself).
+func EnableConversationSaveOnIteration() Option {
+	return func(c *agentConfig) { c.conversationSaveOnIteration = true }
 }
 
 // WithResponseFormat sets the LLM response format (e.g. JSON with schema). Applies to Agent and AgentWorker.
@@ -1085,8 +1097,9 @@ func (c *agentConfig) runtimeAgentExecution() runtime.AgentExecution {
 			Mode:       c.retrieverMode,
 		},
 		Session: runtime.AgentSession{
-			Conversation:     c.conversation,
-			ConversationSize: c.conversationSize,
+			Conversation:                c.conversation,
+			ConversationSize:            c.conversationSize,
+			ConversationSaveOnIteration: c.conversationSaveOnIteration,
 		},
 		Limits: runtime.AgentLimits{
 			MaxIterations:   c.maxIterations,

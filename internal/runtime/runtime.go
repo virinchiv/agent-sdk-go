@@ -130,8 +130,9 @@ type AgentTools struct {
 
 // AgentSession is conversation storage and how many messages to include in LLM context.
 type AgentSession struct {
-	Conversation     interfaces.Conversation
-	ConversationSize int
+	Conversation                interfaces.Conversation
+	ConversationSize            int
+	ConversationSaveOnIteration bool
 }
 
 // AgentLimits caps iteration and wall-clock behavior for this run.

@@ -99,8 +99,9 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		{Role: interfaces.MessageRoleUser, Content: input.UserPrompt},
 	}
 
-	// Prepend conversation history when a conversation ID is provided.
-	if input.ConversationID != "" {
+	// Prepend conversation history when conversation memory is configured for this run.
+	persistedMessageCount := 0
+	if rt.conversationMemoryEnabled(input) {
 		convMsgs, err := rt.FetchConversationMessages(ctx, log, input.ConversationID)
 		if err != nil {
 			log.Warn(ctx, "local: failed to load conversation history, continuing without it",
@@ -109,6 +110,7 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 				slog.Any("error", err))
 		} else {
 			messages = append(convMsgs, messages...)
+			persistedMessageCount = len(convMsgs)
 		}
 	}
 
@@ -221,11 +223,22 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		}
 
 		messages = append(messages, toolResults...)
+
+		if rt.conversationMemoryEnabled(input) && rt.AgentExecution.Session.ConversationSaveOnIteration && len(messages) > persistedMessageCount {
+			if err := persistConversationMessages(ctx, rt, input.ConversationID, messages[persistedMessageCount:]); err != nil {
+				log.Warn(ctx, "local: persist conversation failed",
+					slog.String("scope", "loop"),
+					slog.String("conversationID", input.ConversationID),
+					slog.Any("error", err))
+			} else {
+				persistedMessageCount = len(messages)
+			}
+		}
 	}
 
-	// Persist all accumulated messages to conversation when a conversation ID is set.
-	if input.ConversationID != "" && rt.AgentExecution.Session.Conversation != nil {
-		if err := persistConversationMessages(ctx, rt, input.ConversationID, messages); err != nil {
+	// Persist unsaved messages: full run when ConversationSaveOnIteration is false; final assistant only when true.
+	if rt.conversationMemoryEnabled(input) && len(messages) > persistedMessageCount {
+		if err := persistConversationMessages(ctx, rt, input.ConversationID, messages[persistedMessageCount:]); err != nil {
 			log.Warn(ctx, "local: persist conversation failed",
 				slog.String("scope", "loop"),
 				slog.String("conversationID", input.ConversationID),
@@ -240,6 +253,10 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		slog.Int("contentLen", len(lastContent)))
 
 	return &AgentLoopResult{Content: lastContent, Usage: runUsage}, nil
+}
+
+func (rt *LocalRuntime) conversationMemoryEnabled(input AgentLoopInput) bool {
+	return input.ConversationID != "" && rt.AgentExecution.Session.Conversation != nil
 }
 
 // executeToolsParallel runs all tool calls concurrently and collects results in submission order.
