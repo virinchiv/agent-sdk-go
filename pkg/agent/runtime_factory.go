@@ -14,7 +14,7 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (*temporal.Tempo
 	options := []temporal.Option{
 		temporal.WithLogger(cfg.logger),
 		temporal.WithAgentSpec(cfg.runtimeAgentSpec()),
-		temporal.WithAgentExecution(cfg.runtimeAgentExecution()),
+		temporal.WithAgentConfig(cfg.runtimeAgentConfig()),
 		temporal.WithPolicyFingerprint(toolPolicyFingerprint(cfg.toolApprovalPolicy)),
 		temporal.WithMCPFingerprint(mcpConfigFingerprint(cfg.mcpServers, mcpExtraClientNames(cfg.mcpClients))),
 		temporal.WithA2AFingerprint(a2aConfigFingerprint(cfg.a2aServers, a2aExtraClientNames(cfg.a2aClients))),
@@ -28,6 +28,7 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (*temporal.Tempo
 		// Never allow fingerprint bypass on remote worker runtime.
 		temporal.WithDisableFingerprintCheck(cfg.disableFingerprintCheck && !remoteWorker),
 		temporal.WithRemoteWorker(remoteWorker),
+		temporal.WithToolsResolver(cfg.resolveTools),
 	}
 	if cfg.temporalConfig != nil {
 		options = append(options, temporal.WithTemporalConfig(cfg.temporalConfig))
@@ -37,7 +38,6 @@ func (cfg *agentConfig) buildTemporalRuntime(remoteWorker bool) (*temporal.Tempo
 	if cfg.instanceId != "" {
 		options = append(options, temporal.WithInstanceId(cfg.instanceId))
 	}
-	// Event pipeline runs only on the client runtime; always set so worker runtimes get false explicitly.
 	enableRemote := !remoteWorker && cfg.enableRemoteWorkers
 	options = append(options, temporal.WithEnableRemoteWorkers(enableRemote))
 	return temporal.NewTemporalRuntime(options...)
@@ -48,7 +48,7 @@ func (cfg *agentConfig) buildLocalRuntime() (*local.LocalRuntime, error) {
 		local.WithLogger(cfg.logger),
 		local.WithToolExecutionMode(cfg.agentToolExecutionMode),
 		local.WithAgentSpec(cfg.runtimeAgentSpec()),
-		local.WithAgentExecution(cfg.runtimeAgentExecution()),
+		local.WithAgentConfig(cfg.runtimeAgentConfig()),
 		local.WithTracer(cfg.tracer),
 		local.WithMetrics(cfg.metrics),
 	}

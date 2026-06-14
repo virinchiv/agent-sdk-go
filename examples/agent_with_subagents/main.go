@@ -12,7 +12,6 @@ import (
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 )
 
@@ -46,8 +45,10 @@ func main() {
 	mathQueue := baseQueue + "-math-specialist"
 	mainQueue := baseQueue + "-main-agent"
 
-	mathReg := tools.NewRegistry()
-	mathReg.Register(calculator.New())
+	mathReg := agent.NewToolRegistry()
+	if err := mathReg.Register(calculator.New()); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 
 	mathAgentOpts := []agent.Option{
 		agent.WithName("MathSpecialist"),

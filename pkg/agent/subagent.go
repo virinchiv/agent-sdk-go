@@ -14,6 +14,7 @@ import (
 
 var _ AgentTool = (*subAgentTool)(nil)
 var _ interfaces.Tool = (*subAgentTool)(nil)
+var _ interfaces.ToolKindProvider = (*subAgentTool)(nil)
 
 // Sub-agent tool names must be identifier-like for LLM tool APIs; normalize display names accordingly.
 var subAgentToolNameNonIdent = regexp.MustCompile(`[^a-zA-Z0-9]+`)
@@ -32,9 +33,8 @@ var ErrSubAgentNameInvalid = errors.New("sub-agent name invalid for delegation t
 
 // AgentTool marks a tool that represents sub-agent delegation (child AgentWorkflow), not normal Tool.Execute.
 //
-// AgentWorkflow chooses delegation vs AgentToolExecuteActivity using SubAgentRoutes keyed by tool name, not by
-// asserting AgentTool in workflow code. AgentTool is still used elsewhere (e.g. toolApprovalMetadata walks
-// toolsList and asserts AgentTool to set delegation fields on approval events).
+// The runtime routes tool calls to sub-agents using sub-agent routes keyed by tool name.
+// AgentTool is also used when building approval metadata for delegation tools.
 type AgentTool interface {
 	interfaces.Tool
 	// SubAgent returns the sub-agent this tool delegates to.
@@ -118,3 +118,6 @@ func (t *subAgentTool) Execute(_ context.Context, _ map[string]any) (any, error)
 }
 
 func (t *subAgentTool) SubAgent() *Agent { return t.agent }
+
+// ToolKind implements [interfaces.ToolKindProvider].
+func (t *subAgentTool) ToolKind() string { return "sub-agent" }

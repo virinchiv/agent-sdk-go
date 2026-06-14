@@ -23,6 +23,7 @@ var (
 const defaultA2AToolTimeout = types.DefaultA2ATimeout
 
 var _ interfaces.Tool = (*A2ATool)(nil)
+var _ interfaces.ToolKindProvider = (*A2ATool)(nil)
 
 // NOTE: A2ATools for the same server share one A2AClient. The default pkg/a2a/client is safe
 // for concurrent use; custom A2AClient implementations should document concurrency behaviour.
@@ -74,6 +75,9 @@ func a2aToolDisplayName(serverName, skillID string) string {
 func NewA2ATool(serverName string, spec interfaces.ToolSpec, skillSpec interfaces.A2ASkillSpec, client interfaces.A2AClient) *A2ATool {
 	return &A2ATool{ServerName: serverName, Spec: spec, SkillSpec: skillSpec, Client: client}
 }
+
+// ToolKind implements [interfaces.ToolKindProvider].
+func (t *A2ATool) ToolKind() string { return "a2a" }
 
 // Name implements [interfaces.Tool].
 func (t *A2ATool) Name() string {

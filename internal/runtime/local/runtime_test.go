@@ -76,9 +76,8 @@ func newLocalRT(t *testing.T, client interfaces.LLMClient, tools ...interfaces.T
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "test-agent", SystemPrompt: "you are helpful"}),
-		WithAgentExecution(sdkruntime.AgentExecution{
-			LLM:   sdkruntime.AgentLLM{Client: client},
-			Tools: sdkruntime.AgentTools{Tools: tools},
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM: sdkruntime.AgentLLM{Client: client},
 			Limits: sdkruntime.AgentLimits{
 				MaxIterations: 5,
 				Timeout:       30 * time.Second,
@@ -86,7 +85,12 @@ func newLocalRT(t *testing.T, client interfaces.LLMClient, tools ...interfaces.T
 		}),
 	)
 	require.NoError(t, err)
+	_ = tools // callers pass resolved tools on ExecuteRequest.Tools
 	return rt
+}
+
+func execReq(prompt string, tools ...interfaces.Tool) *sdkruntime.ExecuteRequest {
+	return &sdkruntime.ExecuteRequest{UserPrompt: prompt, Tools: tools}
 }
 
 // collectEvents drains an event channel until it is closed or timeout elapses,
@@ -127,7 +131,7 @@ func eventTypes(evs []events.AgentEvent) []events.AgentEventType {
 func TestNewLocalRuntime_MissingLLMClient(t *testing.T) {
 	_, err := NewLocalRuntime(
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent"}),
-		WithAgentExecution(sdkruntime.AgentExecution{}),
+		WithAgentConfig(sdkruntime.AgentConfig{}),
 	)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm client is required")
@@ -135,7 +139,7 @@ func TestNewLocalRuntime_MissingLLMClient(t *testing.T) {
 
 func TestNewLocalRuntime_DefaultNoopObservability(t *testing.T) {
 	rt, err := NewLocalRuntime(
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM: sdkruntime.AgentLLM{Client: &seqLLMClient{}},
 		}),
 	)
@@ -152,7 +156,7 @@ func TestNewLocalRuntime_WithAllOptions(t *testing.T) {
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "my-agent"}),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM: sdkruntime.AgentLLM{Client: &seqLLMClient{}},
 		}),
 		WithTracer(tracer),
@@ -172,20 +176,16 @@ func TestNewLocalRuntime_EventBusInitialised(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// agentNameFromRequest
+// agentNameFromRuntime
 // ---------------------------------------------------------------------------
 
-func TestAgentNameFromRequest_NilRequest(t *testing.T) {
-	require.Equal(t, "", agentNameFromRequest(nil))
+func TestAgentNameFromRuntime_NilRuntime(t *testing.T) {
+	require.Equal(t, "", agentNameFromRuntime(nil))
 }
 
-func TestAgentNameFromRequest_NilSpec(t *testing.T) {
-	require.Equal(t, "", agentNameFromRequest(&sdkruntime.ExecuteRequest{}))
-}
-
-func TestAgentNameFromRequest_WithName(t *testing.T) {
-	req := &sdkruntime.ExecuteRequest{AgentSpec: &sdkruntime.AgentSpec{Name: "hello"}}
-	require.Equal(t, "hello", agentNameFromRequest(req))
+func TestAgentNameFromRuntime_WithName(t *testing.T) {
+	rt := newLocalRT(t, &seqLLMClient{})
+	require.Equal(t, "test-agent", agentNameFromRuntime(rt))
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +202,6 @@ func TestExecute_SimpleTextResponse(t *testing.T) {
 
 	result, err := rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{
 		UserPrompt: "hi",
-		AgentSpec:  &sdkruntime.AgentSpec{Name: "test-agent"},
 	})
 
 	require.NoError(t, err)
@@ -227,7 +226,7 @@ func TestExecute_AppliesTimeoutWhenNoDeadline(t *testing.T) {
 	blocking := &blockingLLMClient{block: make(chan struct{})}
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM: sdkruntime.AgentLLM{Client: blocking},
 			Limits: sdkruntime.AgentLimits{
 				MaxIterations: 1,
@@ -285,6 +284,7 @@ func TestExecute_WithApprovalHandler(t *testing.T) {
 
 	result, err := rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{
 		UserPrompt:      "run tool",
+		Tools:           []interfaces.Tool{tool},
 		ApprovalHandler: handler,
 	})
 
@@ -305,7 +305,6 @@ func TestExecuteStream_EmitsRunStartedAndFinished(t *testing.T) {
 
 	ch, err := rt.ExecuteStream(context.Background(), &sdkruntime.ExecuteRequest{
 		UserPrompt: "hello",
-		AgentSpec:  &sdkruntime.AgentSpec{Name: "test-agent"},
 	})
 	require.NoError(t, err)
 
@@ -459,6 +458,7 @@ func TestApprove_StreamingEndToEnd(t *testing.T) {
 
 	ch, err := rt.ExecuteStream(context.Background(), &sdkruntime.ExecuteRequest{
 		UserPrompt: "run guarded tool",
+		Tools:      []interfaces.Tool{tool},
 	})
 	require.NoError(t, err)
 
@@ -611,9 +611,7 @@ func TestExecute_ToolCallThenFinalAnswer(t *testing.T) {
 	tool := stubTool{name: "calc", result: "42"}
 	rt := newLocalRT(t, client, tool)
 
-	result, err := rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{
-		UserPrompt: "compute",
-	})
+	result, err := rt.Execute(context.Background(), execReq("compute", tool))
 	require.NoError(t, err)
 	require.Equal(t, "the answer is 42", result.Content)
 }
@@ -637,7 +635,7 @@ func TestExecute_PersistsConversationMessages(t *testing.T) {
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent"}),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM:     sdkruntime.AgentLLM{Client: client},
 			Session: sdkruntime.AgentSession{Conversation: conv, ConversationSize: 20},
 			Limits:  sdkruntime.AgentLimits{MaxIterations: 5, Timeout: 5 * time.Second},

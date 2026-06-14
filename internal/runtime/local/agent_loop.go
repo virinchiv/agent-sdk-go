@@ -23,11 +23,13 @@ const (
 
 // AgentLoopInput holds per-run execution inputs for one local agent run.
 // Mirrors AgentWorkflowInput (Temporal) for in-process execution — same fields, same semantics.
-// Agent-level configuration (ToolExecutionMode, LLM, tools, limits) lives on the runtime itself.
+// Static agent wiring lives on the runtime [base.Runtime.AgentConfig]; resolved tools are per-run on Tools.
 type AgentLoopInput struct {
 	UserPrompt       string
 	ConversationID   string
 	StreamingEnabled bool
+	// Tools is the resolved tool list for this run.
+	Tools []interfaces.Tool
 	// ChannelName is the eventbus channel events are published to during this run.
 	// Sub-agents receive the parent's ChannelName so their events go directly to the parent stream.
 	// Empty = no event fanout.
@@ -77,9 +79,11 @@ func (rt *LocalRuntime) publishEventToChannel(ctx context.Context, channelName s
 func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) (*AgentLoopResult, error) {
 	log := rt.logger
 	agentName := rt.AgentSpec.Name
-	model := rt.AgentExecution.LLM.Client.GetModel()
+	model := rt.AgentConfig.LLM.Client.GetModel()
 
-	maxIter := rt.AgentExecution.Limits.MaxIterations
+	tools := input.Tools
+
+	maxIter := rt.AgentConfig.Limits.MaxIterations
 	if maxIter <= 0 {
 		maxIter = 10
 	}
@@ -116,13 +120,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 
 	// Pre-fetch retriever context for prefetch/hybrid modes.
 	retrieverContext := ""
-	retrieverMode := rt.AgentExecution.Retrievers.Mode
+	retrieverMode := rt.AgentConfig.Retrievers.Mode
 	if (retrieverMode == types.RetrieverModePrefetch || retrieverMode == types.RetrieverModeHybrid) &&
-		len(rt.AgentExecution.Retrievers.Retrievers) > 0 {
+		len(rt.AgentConfig.Retrievers.Retrievers) > 0 {
 		log.Debug(ctx, "local: retriever prefetch started",
 			slog.String("scope", "loop"),
 			slog.String("mode", string(retrieverMode)),
-			slog.Int("retrieverCount", len(rt.AgentExecution.Retrievers.Retrievers)))
+			slog.Int("retrieverCount", len(rt.AgentConfig.Retrievers.Retrievers)))
 		rc, err := rt.ExecuteRetrievers(ctx, log, input.UserPrompt)
 		if err != nil {
 			return nil, fmt.Errorf("retriever prefetch: %w", err)
@@ -147,9 +151,9 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		var llmResult *base.LLMResult
 		var err error
 		if input.StreamingEnabled {
-			llmResult, err = rt.ExecuteLLMStream(ctx, log, agentName, messageID, messages, false, retrieverContext, emit)
+			llmResult, err = rt.ExecuteLLMStream(ctx, log, agentName, messageID, messages, false, retrieverContext, tools, emit)
 		} else {
-			llmResult, err = rt.ExecuteLLM(ctx, log, agentName, messageID, messages, false, retrieverContext, emit)
+			llmResult, err = rt.ExecuteLLM(ctx, log, agentName, messageID, messages, false, retrieverContext, tools, emit)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("llm call (iter %d): %w", iter, err)
@@ -174,9 +178,9 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 				slog.Int("iteration", iter))
 			finalMessageID := uuid.New().String()
 			if input.StreamingEnabled {
-				llmResult, err = rt.ExecuteLLMStream(ctx, log, agentName, finalMessageID, messages, true, retrieverContext, emit)
+				llmResult, err = rt.ExecuteLLMStream(ctx, log, agentName, finalMessageID, messages, true, retrieverContext, tools, emit)
 			} else {
-				llmResult, err = rt.ExecuteLLM(ctx, log, agentName, finalMessageID, messages, true, retrieverContext, emit)
+				llmResult, err = rt.ExecuteLLM(ctx, log, agentName, finalMessageID, messages, true, retrieverContext, tools, emit)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("llm final call (iter %d): %w", iter, err)
@@ -224,7 +228,7 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 
 		messages = append(messages, toolResults...)
 
-		if rt.conversationMemoryEnabled(input) && rt.AgentExecution.Session.ConversationSaveOnIteration && len(messages) > persistedMessageCount {
+		if rt.conversationMemoryEnabled(input) && rt.AgentConfig.Session.ConversationSaveOnIteration && len(messages) > persistedMessageCount {
 			if err := persistConversationMessages(ctx, rt, input.ConversationID, messages[persistedMessageCount:]); err != nil {
 				log.Warn(ctx, "local: persist conversation failed",
 					slog.String("scope", "loop"),
@@ -256,7 +260,7 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 }
 
 func (rt *LocalRuntime) conversationMemoryEnabled(input AgentLoopInput) bool {
-	return input.ConversationID != "" && rt.AgentExecution.Session.Conversation != nil
+	return input.ConversationID != "" && rt.AgentConfig.Session.Conversation != nil
 }
 
 // executeToolsParallel runs all tool calls concurrently and collects results in submission order.
@@ -336,6 +340,7 @@ func (rt *LocalRuntime) executeSingleTool(
 	emit func(events.AgentEvent),
 ) (interfaces.Message, error) {
 	log := rt.logger
+	tools := input.Tools
 
 	emitToolEndThenResult := func(toolCallID, content string) {
 		emit(events.NewAgentToolCallEndEvent(toolCallID))
@@ -354,7 +359,7 @@ func (rt *LocalRuntime) executeSingleTool(
 	}
 
 	// Authorization check.
-	authResult, err := rt.AuthorizeTool(ctx, log, tc.ToolName, tc.Args)
+	authResult, err := rt.AuthorizeTool(ctx, log, tools, tc.ToolName, tc.Args)
 	if err != nil {
 		return interfaces.Message{}, fmt.Errorf("tool authorization error for %q: %w", tc.ToolName, err)
 	}
@@ -483,6 +488,7 @@ func (rt *LocalRuntime) executeSingleTool(
 					SubAgentRoutes:   subAgentRoute.children,
 					SubAgentDepth:    input.SubAgentDepth + 1,
 					MaxSubAgentDepth: input.MaxSubAgentDepth,
+					Tools:            subAgentRoute.tools,
 				})
 				emit(events.NewAgentStepFinishedEvent(stepName))
 				if execErr != nil {
@@ -498,7 +504,7 @@ func (rt *LocalRuntime) executeSingleTool(
 				slog.String("scope", "loop"),
 				slog.String("tool", tc.ToolName),
 				slog.String("toolCallID", tc.ToolCallID))
-			result, execErr := rt.ExecuteTool(ctx, log, tc.ToolName, tc.Args)
+			result, execErr := rt.ExecuteTool(ctx, log, tools, tc.ToolName, tc.Args)
 			if execErr != nil {
 				content = "Tool execution failed: " + execErr.Error()
 			} else {
@@ -524,7 +530,7 @@ func (rt *LocalRuntime) executeSingleTool(
 
 // persistConversationMessages stores all accumulated messages from the run into the conversation store.
 func persistConversationMessages(ctx context.Context, rt *LocalRuntime, conversationID string, messages []interfaces.Message) error {
-	conv := rt.AgentExecution.Session.Conversation
+	conv := rt.AgentConfig.Session.Conversation
 	if conv == nil {
 		return nil
 	}

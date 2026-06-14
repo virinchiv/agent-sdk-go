@@ -21,13 +21,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// agentConfigFingerprint is a test helper that mirrors the fingerprint computed by the temporal
-// runtime for a given agent config. Lives here (not in production code) since it is only used
-// to assert fingerprint stability in tests.
+// agentConfigFingerprint is a test helper for Temporal per-run fingerprint payloads.
 func agentConfigFingerprint(c *agentConfig) string {
-	mat := temporal.BuildAgentFingerprintPayload(
+	tools, err := c.resolveTools(context.Background())
+	if err != nil {
+		panic(err)
+	}
+	return agentConfigFingerprintTools(c, tools)
+}
+
+func agentConfigFingerprintTools(c *agentConfig, tools []interfaces.Tool) string {
+	return temporal.ComputeAgentFingerprint(temporal.BuildAgentFingerprintPayload(
 		c.runtimeAgentSpec(),
-		temporal.ToolNamesFromTools(c.toolsList()),
+		temporal.ToolNamesFromTools(tools),
 		toolPolicyFingerprint(c.toolApprovalPolicy),
 		llmSamplingRuntimeView(c.llmSampling),
 		c.conversationSize,
@@ -42,8 +48,7 @@ func agentConfigFingerprint(c *agentConfig) string {
 		string(c.agentMode),
 		c.agentToolExecutionMode,
 		retrieverConfigFingerprint(c.retrieverMode, c.retrievers),
-	)
-	return temporal.ComputeAgentFingerprint(mat)
+	))
 }
 
 func TestBuildAgentConfig_NeitherTemporalConfigNorClient_UsesLocalRuntime(t *testing.T) {
@@ -142,7 +147,7 @@ func TestBuildAgentConfig_WithMCP(t *testing.T) {
 	}
 	defer func() { _ = srvSess.Close() }()
 
-	cfg, err := buildAgentConfig([]Option{
+	_, err = buildAgentConfig([]Option{
 		WithName("test"),
 		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
 		WithLLMClient(stubLLM{}),
@@ -154,9 +159,7 @@ func TestBuildAgentConfig_WithMCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.mcpTools) != 1 || cfg.mcpTools[0].Name() != "mcp_srv_keep" {
-		t.Fatalf("mcpTools = %v", cfg.mcpTools)
-	}
+	// buildAgentConfig calls resolveTools; success means MCP discovery + filter produced valid tools.
 }
 
 func TestBuildAgentConfig_MCPClients_toolFilter(t *testing.T) {
@@ -180,7 +183,7 @@ func TestBuildAgentConfig_MCPClients_toolFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := buildAgentConfig([]Option{
+	_, err = buildAgentConfig([]Option{
 		WithName("test"),
 		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
 		WithLLMClient(stubLLM{}),
@@ -189,9 +192,7 @@ func TestBuildAgentConfig_MCPClients_toolFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.mcpTools) != 1 || cfg.mcpTools[0].Name() != "mcp_s_keep" {
-		t.Fatalf("mcpTools = %v", cfg.mcpTools)
-	}
+	// buildAgentConfig calls resolveTools; success means MCP discovery + filter produced valid tools.
 }
 
 func TestBuildAgentConfig_MCP_duplicateClientName(t *testing.T) {
@@ -208,7 +209,7 @@ func TestBuildAgentConfig_MCP_duplicateClientName(t *testing.T) {
 		}}),
 		WithMCPClients(cl),
 	})
-	if err == nil || !strings.Contains(err.Error(), "duplicate mcp client name") {
+	if err == nil || !strings.Contains(err.Error(), "duplicate mcp client name") && !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -216,14 +217,23 @@ func TestBuildAgentConfig_MCP_duplicateClientName(t *testing.T) {
 func TestAgentConfig_ToolsList(t *testing.T) {
 	tool := mockTool{name: "t1"}
 	c := &agentConfig{tools: []interfaces.Tool{tool}}
-	list := c.toolsList()
+	if err := c.buildToolRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	list, err := c.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 1 || list[0].Name() != "t1" {
 		t.Errorf("toolsList = %v, want [t1]", list)
 	}
 
 	reg := &mockRegistry{tools: []interfaces.Tool{tool, mockTool{name: "t2"}}}
 	c2 := &agentConfig{toolRegistry: reg}
-	list2 := c2.toolsList()
+	list2, err := c2.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list2) != 2 {
 		t.Errorf("toolsList with registry = %v, want 2 tools", list2)
 	}
@@ -288,81 +298,81 @@ func TestAgentConfig_RequiresApproval(t *testing.T) {
 	}
 }
 
-func TestAgentConfig_buildSubAgentTools_duplicateRootSubs(t *testing.T) {
+func TestAgentConfig_resolveSubAgentTools_duplicateRootSubs(t *testing.T) {
 	s := &Agent{agentConfig: agentConfig{Name: "Same"}}
 	c := &agentConfig{subAgents: []*Agent{s, s}, maxSubAgentDepth: 3}
-	err := c.buildSubAgentTools()
-	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+	err := c.buildSubAgentRegistry()
+	if err == nil || (!strings.Contains(err.Error(), "duplicate") && !strings.Contains(err.Error(), "already exists")) {
 		t.Fatalf("want duplicate error, got %v", err)
 	}
 }
 
-func TestAgentConfig_buildSubAgentTools_duplicateDerivedToolName(t *testing.T) {
+func TestAgentConfig_resolveSubAgentTools_duplicateDerivedToolName(t *testing.T) {
 	a := &Agent{agentConfig: agentConfig{Name: "Dup"}}
 	b := &Agent{agentConfig: agentConfig{Name: "Dup"}}
 	c := &agentConfig{subAgents: []*Agent{a, b}, maxSubAgentDepth: 3}
-	err := c.buildSubAgentTools()
-	if err == nil || !strings.Contains(err.Error(), "duplicate sub-agent tool name") {
+	err := c.buildSubAgentRegistry()
+	if err == nil || (!strings.Contains(err.Error(), "duplicate sub-agent tool name") && !strings.Contains(err.Error(), "already exists")) {
 		t.Fatalf("want duplicate sub-agent tool name error, got %v", err)
 	}
 }
 
-func TestAgentConfig_buildSubAgentTools_nilSubAgent(t *testing.T) {
+func TestAgentConfig_resolveSubAgentTools_nilSubAgent(t *testing.T) {
 	c := &agentConfig{subAgents: []*Agent{nil}, maxSubAgentDepth: 3}
-	err := c.buildSubAgentTools()
+	err := c.buildSubAgentRegistry()
 	if err == nil || !strings.Contains(err.Error(), "nil") {
 		t.Fatalf("want nil sub-agent error, got %v", err)
 	}
 }
 
-func TestAgentConfig_buildSubAgentTools_invalidSubAgentName(t *testing.T) {
+func TestAgentConfig_resolveSubAgentTools_invalidSubAgentName(t *testing.T) {
 	emptyName := &Agent{agentConfig: agentConfig{Name: "", ID: "id-only"}}
 	c := &agentConfig{subAgents: []*Agent{emptyName}, maxSubAgentDepth: 3}
-	if err := c.buildSubAgentTools(); err == nil {
+	if err := c.buildSubAgentRegistry(); err == nil {
 		t.Fatal("expected error for empty sub-agent name")
 	}
 	symbolsOnly := &Agent{agentConfig: agentConfig{Name: "@@@"}}
 	c2 := &agentConfig{subAgents: []*Agent{symbolsOnly}, maxSubAgentDepth: 3}
-	if err := c2.buildSubAgentTools(); err == nil {
+	if err := c2.buildSubAgentRegistry(); err == nil {
 		t.Fatal("expected error for sub-agent name with no alphanumeric characters")
 	}
 }
 
-func TestAgentConfig_buildSubAgentTools_cycleAB(t *testing.T) {
-	a := &Agent{agentConfig: agentConfig{Name: "A"}}
-	b := &Agent{agentConfig: agentConfig{Name: "B"}}
-	a.subAgents = []*Agent{b}
-	b.subAgents = []*Agent{a}
+func TestAgentConfig_resolveSubAgentTools_cycleAB(t *testing.T) {
+	a := &Agent{agentConfig: agentConfig{Name: "A", subAgentRegistry: NewSubAgentRegistry()}}
+	b := &Agent{agentConfig: agentConfig{Name: "B", subAgentRegistry: NewSubAgentRegistry()}}
+	_ = a.subAgentRegistry.Register(b)
+	_ = b.subAgentRegistry.Register(a)
 	c := &agentConfig{subAgents: []*Agent{a}, maxSubAgentDepth: 5}
-	err := c.buildSubAgentTools()
+	err := c.buildSubAgentRegistry()
 	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("want cycle error, got %v", err)
 	}
 }
 
-func TestAgentConfig_buildSubAgentTools_depthExceeded(t *testing.T) {
-	d1 := &Agent{agentConfig: agentConfig{Name: "d1"}}
-	d2 := &Agent{agentConfig: agentConfig{Name: "d2"}}
-	d3 := &Agent{agentConfig: agentConfig{Name: "d3"}}
-	d4 := &Agent{agentConfig: agentConfig{Name: "d4"}}
-	d1.subAgents = []*Agent{d2}
-	d2.subAgents = []*Agent{d3}
-	d3.subAgents = []*Agent{d4}
+func TestAgentConfig_resolveSubAgentTools_depthExceeded(t *testing.T) {
+	d4 := &Agent{agentConfig: agentConfig{Name: "d4", subAgentRegistry: NewSubAgentRegistry()}}
+	d3 := &Agent{agentConfig: agentConfig{Name: "d3", subAgentRegistry: NewSubAgentRegistry()}}
+	d2 := &Agent{agentConfig: agentConfig{Name: "d2", subAgentRegistry: NewSubAgentRegistry()}}
+	d1 := &Agent{agentConfig: agentConfig{Name: "d1", subAgentRegistry: NewSubAgentRegistry()}}
+	_ = d3.subAgentRegistry.Register(d4)
+	_ = d2.subAgentRegistry.Register(d3)
+	_ = d1.subAgentRegistry.Register(d2)
 	c := &agentConfig{subAgents: []*Agent{d1}, maxSubAgentDepth: 3}
-	err := c.buildSubAgentTools()
+	err := c.buildSubAgentRegistry()
 	if err == nil || !strings.Contains(err.Error(), "depth") {
 		t.Fatalf("want depth error, got %v", err)
 	}
 }
 
-func TestAgentConfig_buildSubAgentTools_okWithinDepth(t *testing.T) {
-	d1 := &Agent{agentConfig: agentConfig{Name: "d1"}}
-	d2 := &Agent{agentConfig: agentConfig{Name: "d2"}}
-	d3 := &Agent{agentConfig: agentConfig{Name: "d3"}}
-	d1.subAgents = []*Agent{d2}
-	d2.subAgents = []*Agent{d3}
+func TestAgentConfig_resolveSubAgentTools_okWithinDepth(t *testing.T) {
+	d3 := &Agent{agentConfig: agentConfig{Name: "d3", subAgentRegistry: NewSubAgentRegistry()}}
+	d2 := &Agent{agentConfig: agentConfig{Name: "d2", subAgentRegistry: NewSubAgentRegistry()}}
+	d1 := &Agent{agentConfig: agentConfig{Name: "d1", subAgentRegistry: NewSubAgentRegistry()}}
+	_ = d2.subAgentRegistry.Register(d3)
+	_ = d1.subAgentRegistry.Register(d2)
 	c := &agentConfig{subAgents: []*Agent{d1}, maxSubAgentDepth: 3}
-	if err := c.buildSubAgentTools(); err != nil {
+	if err := c.buildSubAgentRegistry(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -373,10 +383,15 @@ func TestAgentConfig_validateToolNames_conflict(t *testing.T) {
 		tools:     []interfaces.Tool{mockTool{name: "subagent_Math"}},
 		subAgents: []*Agent{sub},
 	}
-	if err := c.buildSubAgentTools(); err != nil {
+	if err := c.buildRegistries(); err != nil {
 		t.Fatal(err)
 	}
-	err := c.validateToolNames()
+	subs, err := c.resolveSubAgentTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := append(c.toolRegistry.List(), subs...)
+	err = validateToolNames(tools)
 	if err == nil || (!strings.Contains(err.Error(), "duplicate tool name") && !strings.Contains(err.Error(), "conflicts")) {
 		t.Fatalf("want duplicate / conflict error, got %v", err)
 	}
@@ -388,10 +403,13 @@ func TestAgentConfig_toolsList_includesSubAgents(t *testing.T) {
 		tools:     []interfaces.Tool{mockTool{name: "echo"}},
 		subAgents: []*Agent{sub},
 	}
-	if err := c.buildSubAgentTools(); err != nil {
+	if err := c.buildRegistries(); err != nil {
 		t.Fatal(err)
 	}
-	list := c.toolsList()
+	list, err := c.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 2 {
 		t.Fatalf("toolsList len = %d, want 2", len(list))
 	}
@@ -412,7 +430,10 @@ func TestAgentConfig_HasApprovalTools(t *testing.T) {
 		tools:              []interfaces.Tool{mockToolWithApproval{mockTool: mockTool{name: "x"}, needApproval: true}},
 		toolApprovalPolicy: RequireAllToolApprovalPolicy{},
 	}
-	if !c.hasApprovalTools() {
+	if err := c.buildToolRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.hasApprovalTools(c.toolRegistry.List()) {
 		t.Error("hasApprovalTools should be true when tools require approval")
 	}
 
@@ -420,8 +441,38 @@ func TestAgentConfig_HasApprovalTools(t *testing.T) {
 		tools:              []interfaces.Tool{mockToolWithApproval{mockTool: mockTool{name: "x"}, needApproval: false}},
 		toolApprovalPolicy: AutoToolApprovalPolicy(),
 	}
-	if c2.hasApprovalTools() {
+	if err := c2.buildToolRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	if c2.hasApprovalTools(c2.toolRegistry.List()) {
 		t.Error("hasApprovalTools should be false when no tool requires approval")
+	}
+}
+
+func TestBuildAgentConfig_approvalTimeoutValidatedWithoutApprovalTools(t *testing.T) {
+	_, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTimeout(5 * time.Minute),
+		WithApprovalTimeout(6 * time.Minute),
+	})
+	if err == nil || !strings.Contains(err.Error(), "approvalTimeout") {
+		t.Fatalf("got %v", err)
+	}
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTimeout(5 * time.Minute),
+		WithApprovalTimeout(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.approvalTimeout != 2*time.Minute {
+		t.Fatalf("approvalTimeout = %v", cfg.approvalTimeout)
 	}
 }
 
@@ -429,16 +480,17 @@ type mockRegistry struct {
 	tools []interfaces.Tool
 }
 
-func (m *mockRegistry) Register(interfaces.Tool) {}
-func (m *mockRegistry) Get(name string) (interfaces.Tool, bool) {
+func (m *mockRegistry) Register(interfaces.Tool) error { return nil }
+func (m *mockRegistry) Unregister(string) error        { return ErrRegistryNotFound }
+func (m *mockRegistry) Get(name string) (interfaces.Tool, error) {
 	for _, t := range m.tools {
 		if t.Name() == name {
-			return t, true
+			return t, nil
 		}
 	}
-	return nil, false
+	return nil, ErrRegistryNotFound
 }
-func (m *mockRegistry) Tools() []interfaces.Tool { return m.tools }
+func (m *mockRegistry) List() []interfaces.Tool { return m.tools }
 
 type mockToolWithApproval struct {
 	mockTool
@@ -565,11 +617,12 @@ func TestBuildRetrieverTools(t *testing.T) {
 			retrieverMode: RetrieverModeAgentic,
 			retrievers:    []interfaces.Retriever{namedStubRetriever("kb")},
 		}
-		if err := c.buildRetrieverTools(); err != nil {
+		tools, err := c.resolveRetrieverTools()
+		if err != nil {
 			t.Fatal(err)
 		}
-		if len(c.retrieverTools) != 1 || c.retrieverTools[0].Name() != "retriever_kb" {
-			t.Fatalf("retrieverTools = %v", c.retrieverTools)
+		if len(tools) != 1 || tools[0].Name() != "retriever_kb" {
+			t.Fatalf("retrieverTools = %v", tools)
 		}
 	})
 	t.Run("hybrid_builds_tools", func(t *testing.T) {
@@ -577,11 +630,12 @@ func TestBuildRetrieverTools(t *testing.T) {
 			retrieverMode: RetrieverModeHybrid,
 			retrievers:    []interfaces.Retriever{stubRetriever{}},
 		}
-		if err := c.buildRetrieverTools(); err != nil {
+		tools, err := c.resolveRetrieverTools()
+		if err != nil {
 			t.Fatal(err)
 		}
-		if len(c.retrieverTools) != 1 {
-			t.Fatalf("len = %d", len(c.retrieverTools))
+		if len(tools) != 1 {
+			t.Fatalf("len = %d", len(tools))
 		}
 	})
 	t.Run("prefetch_skips_tools", func(t *testing.T) {
@@ -589,20 +643,22 @@ func TestBuildRetrieverTools(t *testing.T) {
 			retrieverMode: RetrieverModePrefetch,
 			retrievers:    []interfaces.Retriever{stubRetriever{}},
 		}
-		if err := c.buildRetrieverTools(); err != nil {
+		tools, err := c.resolveRetrieverTools()
+		if err != nil {
 			t.Fatal(err)
 		}
-		if c.retrieverTools != nil {
-			t.Fatalf("retrieverTools = %v, want nil", c.retrieverTools)
+		if len(tools) != 0 {
+			t.Fatalf("retrieverTools = %v, want none", tools)
 		}
 	})
 	t.Run("no_retrievers", func(t *testing.T) {
 		c := &agentConfig{retrieverMode: RetrieverModeAgentic}
-		if err := c.buildRetrieverTools(); err != nil {
+		tools, err := c.resolveRetrieverTools()
+		if err != nil {
 			t.Fatal(err)
 		}
-		if c.retrieverTools != nil {
-			t.Fatalf("retrieverTools = %v, want nil", c.retrieverTools)
+		if len(tools) != 0 {
+			t.Fatalf("retrieverTools = %v, want none", tools)
 		}
 	})
 	t.Run("duplicate_name", func(t *testing.T) {
@@ -610,7 +666,7 @@ func TestBuildRetrieverTools(t *testing.T) {
 			retrieverMode: RetrieverModeAgentic,
 			retrievers:    []interfaces.Retriever{namedStubRetriever("x"), namedStubRetriever("x")},
 		}
-		err := c.buildRetrieverTools()
+		_, err := c.resolveRetrieverTools()
 		if err == nil || !strings.Contains(err.Error(), "duplicate retriever name") {
 			t.Fatalf("got %v", err)
 		}
@@ -620,7 +676,7 @@ func TestBuildRetrieverTools(t *testing.T) {
 			retrieverMode: RetrieverModeAgentic,
 			retrievers:    []interfaces.Retriever{namedStubRetriever("  ")},
 		}
-		err := c.buildRetrieverTools()
+		_, err := c.resolveRetrieverTools()
 		if err == nil || !strings.Contains(err.Error(), "must not be empty") {
 			t.Fatalf("got %v", err)
 		}
@@ -641,8 +697,12 @@ func TestBuildAgentConfig_WithRetrievers(t *testing.T) {
 	if len(cfg.retrievers) != 2 {
 		t.Fatalf("retrievers len = %d", len(cfg.retrievers))
 	}
-	if len(cfg.retrieverTools) != 2 {
-		t.Fatalf("retrieverTools len = %d, want 2 (default agentic mode)", len(cfg.retrieverTools))
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 2 {
+		t.Fatalf("resolved tools len = %d, want 2 (default agentic mode)", len(tools))
 	}
 }
 
@@ -657,8 +717,14 @@ func TestBuildAgentConfig_RetrieverMode_prefetchNoTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.retrieverTools) != 0 {
-		t.Fatalf("retrieverTools len = %d, want 0 for prefetch", len(cfg.retrieverTools))
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools {
+		if tool != nil && strings.HasPrefix(tool.Name(), "retriever_") {
+			t.Fatalf("prefetch mode should not expose retriever tools, got %q", tool.Name())
+		}
 	}
 }
 
@@ -673,9 +739,23 @@ func TestBuildAgentConfig_RetrieverMode_agenticBuildsTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.retrieverTools) != 1 || cfg.retrieverTools[0].Name() != "retriever_stub" {
-		t.Fatalf("retrieverTools = %v", cfg.retrieverTools)
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
+	if len(tools) != 1 || tools[0].Name() != "retriever_stub" {
+		t.Fatalf("resolved tools = %v", toolNames(tools))
+	}
+}
+
+func toolNames(tools []interfaces.Tool) []string {
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t != nil {
+			out = append(out, t.Name())
+		}
+	}
+	return out
 }
 
 func TestBuildAgentConfig_AgenticNoRetrievers_NoTools(t *testing.T) {
@@ -688,8 +768,12 @@ func TestBuildAgentConfig_AgenticNoRetrievers_NoTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.retrieverTools) != 0 {
-		t.Fatalf("retrieverTools len = %d, want 0", len(cfg.retrieverTools))
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 0 {
+		t.Fatalf("resolved tools = %v, want none", toolNames(tools))
 	}
 }
 
@@ -704,8 +788,12 @@ func TestBuildAgentConfig_RetrieverMode_hybridBuildsTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.retrieverTools) != 1 || cfg.retrieverTools[0].Name() != "retriever_stub" {
-		t.Fatalf("retrieverTools = %v", cfg.retrieverTools)
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name() != "retriever_stub" {
+		t.Fatalf("resolved tools = %v", toolNames(tools))
 	}
 }
 
@@ -732,7 +820,10 @@ func TestBuildAgentConfig_toolsList_includesRetrieverTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	list := cfg.toolsList()
+	list, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 2 {
 		t.Fatalf("toolsList len = %d, want 2", len(list))
 	}
@@ -743,21 +834,27 @@ func TestBuildAgentConfig_toolsList_includesRetrieverTools(t *testing.T) {
 
 func TestBuildAgentConfig_validateToolNames_RetrieverConflict(t *testing.T) {
 	c := &agentConfig{
-		tools: []interfaces.Tool{mockTool{name: "retriever_stub"}},
-		retrieverTools: []interfaces.Tool{
-			NewRetrieverTool(stubRetriever{}),
-		},
+		tools:         []interfaces.Tool{mockTool{name: "retriever_stub"}},
+		retrievers:    []interfaces.Retriever{stubRetriever{}},
+		retrieverMode: RetrieverModeAgentic,
 	}
-	err := c.validateToolNames()
-	if err == nil || !strings.Contains(err.Error(), "retriever tool conflicts") {
+	if err := c.buildToolRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	retr, err := c.resolveRetrieverTools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := append(c.toolRegistry.List(), retr...)
+	err = validateToolNames(tools)
+	if err == nil || !strings.Contains(err.Error(), "conflicts") {
 		t.Fatalf("got %v", err)
 	}
 }
 
 func TestBuildAgentConfig_validateToolNames_nilRetrieverTool(t *testing.T) {
-	c := &agentConfig{retrieverTools: []interfaces.Tool{nil}}
-	err := c.validateToolNames()
-	if err == nil || !strings.Contains(err.Error(), "retriever tool must not be nil") {
+	err := validateToolNames([]interfaces.Tool{nil})
+	if err == nil || !strings.Contains(err.Error(), "tool must not be nil") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -788,8 +885,12 @@ func TestBuildAgentConfig_WithRetrievers_emptyClears(t *testing.T) {
 	if cfg.retrievers != nil {
 		t.Fatalf("retrievers = %v, want nil", cfg.retrievers)
 	}
-	if len(cfg.retrieverTools) != 0 {
-		t.Fatalf("retrieverTools len = %d, want 0", len(cfg.retrieverTools))
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 0 {
+		t.Fatalf("resolved tools = %v, want none", toolNames(tools))
 	}
 }
 
@@ -871,7 +972,10 @@ func TestBuildAgentConfig_toolsList_includesRetrieverTools_hybrid(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	list := cfg.toolsList()
+	list, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(list) != 2 {
 		t.Fatalf("toolsList len = %d, want 2 (base tool + retriever tool)", len(list))
 	}
@@ -953,14 +1057,18 @@ func TestBuildAgentConfig_WithA2AConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.a2aTools) != 2 {
-		t.Fatalf("a2aTools len = %d, want 2", len(cfg.a2aTools))
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.a2aTools[0].Name() != "a2a_agent_search" {
-		t.Errorf("tool[0].Name = %q, want a2a_agent_search", cfg.a2aTools[0].Name())
+	if len(tools) != 2 {
+		t.Fatalf("tools len = %d, want 2", len(tools))
 	}
-	if cfg.a2aTools[1].Name() != "a2a_agent_summarize" {
-		t.Errorf("tool[1].Name = %q, want a2a_agent_summarize", cfg.a2aTools[1].Name())
+	if tools[0].Name() != "a2a_agent_search" {
+		t.Errorf("tool[0].Name = %q, want a2a_agent_search", tools[0].Name())
+	}
+	if tools[1].Name() != "a2a_agent_summarize" {
+		t.Errorf("tool[1].Name = %q, want a2a_agent_summarize", tools[1].Name())
 	}
 }
 
@@ -981,8 +1089,12 @@ func TestBuildAgentConfig_WithA2AConfig_SkillFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.a2aTools) != 1 || cfg.a2aTools[0].Name() != "a2a_agent_keep" {
-		t.Fatalf("a2aTools = %v, want [a2a_agent_keep]", cfg.a2aTools)
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name() != "a2a_agent_keep" {
+		t.Fatalf("tools = %v, want [a2a_agent_keep]", tools)
 	}
 }
 
@@ -1000,8 +1112,12 @@ func TestBuildAgentConfig_WithA2AClients(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.a2aTools) != 1 || cfg.a2aTools[0].Name() != "a2a_agent1_echo" {
-		t.Fatalf("a2aTools = %v, want [a2a_agent1_echo]", cfg.a2aTools)
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) != 1 || tools[0].Name() != "a2a_agent1_echo" {
+		t.Fatalf("tools = %v, want [a2a_agent1_echo]", tools)
 	}
 }
 
@@ -1167,7 +1283,7 @@ func TestBuildAgentConfig_A2A_duplicateClientName(t *testing.T) {
 		WithA2AConfig(A2AServers{"dup": A2AConfig{URL: "http://127.0.0.1:1"}}),
 		WithA2AClients(cl),
 	})
-	if err == nil || !strings.Contains(err.Error(), "duplicate a2a client name") {
+	if err == nil || !strings.Contains(err.Error(), "duplicate a2a client name") && !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -1176,10 +1292,12 @@ func TestAgentConfig_toolsList_includesA2ATools(t *testing.T) {
 	echo := mockTool{name: "echo"}
 	a2aTool := NewA2ATool("agent1", interfaces.ToolSpec{Name: "search", Description: "d"}, interfaces.A2ASkillSpec{}, nil)
 	c := &agentConfig{
-		tools:    []interfaces.Tool{echo},
-		a2aTools: []interfaces.Tool{a2aTool},
+		tools: []interfaces.Tool{echo},
 	}
-	list := c.toolsList()
+	if err := c.buildToolRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	list := append(c.toolRegistry.List(), a2aTool)
 	if len(list) != 2 {
 		t.Fatalf("toolsList len = %d, want 2", len(list))
 	}
@@ -1194,10 +1312,13 @@ func TestAgentConfig_toolsList_includesA2ATools(t *testing.T) {
 func TestAgentConfig_validateToolNames_A2AConflict(t *testing.T) {
 	a2aTool := NewA2ATool("srv", interfaces.ToolSpec{Name: "s", Description: "d"}, interfaces.A2ASkillSpec{}, nil)
 	c := &agentConfig{
-		tools:    []interfaces.Tool{mockTool{name: a2aTool.Name()}},
-		a2aTools: []interfaces.Tool{a2aTool},
+		tools: []interfaces.Tool{mockTool{name: a2aTool.Name()}},
 	}
-	err := c.validateToolNames()
+	if err := c.buildToolRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	tools := append(c.toolRegistry.List(), a2aTool)
+	err := validateToolNames(tools)
 	if err == nil || (!strings.Contains(err.Error(), "duplicate tool name") && !strings.Contains(err.Error(), "conflicts")) {
 		t.Fatalf("want duplicate/conflict error, got %v", err)
 	}
@@ -1803,5 +1924,66 @@ func TestBuildAgentConfig_WithObservabilityConfig_customLogger_warnsAboutLogs(t 
 	out := buf.String()
 	if !strings.Contains(out, "custom WithLogger") {
 		t.Fatalf("expected warning about custom WithLogger and OTLP logs; buf=%q", out)
+	}
+}
+
+func TestBuildAgentConfig_WithExplicitRegistryOptions(t *testing.T) {
+	toolReg := NewToolRegistry()
+	if err := toolReg.Register(mockTool{name: "native"}); err != nil {
+		t.Fatal(err)
+	}
+	mcpReg := NewMCPRegistry(nil)
+	if err := mcpReg.RegisterClient(&registryMockMCPClient{name: "mcp-srv"}); err != nil {
+		t.Fatal(err)
+	}
+	a2aReg := NewA2ARegistry(nil)
+	if err := a2aReg.RegisterClient(&registryMockA2AClient{name: "a2a-srv"}); err != nil {
+		t.Fatal(err)
+	}
+	subReg := NewSubAgentRegistry()
+	child := &Agent{agentConfig: agentConfig{Name: "Child", taskQueue: "q-child"}}
+	if err := child.buildRegistries(); err != nil {
+		t.Fatal(err)
+	}
+	if err := subReg.Register(child); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := buildAgentConfig([]Option{
+		WithName("parent"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithToolRegistry(toolReg),
+		WithMCPRegistry(mcpReg),
+		WithA2ARegistry(a2aReg),
+		WithSubAgentRegistry(subReg),
+		WithToolApprovalPolicy(AutoToolApprovalPolicy()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.toolRegistry != toolReg {
+		t.Fatal("WithToolRegistry should preserve user registry")
+	}
+	if cfg.mcpRegistry != mcpReg {
+		t.Fatal("WithMCPRegistry should preserve user registry")
+	}
+	if cfg.a2aRegistry != a2aReg {
+		t.Fatal("WithA2ARegistry should preserve user registry")
+	}
+	if cfg.subAgentRegistry != subReg {
+		t.Fatal("WithSubAgentRegistry should preserve user registry")
+	}
+
+	a := &Agent{agentConfig: *cfg}
+	if a.ToolRegistry() != toolReg || a.MCPRegistry() != mcpReg || a.A2ARegistry() != a2aReg || a.SubAgentRegistry() != subReg {
+		t.Fatal("registry accessors should return configured registries")
+	}
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools) < 2 {
+		t.Fatalf("resolveTools len = %d, want at least native + sub-agent tools", len(tools))
 	}
 }

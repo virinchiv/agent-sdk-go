@@ -1,4 +1,4 @@
-// Package tools provides ToolRegistry implementation and schema helpers for building
+// Package tools provides schema helpers for building tool parameter JSON schemas.
 // JSON Schema parameter definitions in a type-safe way.
 //
 // Example:

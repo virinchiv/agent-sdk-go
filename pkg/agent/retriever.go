@@ -20,6 +20,7 @@ var (
 )
 
 var _ interfaces.Tool = (*RetrieverTool)(nil)
+var _ interfaces.ToolKindProvider = (*RetrieverTool)(nil)
 
 // RetrieverTool implements [interfaces.Tool] for [RetrieverModeAgentic] and [RetrieverModeHybrid].
 type RetrieverTool struct {
@@ -59,6 +60,9 @@ func NewRetrieverTool(retriever interfaces.Retriever) interfaces.Tool {
 	}
 	return &RetrieverTool{RetrieverName: rn, Retriever: retriever}
 }
+
+// ToolKind implements [interfaces.ToolKindProvider].
+func (t *RetrieverTool) ToolKind() string { return "retriever" }
 
 // Name implements [interfaces.Tool].
 func (t *RetrieverTool) Name() string {

@@ -11,7 +11,6 @@ import (
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
 )
@@ -24,10 +23,13 @@ func main() {
 		log.Fatalf("failed to create LLM client: %v", err)
 	}
 
-	reg := tools.NewRegistry()
-	reg.Register(echo.New())
-	reg.Register(calculator.New())
-
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg,
+		echo.New(),
+		calculator.New(),
+	); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 	lineCh := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)

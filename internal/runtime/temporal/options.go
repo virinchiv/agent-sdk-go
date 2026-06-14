@@ -70,10 +70,9 @@ func WithAgentSpec(spec sdkruntime.AgentSpec) Option {
 	return func(rt *TemporalRuntime) { rt.AgentSpec = spec }
 }
 
-// WithAgentExecution sets LLM, tools, session, and limits
-// (same shape as [sdkruntime.ExecuteRequest.AgentExecution]).
-func WithAgentExecution(exec sdkruntime.AgentExecution) Option {
-	return func(rt *TemporalRuntime) { rt.AgentExecution = exec }
+// WithAgentConfig sets static LLM, session, limits, and tool approval policy on the worker runtime.
+func WithAgentConfig(cfg sdkruntime.AgentConfig) Option {
+	return func(rt *TemporalRuntime) { rt.AgentConfig = cfg }
 }
 
 // WithPolicyFingerprint sets the opaque policy digest used with [ComputeAgentFingerprint].
@@ -119,6 +118,11 @@ func WithRetrieverFingerprint(fp string) Option {
 	return func(rt *TemporalRuntime) { rt.retrieverFingerprint = fp }
 }
 
+// WithToolsResolver sets the callback that resolves tools at activity time on the worker runtime.
+func WithToolsResolver(fn ToolsResolver) Option {
+	return func(rt *TemporalRuntime) { rt.resolveToolsFn = fn }
+}
+
 // WithDisableLocalWorker mirrors pkg/agent DisableLocalWorker. When false, the client
 // embeds a worker and the runtime skips DescribeTaskQueue poller checks before starting
 // workflows.
@@ -147,8 +151,7 @@ func WithMetrics(m interfaces.Metrics) Option {
 
 // buildTemporalRuntime applies options onto a fresh [TemporalRuntime], validates required
 // fields, and dials the Temporal client when [WithTemporalConfig] is used. The returned
-// runtime is fully configured but does not yet have an agentFingerprint or eventbus —
-// those are set by [NewTemporalRuntime].
+// runtime is fully configured but does not yet have an eventbus — that is set by [NewTemporalRuntime].
 func buildTemporalRuntime(opts ...Option) (*TemporalRuntime, error) {
 	rt := &TemporalRuntime{logger: logger.NoopLogger()}
 	for _, opt := range opts {
@@ -177,7 +180,7 @@ func buildTemporalRuntime(opts ...Option) (*TemporalRuntime, error) {
 		rt.taskQueue = rt.taskQueue + "-" + rt.instanceId
 	}
 
-	if rt.AgentExecution.LLM.Client == nil {
+	if rt.AgentConfig.LLM.Client == nil {
 		return nil, fmt.Errorf("llm client is required")
 	}
 
@@ -193,15 +196,15 @@ func buildTemporalRuntime(opts ...Option) (*TemporalRuntime, error) {
 		slog.String("agentName", rt.AgentSpec.Name),
 		slog.String("taskQueue", rt.taskQueue),
 		slog.String("instanceId", rt.instanceId),
-		slog.Int("maxIterations", rt.AgentExecution.Limits.MaxIterations),
+		slog.Int("maxIterations", rt.AgentConfig.Limits.MaxIterations),
 		slog.Bool("remoteWorker", rt.remoteWorker),
 		slog.String("agentMode", rt.agentMode),
 		slog.String("toolExecutionMode", string(rt.ToolExecutionMode)),
 		slog.Bool("enableRemoteWorkers", rt.enableRemoteWorkers),
 		slog.Bool("disableFingerprintCheck", rt.disableFingerprintCheck),
-		slog.Duration("timeout", rt.AgentExecution.Limits.Timeout),
-		slog.Duration("approvalTimeout", rt.AgentExecution.Limits.ApprovalTimeout),
-		slog.Bool("hasConversation", rt.AgentExecution.Session.Conversation != nil),
+		slog.Duration("timeout", rt.AgentConfig.Limits.Timeout),
+		slog.Duration("approvalTimeout", rt.AgentConfig.Limits.ApprovalTimeout),
+		slog.Bool("hasConversation", rt.AgentConfig.Session.Conversation != nil),
 		slog.Bool("hasTracer", rt.Tracer != nil),
 		slog.Bool("hasMetrics", rt.Metrics != nil))
 

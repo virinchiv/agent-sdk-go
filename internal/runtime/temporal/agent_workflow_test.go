@@ -22,19 +22,30 @@ import (
 
 func testRuntimeForWorkflow(t *testing.T) *TemporalRuntime {
 	t.Helper()
-	return &TemporalRuntime{
+	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "WorkflowTestAgent"},
-			AgentExecution: sdkruntime.AgentExecution{
+			AgentConfig: sdkruntime.AgentConfig{
 				LLM:     sdkruntime.AgentLLM{Client: stubLLM{}},
 				Limits:  sdkruntime.AgentLimits{MaxIterations: 5},
-				Tools:   sdkruntime.AgentTools{Tools: nil},
 				Session: sdkruntime.AgentSession{},
 			},
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
 		logger: logger.NoopLogger(),
+	}
+	wireTestToolsResolver(rt, nil)
+	return rt
+}
+
+// wireTestToolsResolver connects activity tests with a fixed resolved tool list.
+func wireTestToolsResolver(rt *TemporalRuntime, tools []interfaces.Tool) {
+	if rt == nil {
+		return
+	}
+	rt.resolveToolsFn = func(ctx context.Context) ([]interfaces.Tool, error) {
+		return tools, nil
 	}
 }
 
@@ -80,7 +91,7 @@ func TestAgentWorkflow_StreamingPath_UsesStreamActivity(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	rt := testRuntimeForWorkflow(t)
-	rt.AgentExecution.LLM.Client = streamCapableStubLLM{}
+	rt.AgentConfig.LLM.Client = streamCapableStubLLM{}
 
 	env.RegisterWorkflow(rt.AgentWorkflow)
 	env.OnActivity(rt.AgentLLMStreamActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
@@ -192,7 +203,7 @@ func TestAgentLLMActivity_MockLLM_TextOnly(t *testing.T) {
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "ActTest"},
-			AgentExecution: sdkruntime.AgentExecution{
+			AgentConfig: sdkruntime.AgentConfig{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 			},
 			Tracer:  observability.DefaultNoopTracer,
@@ -200,6 +211,7 @@ func TestAgentLLMActivity_MockLLM_TextOnly(t *testing.T) {
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, nil)
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMActivity)
@@ -242,15 +254,16 @@ func TestAgentLLMActivity_MockLLM_ToolCalls(t *testing.T) {
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "ActTest"},
-			AgentExecution: sdkruntime.AgentExecution{
-				LLM:   sdkruntime.AgentLLM{Client: mockLLM},
-				Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{mockTool}, ApprovalPolicy: policy},
+			AgentConfig: sdkruntime.AgentConfig{
+				LLM:                sdkruntime.AgentLLM{Client: mockLLM},
+				ToolApprovalPolicy: policy,
 			},
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, []interfaces.Tool{mockTool})
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMActivity)
@@ -285,15 +298,15 @@ func TestAgentLLMActivity_MockLLM_UnknownToolError(t *testing.T) {
 
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
-			AgentExecution: sdkruntime.AgentExecution{
-				LLM:   sdkruntime.AgentLLM{Client: mockLLM},
-				Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{}},
+			AgentConfig: sdkruntime.AgentConfig{
+				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 			},
 			Tracer:  observability.DefaultNoopTracer,
 			Metrics: observability.DefaultNoopMetrics,
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, nil)
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMActivity)
@@ -321,7 +334,7 @@ func TestAgentLLMActivity_MockConversationAndLLM(t *testing.T) {
 
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
-			AgentExecution: sdkruntime.AgentExecution{
+			AgentConfig: sdkruntime.AgentConfig{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 				Session: sdkruntime.AgentSession{
 					Conversation:     mockConv,
@@ -333,6 +346,7 @@ func TestAgentLLMActivity_MockConversationAndLLM(t *testing.T) {
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, nil)
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMActivity)
@@ -358,7 +372,7 @@ func TestAgentLLMActivity_ConversationNotConfigured(t *testing.T) {
 
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
-			AgentExecution: sdkruntime.AgentExecution{
+			AgentConfig: sdkruntime.AgentConfig{
 				LLM:     sdkruntime.AgentLLM{Client: mockLLM},
 				Session: sdkruntime.AgentSession{Conversation: nil},
 			},
@@ -367,6 +381,7 @@ func TestAgentLLMActivity_ConversationNotConfigured(t *testing.T) {
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, nil)
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMActivity)
@@ -393,7 +408,7 @@ func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "StreamAct"},
-			AgentExecution: sdkruntime.AgentExecution{
+			AgentConfig: sdkruntime.AgentConfig{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 			},
 			Tracer:  observability.DefaultNoopTracer,
@@ -401,6 +416,7 @@ func TestAgentLLMStreamActivity_MockLLM_FallbackToGenerate(t *testing.T) {
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, nil)
 
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentLLMStreamActivity)
@@ -495,10 +511,10 @@ func makeRetrieverRuntime(t *testing.T, retrievers []interfaces.Retriever, mode 
 	mockLLM := mocks.NewMockLLMClient(gomock.NewController(t))
 	mockLLM.EXPECT().GetModel().Return("test-model").AnyTimes()
 	mockLLM.EXPECT().GetProvider().Return(interfaces.LLMProviderOpenAI).AnyTimes()
-	return &TemporalRuntime{
+	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "RetrieverTest"},
-			AgentExecution: sdkruntime.AgentExecution{
+			AgentConfig: sdkruntime.AgentConfig{
 				LLM: sdkruntime.AgentLLM{Client: mockLLM},
 				Retrievers: sdkruntime.AgentRetrievers{
 					Retrievers: retrievers,
@@ -510,6 +526,8 @@ func makeRetrieverRuntime(t *testing.T, retrievers []interfaces.Retriever, mode 
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, nil)
+	return rt
 }
 
 func TestAgentRetrieverActivity_NoRetrievers(t *testing.T) {
@@ -666,7 +684,7 @@ func TestAgentWorkflow_PrefetchMode_CallsRetrieverActivityFirst(t *testing.T) {
 	rt := &TemporalRuntime{
 		Runtime: base.Runtime{
 			AgentSpec: sdkruntime.AgentSpec{Name: "PrefetchAgent", SystemPrompt: "base prompt"},
-			AgentExecution: sdkruntime.AgentExecution{
+			AgentConfig: sdkruntime.AgentConfig{
 				LLM:    sdkruntime.AgentLLM{Client: stubLLM{}},
 				Limits: sdkruntime.AgentLimits{MaxIterations: 5},
 				Retrievers: sdkruntime.AgentRetrievers{
@@ -679,6 +697,7 @@ func TestAgentWorkflow_PrefetchMode_CallsRetrieverActivityFirst(t *testing.T) {
 		},
 		logger: logger.NoopLogger(),
 	}
+	wireTestToolsResolver(rt, nil)
 
 	env.RegisterWorkflow(rt.AgentWorkflow)
 

@@ -28,9 +28,9 @@ func WithAgentSpec(spec sdkruntime.AgentSpec) Option {
 	}
 }
 
-func WithAgentExecution(execution sdkruntime.AgentExecution) Option {
+func WithAgentConfig(cfg sdkruntime.AgentConfig) Option {
 	return func(r *LocalRuntime) {
-		r.AgentExecution = execution
+		r.AgentConfig = cfg
 	}
 }
 
@@ -58,7 +58,7 @@ func buildLocalRuntime(opts ...Option) (*LocalRuntime, error) {
 		opt(r)
 	}
 
-	if r.AgentExecution.LLM.Client == nil {
+	if r.AgentConfig.LLM.Client == nil {
 		return nil, fmt.Errorf("llm client is required")
 	}
 

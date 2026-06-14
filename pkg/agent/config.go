@@ -16,10 +16,8 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/temporal"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
-	a2aclient "github.com/agenticenv/agent-sdk-go/pkg/a2a/client"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
-	mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
@@ -185,6 +183,7 @@ type ObservabilityConfig struct {
 //   - AgentWorker only: (none; worker inherits options passed to NewAgentWorker)
 //   - Both: WithName, WithDescription, WithSystemPrompt, WithTemporalConfig, WithTemporalClient,
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
+//     WithMCPRegistry, WithA2ARegistry, WithSubAgentRegistry,
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize, EnableConversationSaveOnIteration,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
 //     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithRetrievers, WithRetrieverMode, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
@@ -202,8 +201,11 @@ type agentConfig struct {
 	instanceId         string
 	taskQueue          string
 	LLMClient          interfaces.LLMClient
-	tools              []interfaces.Tool
-	toolRegistry       interfaces.ToolRegistry
+	tools              []interfaces.Tool // staging for [WithTools]; consumed when the agent is created
+	toolRegistry       ToolRegistry
+	mcpRegistry        MCPRegistry
+	a2aRegistry        A2ARegistry
+	subAgentRegistry   SubAgentRegistry
 	toolApprovalPolicy interfaces.AgentToolApprovalPolicy
 	maxIterations      int
 	streamEnabled      bool
@@ -230,26 +232,21 @@ type agentConfig struct {
 	// break-glass: disable caller-vs-worker fingerprint guard at activity entry.
 	disableFingerprintCheck bool
 
-	// Sub-agents: direct children exposed to the LLM; subAgentTools is filled by buildSubAgentTools (graph + name checks), merged in toolsList with base and MCP tools. maxSubAgentDepth caps nesting from this agent (direct children = 1; default 2 when unset or <= 0).
-	subAgents        []*Agent
-	subAgentTools    []interfaces.Tool
+	// Sub-agents: direct children in [subAgentRegistry].
+	subAgents        []*Agent // staging for [WithSubAgents]; consumed when the agent is created
 	maxSubAgentDepth int
 
-	// MCP: optional server configs and/or explicit clients; merged at build into mcpTools (see buildMCPTools).
+	// MCP: [WithMCPConfig] / [WithMCPClients] populate [mcpRegistry]; tools resolved on each run.
 	mcpServers MCPServers
 	mcpClients []interfaces.MCPClient
-	mcpTools   []interfaces.Tool
 
-	// A2A: optional server configs and/or explicit clients; merged at build into a2aTools (see buildA2ATools).
+	// A2A: [WithA2AConfig] / [WithA2AClients] populate [a2aRegistry]; skills resolved on each run.
 	a2aServers A2AServers
 	a2aClients []interfaces.A2AClient
-	a2aTools   []interfaces.Tool
 
 	// Retrievers: optional vector/document backends (e.g. Weaviate) for RAG; validated at build.
-	// retrieverTools is filled by buildRetrieverTools for agentic/hybrid modes (see [RetrieverTool]).
-	retrievers     []interfaces.Retriever
-	retrieverMode  RetrieverMode
-	retrieverTools []interfaces.Tool
+	retrievers    []interfaces.Retriever
+	retrieverMode RetrieverMode
 
 	//A2A Server: optional server config; merged at build into a2aServer (see RunA2A).
 	a2aServerConfig *A2AServerConfig
@@ -349,14 +346,34 @@ func WithToolApprovalPolicy(policy interfaces.AgentToolApprovalPolicy) Option {
 	return func(c *agentConfig) { c.toolApprovalPolicy = policy }
 }
 
-// WithTools registers tools with the agent. Applies to Agent and AgentWorker.
+// WithTools sets tools at agent creation. See [WithToolRegistry] to change tools later.
+// Applies to Agent and AgentWorker.
 func WithTools(tools ...interfaces.Tool) Option {
 	return func(c *agentConfig) { c.tools = tools }
 }
 
-// WithToolRegistry sets a tool registry. Applies to Agent and AgentWorker.
-func WithToolRegistry(reg interfaces.ToolRegistry) Option {
+// WithToolRegistry sets the tool registry. Use Register and Unregister before Run, Stream, or RunAsync.
+// Applies to Agent and AgentWorker.
+func WithToolRegistry(reg ToolRegistry) Option {
 	return func(c *agentConfig) { c.toolRegistry = reg }
+}
+
+// WithMCPRegistry sets the MCP client registry. Use Register, RegisterClient, and Unregister before Run, Stream, or RunAsync.
+// Applies to Agent and AgentWorker.
+func WithMCPRegistry(reg MCPRegistry) Option {
+	return func(c *agentConfig) { c.mcpRegistry = reg }
+}
+
+// WithA2ARegistry sets the A2A client registry. Use Register, RegisterClient, and Unregister before Run, Stream, or RunAsync.
+// Applies to Agent and AgentWorker.
+func WithA2ARegistry(reg A2ARegistry) Option {
+	return func(c *agentConfig) { c.a2aRegistry = reg }
+}
+
+// WithSubAgentRegistry sets the sub-agent registry. Use Register and Unregister before Run, Stream, or RunAsync.
+// Applies to Agent and AgentWorker.
+func WithSubAgentRegistry(reg SubAgentRegistry) Option {
+	return func(c *agentConfig) { c.subAgentRegistry = reg }
 }
 
 // WithMaxIterations sets the max number of LLM rounds. Applies to Agent and AgentWorker.
@@ -386,7 +403,7 @@ func WithLogLevel(level string) Option {
 	return func(c *agentConfig) { c.logLevel = level }
 }
 
-// WithApprovalHandler sets the approval callback for Run. Required when tools need approval.
+// WithApprovalHandler sets the approval callback for Run and RunAsync. Required when tools need approval.
 // The callback receives req with req.Respond set; call req.Respond(Approved|Rejected). Agent only; Stream uses OnApproval on events.
 func WithApprovalHandler(fn types.ApprovalHandler) Option {
 	return func(c *agentConfig) { c.approvalHandler = fn }
@@ -468,9 +485,8 @@ func WithLLMSampling(s *LLMSampling) Option {
 	return func(c *agentConfig) { c.llmSampling = s }
 }
 
-// WithSubAgents registers sub-agents. Each is exposed to the parent LLM as a tool (AgentTool).
-// Delegation runs through the execution runtime (child run), not Tool.Execute.
-// The sub-agent graph is validated at agent build: no cycles, depth <= WithMaxSubAgentDepth (default 2).
+// WithSubAgents sets sub-agents at agent creation. See [WithSubAgentRegistry] to change them later.
+// Applies to Agent and AgentWorker.
 func WithSubAgents(subAgents ...*Agent) Option {
 	return func(c *agentConfig) { c.subAgents = subAgents }
 }
@@ -481,10 +497,8 @@ func WithMaxSubAgentDepth(depth int) Option {
 	return func(c *agentConfig) { c.maxSubAgentDepth = depth }
 }
 
-// WithMCPConfig registers MCP servers by stable key (used in tool names and default client naming).
-// Each [MCPConfig] must set [MCPConfig.Transport] using transport types from [github.com/agenticenv/agent-sdk-go/pkg/mcp];
-// the agent wires a default MCP client internally (no modelcontextprotocol/go-sdk usage in application code).
-// Tools are discovered and merged with [WithMCPClients]. Applies to Agent and AgentWorker.
+// WithMCPConfig registers MCP servers by key. See [WithMCPRegistry] to change clients later.
+// Applies to Agent and AgentWorker.
 func WithMCPConfig(servers MCPServers) Option {
 	return func(c *agentConfig) { c.mcpServers = servers }
 }
@@ -503,10 +517,8 @@ func WithMCPClients(clients ...interfaces.MCPClient) Option {
 	}
 }
 
-// WithA2AConfig registers A2A agent servers by stable key (used in tool names and default client naming).
-// Each [A2AConfig] must set [A2AConfig.URL]; the agent wires a default A2A client internally
-// (no a2aproject/a2a-go/v2 usage in application code).
-// Skills are discovered and merged with [WithA2AClients]. Applies to Agent and AgentWorker.
+// WithA2AConfig registers remote A2A agents by key. See [WithA2ARegistry] to change clients later.
+// Applies to Agent and AgentWorker.
 func WithA2AConfig(servers A2AServers) Option {
 	return func(c *agentConfig) { c.a2aServers = servers }
 }
@@ -716,10 +728,7 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	if c.maxSubAgentDepth <= 0 {
 		c.maxSubAgentDepth = defaultMaxSubAgentDepth
 	}
-	if err := c.buildMCPTools(); err != nil {
-		return nil, err
-	}
-	if err := c.buildA2ATools(); err != nil {
+	if err := c.buildRegistries(); err != nil {
 		return nil, err
 	}
 	if err := validateRetrievers(c.retrievers); err != nil {
@@ -730,15 +739,11 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		return nil, err
 	}
 	c.retrieverMode = mode
-	if err := c.buildRetrieverTools(); err != nil {
+	// Fail fast at NewAgent: merge registries, discover MCP/A2A tools, validate names (same path as each run).
+	if _, err := c.resolveTools(context.Background()); err != nil {
 		return nil, err
 	}
-	if err := c.buildSubAgentTools(); err != nil {
-		return nil, err
-	}
-	if err := c.validateToolNames(); err != nil {
-		return nil, err
-	}
+
 	if c.timeout == 0 {
 		switch c.agentMode {
 		case AgentModeAutonomous:
@@ -748,18 +753,14 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		}
 	}
 
-	// Validate approvalTimeout when any tool requires approval (approvalTimeout must be < timeout)
-	if c.hasApprovalTools() {
-		c.logger.Debug(context.Background(), "tools require approval", slog.String("scope", "agent"), slog.String("name", c.Name))
-		if c.approvalTimeout == 0 {
-			c.approvalTimeout = c.timeout - 30*time.Second
-		}
-		if c.approvalTimeout >= c.timeout {
-			return nil, fmt.Errorf("approvalTimeout (%v) must be less than agent timeout (%v)", c.approvalTimeout, c.timeout)
-		}
-		if c.approvalTimeout > types.MaxApprovalTimeout {
-			return nil, fmt.Errorf("approvalTimeout (%v) exceeds max (%v)", c.approvalTimeout, types.MaxApprovalTimeout)
-		}
+	if c.approvalTimeout == 0 {
+		c.approvalTimeout = c.timeout - 30*time.Second
+	}
+	if c.approvalTimeout >= c.timeout {
+		return nil, fmt.Errorf("approvalTimeout (%v) must be less than agent timeout (%v)", c.approvalTimeout, c.timeout)
+	}
+	if c.approvalTimeout > types.MaxApprovalTimeout {
+		return nil, fmt.Errorf("approvalTimeout (%v) exceeds max (%v)", c.approvalTimeout, types.MaxApprovalTimeout)
 	}
 
 	if c.maxIterations <= 0 {
@@ -849,12 +850,11 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Duration("timeout", c.timeout),
 		slog.Duration("approvalTimeout", c.approvalTimeout),
 		slog.String("logLevel", c.logLevel),
-		slog.Int("toolCount", len(c.toolsList())),
-		slog.Int("subAgentToolCount", len(c.subAgentTools)),
-		slog.Int("mcpToolCount", len(c.mcpTools)),
-		slog.Int("a2aToolCount", len(c.a2aTools)),
+		slog.Int("toolRegistryCount", len(c.toolRegistry.List())),
+		slog.Int("mcpRegistryCount", len(c.mcpRegistry.List())),
+		slog.Int("a2aRegistryCount", len(c.a2aRegistry.List())),
+		slog.Int("subAgentRegistryCount", len(c.subAgentRegistry.List())),
 		slog.Int("retrieverCount", len(c.retrievers)),
-		slog.Int("retrieverToolCount", len(c.retrieverTools)),
 		slog.String("retrieverMode", string(c.retrieverMode)),
 		slog.Bool("hasConversation", c.conversation != nil),
 		slog.Bool("hasObservability", c.observabilityConfig != nil),
@@ -890,6 +890,158 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	return c, nil
 }
 
+// buildRegistries wires registries from agent options during [buildAgentConfig].
+func (c *agentConfig) buildRegistries() error {
+	if err := c.buildToolRegistry(); err != nil {
+		return err
+	}
+	if err := c.buildMCPRegistry(); err != nil {
+		return err
+	}
+	if err := c.buildA2ARegistry(); err != nil {
+		return err
+	}
+	if err := c.buildSubAgentRegistry(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *agentConfig) buildToolRegistry() error {
+	reg := c.toolRegistry
+	if reg == nil {
+		reg = NewToolRegistry()
+	}
+	for _, tool := range c.tools {
+		if err := reg.Register(tool); err != nil {
+			return fmt.Errorf("WithTools: %w", err)
+		}
+	}
+	c.toolRegistry = reg
+	c.tools = nil
+	return nil
+}
+
+func (c *agentConfig) buildMCPRegistry() error {
+	reg := c.mcpRegistry
+	if reg == nil {
+		reg = NewMCPRegistry(c.logger)
+	}
+	if len(c.mcpServers) > 0 {
+		keys := make([]string, 0, len(c.mcpServers))
+		for k := range c.mcpServers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if err := reg.Register(k, c.mcpServers[k]); err != nil {
+				return fmt.Errorf("WithMCPConfig: %w", err)
+			}
+		}
+	}
+	for _, cl := range c.mcpClients {
+		if cl == nil {
+			return fmt.Errorf("WithMCPClients: mcp client must not be nil")
+		}
+		if err := reg.RegisterClient(cl); err != nil {
+			return fmt.Errorf("WithMCPClients: %w", err)
+		}
+	}
+	if err := validateMCPClients(reg.List()); err != nil {
+		return err
+	}
+	c.mcpRegistry = reg
+	return nil
+}
+
+func (c *agentConfig) buildA2ARegistry() error {
+	reg := c.a2aRegistry
+	if reg == nil {
+		reg = NewA2ARegistry(c.logger)
+	}
+	if len(c.a2aServers) > 0 {
+		keys := make([]string, 0, len(c.a2aServers))
+		for k := range c.a2aServers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if err := reg.Register(k, c.a2aServers[k]); err != nil {
+				return fmt.Errorf("WithA2AConfig: %w", err)
+			}
+		}
+	}
+	for _, cl := range c.a2aClients {
+		if cl == nil {
+			return fmt.Errorf("WithA2AClients: a2a client must not be nil")
+		}
+		if err := reg.RegisterClient(cl); err != nil {
+			return fmt.Errorf("WithA2AClients: %w", err)
+		}
+	}
+	if err := validateA2AClients(reg.List()); err != nil {
+		return err
+	}
+	c.a2aRegistry = reg
+	return nil
+}
+
+func (c *agentConfig) buildSubAgentRegistry() error {
+	reg := c.subAgentRegistry
+	if reg == nil {
+		reg = NewSubAgentRegistry()
+	}
+	for _, sa := range c.subAgents {
+		if err := reg.Register(sa); err != nil {
+			return fmt.Errorf("WithSubAgents: %w", err)
+		}
+	}
+	if err := validateSubAgentRegistry(c, reg); err != nil {
+		return err
+	}
+	c.subAgentRegistry = reg
+	c.subAgents = nil
+	return nil
+}
+
+// validateSubAgentRegistry checks roots and nested graph (cycles, max depth) for reg.List().
+func validateSubAgentRegistry(c *agentConfig, reg SubAgentRegistry) error {
+	agents := reg.List()
+	if len(agents) == 0 {
+		return nil
+	}
+	maxDepth := c.maxSubAgentDepth
+	if maxDepth <= 0 {
+		maxDepth = defaultMaxSubAgentDepth
+	}
+	seen := make(map[*Agent]struct{}, len(agents))
+	seenNames := make(map[string]struct{}, len(agents))
+	for _, sa := range agents {
+		if sa == nil {
+			return fmt.Errorf("sub-agent must not be nil")
+		}
+		if _, dup := seen[sa]; dup {
+			return fmt.Errorf("duplicate sub-agent %q in WithSubAgents", sa.Name)
+		}
+		seen[sa] = struct{}{}
+		toolName, err := subAgentToolName(sa.Name)
+		if err != nil {
+			return fmt.Errorf("WithSubAgents: %w", err)
+		}
+		if _, dup := seenNames[toolName]; dup {
+			return fmt.Errorf("duplicate sub-agent tool name %q", toolName)
+		}
+		seenNames[toolName] = struct{}{}
+	}
+	for _, s := range agents {
+		path := map[*Agent]struct{}{s: {}}
+		if err := dfsSubAgentDepth(s, path, 1, maxDepth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // buildAgentRuntime constructs the execution backend from agentConfig.
 // Defaults to the local in-process runtime when no Temporal backend is configured.
 // Extend with additional branches when new [runtime.Runtime] implementations are added.
@@ -900,93 +1052,73 @@ func (cfg *agentConfig) buildAgentRuntime(remoteWorker bool) (runtime.Runtime, e
 	return cfg.buildLocalRuntime()
 }
 
-// toolsList returns WithTools or registry tools, merged MCP tools ([mcpTools]), A2A tools ([a2aTools]),
-// retriever tools ([retrieverTools]), then [subAgentTools] from [buildSubAgentTools].
-func (c *agentConfig) toolsList() []interfaces.Tool {
-	var base []interfaces.Tool
-	if c.toolRegistry != nil {
-		base = c.toolRegistry.Tools()
-	} else {
-		base = c.tools
+// resolveTools builds the merged tool list for one run from registries and resolution.
+func (c *agentConfig) resolveTools(ctx context.Context) ([]interfaces.Tool, error) {
+	tools := c.toolRegistry.List()
+
+	mcpTools, err := c.resolveMCPTools(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if len(c.mcpTools) > 0 {
-		merged := make([]interfaces.Tool, len(base)+len(c.mcpTools))
-		copy(merged, base)
-		copy(merged[len(base):], c.mcpTools)
-		base = merged
+	tools = append(tools, mcpTools...)
+
+	a2aTools, err := c.resolveA2ATools(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if len(c.a2aTools) > 0 {
-		merged := make([]interfaces.Tool, len(base)+len(c.a2aTools))
-		copy(merged, base)
-		copy(merged[len(base):], c.a2aTools)
-		base = merged
+	tools = append(tools, a2aTools...)
+
+	subAgentTools, err := c.resolveSubAgentTools()
+	if err != nil {
+		return nil, err
 	}
-	if len(c.retrieverTools) > 0 {
-		merged := make([]interfaces.Tool, len(base)+len(c.retrieverTools))
-		copy(merged, base)
-		copy(merged[len(base):], c.retrieverTools)
-		base = merged
+	tools = append(tools, subAgentTools...)
+
+	retrieverTools, err := c.resolveRetrieverTools()
+	if err != nil {
+		return nil, err
 	}
-	if len(c.subAgentTools) > 0 {
-		merged := make([]interfaces.Tool, len(base)+len(c.subAgentTools))
-		copy(merged, base)
-		copy(merged[len(base):], c.subAgentTools)
-		base = merged
+	tools = append(tools, retrieverTools...)
+
+	if err := validateToolNames(tools); err != nil {
+		return nil, err
 	}
-	return base
+	if c.subAgentRegistry != nil {
+		if err := validateSubAgentRegistry(c, c.subAgentRegistry); err != nil {
+			return nil, err
+		}
+	}
+	return tools, nil
 }
 
-// buildSubAgentTools sets subAgentTools from [agentConfig.subAgents] using [NewSubAgentTool],
-// and validates roots (non-nil, no duplicate agent pointer, no duplicate derived tool name) and the nested graph (cycles, max depth).
-func (c *agentConfig) buildSubAgentTools() error {
-	if len(c.subAgents) == 0 {
-		c.subAgentTools = nil
-		return nil
+// resolveSubAgentTools returns sub-agent delegation tools from [subAgentRegistry].
+func (c *agentConfig) resolveSubAgentTools() ([]interfaces.Tool, error) {
+	if c.subAgentRegistry == nil {
+		return nil, nil
 	}
-	maxDepth := c.maxSubAgentDepth
-	if maxDepth <= 0 {
-		maxDepth = defaultMaxSubAgentDepth
+	agents := c.subAgentRegistry.List()
+	if len(agents) == 0 {
+		return nil, nil
 	}
-	seen := make(map[*Agent]struct{}, len(c.subAgents))
-	seenNames := make(map[string]struct{}, len(c.subAgents))
-	out := make([]interfaces.Tool, 0, len(c.subAgents))
-	for _, sa := range c.subAgents {
-		if sa == nil {
-			return fmt.Errorf("sub-agent must not be nil")
-		}
-		if _, dup := seen[sa]; dup {
-			return fmt.Errorf("duplicate sub-agent %q in WithSubAgents", sa.Name)
-		}
-		seen[sa] = struct{}{}
-		n, err := subAgentToolName(sa.Name)
-		if err != nil {
-			return fmt.Errorf("WithSubAgents: %w", err)
-		}
-		if _, dup := seenNames[n]; dup {
-			return fmt.Errorf("duplicate sub-agent tool name %q", n)
-		}
-		seenNames[n] = struct{}{}
+	out := make([]interfaces.Tool, 0, len(agents))
+	for _, sa := range agents {
 		if st := NewSubAgentTool(sa); st != nil {
 			out = append(out, st)
 		}
 	}
-	c.subAgentTools = out
-	for _, s := range c.subAgents {
-		path := map[*Agent]struct{}{s: {}}
-		if err := dfsSubAgentDepth(s, path, 1, maxDepth); err != nil {
-			return err
-		}
-	}
-	return nil
+	return out, nil
 }
 
 func dfsSubAgentDepth(a *Agent, path map[*Agent]struct{}, depth, maxDepth int) error {
 	if depth > maxDepth {
 		return fmt.Errorf("sub-agent depth exceeds max (%d): at %q", maxDepth, a.Name)
 	}
-	for _, child := range a.subAgents {
+	if a == nil || a.subAgentRegistry == nil {
+		return nil
+	}
+	for _, child := range a.subAgentRegistry.List() {
 		if child == nil {
-			return fmt.Errorf("sub-agent %q has a nil entry in WithSubAgents", a.Name)
+			return fmt.Errorf("sub-agent %q has a nil entry in sub-agent registry", a.Name)
 		}
 		if _, cycle := path[child]; cycle {
 			return fmt.Errorf("sub-agent cycle detected involving %q and %q", a.Name, child.Name)
@@ -1000,62 +1132,19 @@ func dfsSubAgentDepth(a *Agent, path map[*Agent]struct{}, depth, maxDepth int) e
 	return nil
 }
 
-// validateToolNames ensures tool names are unique across WithTools/registry, MCP tools, A2A tools,
-// retriever tools, and [subAgentTools].
-func (c *agentConfig) validateToolNames() error {
-	var base []interfaces.Tool
-	if c.toolRegistry != nil {
-		base = c.toolRegistry.Tools()
-	} else {
-		base = c.tools
-	}
-	names := make(map[string]struct{})
-	for _, t := range base {
-		n := t.Name()
-		if _, ok := names[n]; ok {
-			return fmt.Errorf("duplicate tool name %q in WithTools or registry", n)
+// validateToolNames ensures tool names are unique across registry, MCP, A2A, retriever, and sub-agent tools.
+func validateToolNames(tools []interfaces.Tool) error {
+	seen := make(map[string]string, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			return fmt.Errorf("tool must not be nil")
 		}
-		names[n] = struct{}{}
-	}
-	for _, t := range c.mcpTools {
-		if t == nil {
-			return fmt.Errorf("mcp tool must not be nil")
+		name := tool.Name()
+		kind := interfaces.KindOf(tool)
+		if prev, ok := seen[name]; ok {
+			return fmt.Errorf("duplicate tool name %q: %s tool conflicts with an existing %s tool", name, kind, prev)
 		}
-		n := t.Name()
-		if _, ok := names[n]; ok {
-			return fmt.Errorf("duplicate tool name %q: MCP tool conflicts with an existing tool", n)
-		}
-		names[n] = struct{}{}
-	}
-	for _, t := range c.a2aTools {
-		if t == nil {
-			return fmt.Errorf("a2a tool must not be nil")
-		}
-		n := t.Name()
-		if _, ok := names[n]; ok {
-			return fmt.Errorf("duplicate tool name %q: A2A tool conflicts with an existing tool", n)
-		}
-		names[n] = struct{}{}
-	}
-	for _, t := range c.retrieverTools {
-		if t == nil {
-			return fmt.Errorf("retriever tool must not be nil")
-		}
-		n := t.Name()
-		if _, ok := names[n]; ok {
-			return fmt.Errorf("duplicate tool name %q: retriever tool conflicts with an existing tool", n)
-		}
-		names[n] = struct{}{}
-	}
-	for _, t := range c.subAgentTools {
-		if t == nil {
-			return fmt.Errorf("sub-agent tool must not be nil")
-		}
-		n := t.Name()
-		if _, ok := names[n]; ok {
-			return fmt.Errorf("sub-agent tool name %q conflicts with an existing tool", n)
-		}
-		names[n] = struct{}{}
+		seen[name] = kind
 	}
 	return nil
 }
@@ -1069,7 +1158,7 @@ func (c *agentConfig) responseFormatForLLM() *interfaces.ResponseFormat {
 	return &interfaces.ResponseFormat{Type: interfaces.ResponseFormatText}
 }
 
-// runtimeAgentSpec matches [runtime.ExecuteRequest.AgentSpec] / [temporal.TemporalRuntimeConfig.AgentSpec].
+// runtimeAgentSpec is static agent identity wired onto the runtime at construction.
 // ResponseFormat uses [agentConfig.responseFormatForLLM] so unset format defaults to text (same as LLM requests).
 func (c *agentConfig) runtimeAgentSpec() runtime.AgentSpec {
 	return runtime.AgentSpec{
@@ -1080,17 +1169,13 @@ func (c *agentConfig) runtimeAgentSpec() runtime.AgentSpec {
 	}
 }
 
-// runtimeAgentExecution matches [runtime.ExecuteRequest.AgentExecution] / [temporal.TemporalRuntimeConfig.AgentExecution].
-func (c *agentConfig) runtimeAgentExecution() runtime.AgentExecution {
-	d := runtime.AgentExecution{
+// runtimeAgentConfig is static wiring copied onto the runtime at construction.
+func (c *agentConfig) runtimeAgentConfig() runtime.AgentConfig {
+	d := runtime.AgentConfig{
 		LLM: runtime.AgentLLM{
 			Client: c.LLMClient,
 		},
-		Tools: runtime.AgentTools{
-			Tools:          c.toolsList(),
-			Registry:       c.toolRegistry,
-			ApprovalPolicy: c.toolApprovalPolicy,
-		},
+		ToolApprovalPolicy: c.toolApprovalPolicy,
 		Retrievers: runtime.AgentRetrievers{
 			Retrievers: c.retrievers,
 			Mode:       c.retrieverMode,
@@ -1230,21 +1315,21 @@ func (c *agentConfig) applySamplingToRequest(req *interfaces.LLMRequest) {
 	}
 }
 
-func (c *agentConfig) requiresApproval(t interfaces.Tool) bool {
+func (c *agentConfig) requiresApproval(tool interfaces.Tool) bool {
 	if c.toolApprovalPolicy == nil {
 		// No policy: honor tool's ApprovalRequired
-		if ar, ok := t.(interfaces.ToolApproval); ok && ar.ApprovalRequired() {
+		if ar, ok := tool.(interfaces.ToolApproval); ok && ar.ApprovalRequired() {
 			return true
 		}
 		return false
 	}
 	// Policy set: policy decides (can override tool default)
-	return c.toolApprovalPolicy.RequiresApproval(t)
+	return c.toolApprovalPolicy.RequiresApproval(tool)
 }
 
-func (c *agentConfig) hasApprovalTools() bool {
-	for _, t := range c.toolsList() {
-		if c.requiresApproval(t) {
+func (c *agentConfig) hasApprovalTools(tools []interfaces.Tool) bool {
+	for _, tool := range tools {
+		if c.requiresApproval(tool) {
 			return true
 		}
 	}
@@ -1258,70 +1343,43 @@ func validateMCPClients(clients []interfaces.MCPClient) error {
 		if cl == nil {
 			return fmt.Errorf("mcp client must not be nil")
 		}
-		n := strings.TrimSpace(cl.Name())
-		if n == "" {
+		name := strings.TrimSpace(cl.Name())
+		if name == "" {
 			return fmt.Errorf("mcp client name must not be empty")
 		}
-		if _, dup := seen[n]; dup {
-			return fmt.Errorf("duplicate mcp client name %q", n)
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("duplicate mcp client name %q", name)
 		}
-		seen[n] = struct{}{}
+		seen[name] = struct{}{}
 	}
 	return nil
 }
 
-// buildMCPTools merges [agentConfig.mcpServers] (default SDK client per key) with [agentConfig.mcpClients],
-// validates names, lists tools from each client (tool allow/block filtering runs inside [mcpclient.Client.ListTools] when configured), and appends [MCPTool] to [agentConfig.mcpTools].
-func (c *agentConfig) buildMCPTools() error {
-	c.mcpTools = []interfaces.Tool{}
-	if len(c.mcpServers) == 0 && len(c.mcpClients) == 0 {
-		return nil
+// resolveMCPTools lists tools from [mcpRegistry] clients.
+func (c *agentConfig) resolveMCPTools(ctx context.Context) ([]interfaces.Tool, error) {
+	if c.mcpRegistry == nil {
+		return nil, nil
+	}
+	clients := c.mcpRegistry.List()
+	if len(clients) == 0 {
+		return nil, nil
 	}
 
-	keys := make([]string, 0, len(c.mcpServers))
-	for k := range c.mcpServers {
-		keys = append(keys, k)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	sort.Strings(keys)
-
-	clients := make([]interfaces.MCPClient, 0, len(keys)+len(c.mcpClients))
-	for _, k := range keys {
-		cfg := c.mcpServers[k]
-		if cfg.Transport == nil {
-			return fmt.Errorf("mcp %q: Transport is required", k)
-		}
-		mcpOpts := []mcpclient.Option{
-			mcpclient.WithLogger(c.logger),
-			mcpclient.WithTimeout(cfg.Timeout),
-			mcpclient.WithRetryAttempts(cfg.RetryAttempts),
-			mcpclient.WithToolFilter(cfg.ToolFilter),
-		}
-		cl, err := mcpclient.NewClient(k, cfg.Transport, mcpOpts...)
-		if err != nil {
-			return fmt.Errorf("mcp %q: new client: %w", k, err)
-		}
-		clients = append(clients, cl)
-	}
-	clients = append(clients, c.mcpClients...)
-
-	if err := validateMCPClients(clients); err != nil {
-		return err
-	}
-
-	ctx := context.Background()
-	var tools []interfaces.Tool
+	tools := make([]interfaces.Tool, 0)
 	for _, cl := range clients {
-		sk := strings.TrimSpace(cl.Name())
+		serverKey := strings.TrimSpace(cl.Name())
 		specs, err := cl.ListTools(ctx)
 		if err != nil {
-			return fmt.Errorf("mcp %q: list tools: %w", sk, err)
+			return nil, fmt.Errorf("mcp %q: list tools: %w", serverKey, err)
 		}
-		for _, sp := range specs {
-			tools = append(tools, NewMCPTool(sk, sp, cl))
+		for _, spec := range specs {
+			tools = append(tools, NewMCPTool(serverKey, spec, cl))
 		}
 	}
-	c.mcpTools = tools
-	return nil
+	return tools, nil
 }
 
 // validateRetrievers checks for nil entries in [WithRetrievers].
@@ -1349,36 +1407,34 @@ func validateRetrieverMode(mode RetrieverMode) (RetrieverMode, error) {
 	}
 }
 
-// buildRetrieverTools registers a [RetrieverTool] per [WithRetrievers] entry when mode is
-// [RetrieverModeAgentic] or [RetrieverModeHybrid], and appends to [agentConfig.retrieverTools].
+// resolveRetrieverTools returns a [RetrieverTool] per [WithRetrievers] entry when mode is
+// [RetrieverModeAgentic] or [RetrieverModeHybrid].
 // [RetrieverModePrefetch] does not expose tools (context is injected before the first LLM call).
-func (c *agentConfig) buildRetrieverTools() error {
-	c.retrieverTools = nil
+func (c *agentConfig) resolveRetrieverTools() ([]interfaces.Tool, error) {
 	if c.retrieverMode != RetrieverModeAgentic && c.retrieverMode != RetrieverModeHybrid {
-		return nil
+		return nil, nil
 	}
 	if len(c.retrievers) == 0 {
-		return nil
+		return nil, nil
 	}
 	seen := make(map[string]struct{}, len(c.retrievers))
 	tools := make([]interfaces.Tool, 0, len(c.retrievers))
-	for _, r := range c.retrievers {
-		n := strings.TrimSpace(r.Name())
-		if n == "" {
-			return fmt.Errorf("retriever name must not be empty")
+	for _, retriever := range c.retrievers {
+		name := strings.TrimSpace(retriever.Name())
+		if name == "" {
+			return nil, fmt.Errorf("retriever name must not be empty")
 		}
-		if _, dup := seen[n]; dup {
-			return fmt.Errorf("duplicate retriever name %q", n)
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("duplicate retriever name %q", name)
 		}
-		seen[n] = struct{}{}
-		tool := NewRetrieverTool(r)
+		seen[name] = struct{}{}
+		tool := NewRetrieverTool(retriever)
 		if tool == nil {
-			return fmt.Errorf("retriever %q: failed to build tool", n)
+			return nil, fmt.Errorf("retriever %q: failed to build tool", name)
 		}
 		tools = append(tools, tool)
 	}
-	c.retrieverTools = tools
-	return nil
+	return tools, nil
 }
 
 // validateA2AClients checks for nil clients, empty names, and duplicate [interfaces.A2AClient.Name] values.
@@ -1388,76 +1444,44 @@ func validateA2AClients(clients []interfaces.A2AClient) error {
 		if cl == nil {
 			return fmt.Errorf("a2a client must not be nil")
 		}
-		n := strings.TrimSpace(cl.Name())
-		if n == "" {
+		name := strings.TrimSpace(cl.Name())
+		if name == "" {
 			return fmt.Errorf("a2a client name must not be empty")
 		}
-		if _, dup := seen[n]; dup {
-			return fmt.Errorf("duplicate a2a client name %q", n)
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("duplicate a2a client name %q", name)
 		}
-		seen[n] = struct{}{}
+		seen[name] = struct{}{}
 	}
 	return nil
 }
 
-// buildA2ATools merges [agentConfig.a2aServers] (default SDK client per key) with [agentConfig.a2aClients],
-// validates names, lists skills from each client (skill allow/block filtering runs inside
-// [a2aclient.Client.ListSkills] when [WithSkillFilter] is configured), and appends [A2ATool] to [agentConfig.a2aTools].
-func (c *agentConfig) buildA2ATools() error {
-	c.a2aTools = []interfaces.Tool{}
-	if len(c.a2aServers) == 0 && len(c.a2aClients) == 0 {
-		return nil
+// resolveA2ATools lists skills from [a2aRegistry] clients.
+func (c *agentConfig) resolveA2ATools(ctx context.Context) ([]interfaces.Tool, error) {
+	if c.a2aRegistry == nil {
+		return nil, nil
+	}
+	clients := c.a2aRegistry.List()
+	if len(clients) == 0 {
+		return nil, nil
 	}
 
-	keys := make([]string, 0, len(c.a2aServers))
-	for k := range c.a2aServers {
-		keys = append(keys, k)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	sort.Strings(keys)
-
-	clients := make([]interfaces.A2AClient, 0, len(keys)+len(c.a2aClients))
-	for _, k := range keys {
-		cfg := c.a2aServers[k]
-		if strings.TrimSpace(cfg.URL) == "" {
-			return fmt.Errorf("a2a %q: URL is required", k)
-		}
-		a2aOpts := []a2aclient.Option{
-			a2aclient.WithLogger(c.logger),
-			a2aclient.WithTimeout(cfg.Timeout),
-			a2aclient.WithToken(cfg.Token),
-			a2aclient.WithHeaders(cfg.Headers),
-			a2aclient.WithSkillFilter(cfg.SkillFilter),
-		}
-		if cfg.SkipTLSVerify {
-			a2aOpts = append(a2aOpts, a2aclient.WithSkipTLSVerify(true))
-		}
-		cl, err := a2aclient.NewClient(k, cfg.URL, a2aOpts...)
-		if err != nil {
-			return fmt.Errorf("a2a %q: new client: %w", k, err)
-		}
-		clients = append(clients, cl)
-	}
-	clients = append(clients, c.a2aClients...)
-
-	if err := validateA2AClients(clients); err != nil {
-		return err
-	}
-
-	ctx := context.Background()
-	var tools []interfaces.Tool
+	tools := make([]interfaces.Tool, 0)
 	for _, cl := range clients {
-		sk := strings.TrimSpace(cl.Name())
+		serverKey := strings.TrimSpace(cl.Name())
 		skills, err := cl.ListSkills(ctx)
 		if err != nil {
-			return fmt.Errorf("a2a %q: list skills: %w", sk, err)
+			return nil, fmt.Errorf("a2a %q: list skills: %w", serverKey, err)
 		}
-		for _, sp := range skills {
-			tools = append(tools, NewA2ATool(sk, interfaces.ToolSpec{
-				Name:        sp.ID,
-				Description: sp.Description,
-			}, sp, cl))
+		for _, skill := range skills {
+			tools = append(tools, NewA2ATool(serverKey, interfaces.ToolSpec{
+				Name:        skill.ID,
+				Description: skill.Description,
+			}, skill, cl))
 		}
 	}
-	c.a2aTools = tools
-	return nil
+	return tools, nil
 }

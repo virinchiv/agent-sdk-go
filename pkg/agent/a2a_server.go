@@ -357,7 +357,10 @@ func (a *Agent) buildSDKAgentCard() *a2a.AgentCard {
 // Examples from the remote agent card. All other tools are mapped generically using the
 // tool's Name, DisplayName, and Description. Tools with an empty Name are skipped.
 func (a *Agent) deriveSDKSkills() []a2a.AgentSkill {
-	tools := a.toolsList()
+	tools, err := a.resolveTools(context.Background())
+	if err != nil {
+		return nil
+	}
 	skills := make([]a2a.AgentSkill, 0, len(tools))
 	for _, t := range tools {
 		if t == nil {

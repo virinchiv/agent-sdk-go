@@ -16,6 +16,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	"github.com/google/uuid"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -43,15 +44,18 @@ const (
 // ErrAgentAlreadyRunning is returned when Execute, ExecuteStream, or RunAsync is called while a run is already in progress.
 var ErrAgentAlreadyRunning = errors.New("agent already has an active run")
 
-// ErrAgentFingerprintMismatch is returned when workflow input fingerprint does not match the worker.
-var ErrAgentFingerprintMismatch = errors.New("temporal: agent fingerprint mismatch (caller vs worker); redeploy worker or align agent config")
+// ErrAgentFingerprintMismatch is returned when the per-run agent fingerprint does not match the worker.
+var ErrAgentFingerprintMismatch = errors.New("temporal: agent fingerprint mismatch (caller vs worker); redeploy worker or align config/registries or retry run")
+
+// ToolsResolver resolves per-run tools from registries at activity entry (worker runtime).
+type ToolsResolver func(ctx context.Context) ([]interfaces.Tool, error)
 
 // TemporalRuntime implements [runtime.WorkerRuntime] and [runtime.EventBusRuntime] using
 // Temporal workflows and activities as the execution backend.
-// It embeds [base.Runtime] for the common agent fields (AgentSpec, AgentExecution, Tracer, Metrics,
+// It embeds [base.Runtime] for the common agent fields (AgentSpec, AgentConfig, Tracer, Metrics,
 // ToolExecutionMode) and holds all Temporal-specific connection and fingerprint state as flat fields.
 type TemporalRuntime struct {
-	base.Runtime // AgentSpec, AgentExecution, Tracer, Metrics, ToolExecutionMode
+	base.Runtime // AgentSpec, AgentConfig, Tracer, Metrics, ToolExecutionMode
 
 	// Temporal connection
 	temporalConfig     *TemporalConfig
@@ -66,7 +70,7 @@ type TemporalRuntime struct {
 
 	logger logger.Logger
 
-	// Fingerprint inputs captured at construction and consumed by computeAgentFingerprintFromRuntime.
+	// Fingerprint inputs captured at construction; per-run digest from [computeAgentFingerprintFromRuntime].
 	policyFingerprint        string
 	mcpFingerprint           string
 	a2aFingerprint           string
@@ -83,8 +87,8 @@ type TemporalRuntime struct {
 	// Break-glass only: keep false in production for rollout/config safety.
 	disableFingerprintCheck bool
 
-	// agentFingerprint is ComputeAgentFingerprint(BuildAgentFingerprintPayload(...)) at NewTemporalRuntime; immutable.
-	agentFingerprint string
+	// resolveTools resolves tools from registries at activity time (worker runtime).
+	resolveToolsFn ToolsResolver
 
 	eventbus              eventbus.EventBus
 	runMu                 sync.Mutex
@@ -118,19 +122,34 @@ func NewTemporalRuntime(opts ...Option) (*TemporalRuntime, error) {
 			slog.String("name", rt.AgentSpec.Name),
 			slog.String("taskQueue", rt.taskQueue))
 	}
-	rt.agentFingerprint = computeAgentFingerprintFromRuntime(rt)
 	rt.eventbus = eventbus.NewInmem(rt.logger)
 	return rt, nil
 }
 
-// verifyAgentFingerprint returns an error when want does not equal the runtime's agent fingerprint
-// (computed at [NewTemporalRuntime]).
-func (rt *TemporalRuntime) verifyAgentFingerprint(want string) error {
-	if rt.disableFingerprintCheck {
+// fetchTools resolves tools from registries at activity time via [resolveToolsFn].
+func (rt *TemporalRuntime) fetchTools(ctx context.Context) ([]interfaces.Tool, error) {
+	if rt.resolveToolsFn == nil {
+		return nil, fmt.Errorf("temporal: tools resolver is not configured")
+	}
+	return rt.resolveToolsFn(ctx)
+}
+
+// verifyAgentFingerprint compares caller vs worker config digest when fingerprint check is enabled.
+// Pass nil tools to fetch via [fetchTools] internally; pass pre-fetched tools when the activity already resolved them.
+func (rt *TemporalRuntime) verifyAgentFingerprint(ctx context.Context, callerFingerprint string, tools []interfaces.Tool) error {
+	if rt.disableFingerprintCheck || callerFingerprint == "" {
 		return nil
 	}
-	if rt.agentFingerprint != want {
-		return fmt.Errorf("%w: worker=%q caller=%q", ErrAgentFingerprintMismatch, rt.agentFingerprint, want)
+	if tools == nil {
+		var err error
+		tools, err = rt.fetchTools(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	got := computeAgentFingerprintFromRuntime(rt, tools)
+	if got != callerFingerprint {
+		return fmt.Errorf("%w: worker=%q caller=%q", ErrAgentFingerprintMismatch, got, callerFingerprint)
 	}
 	return nil
 }
@@ -261,18 +280,18 @@ func (rt *TemporalRuntime) Approve(ctx context.Context, approvalToken string, st
 	return rt.temporalClient.CompleteActivity(ctx, taskToken, status, nil)
 }
 
-func agentNameFromExecuteRequest(req *runtime.ExecuteRequest) string {
-	if req == nil || req.AgentSpec == nil {
+func agentNameFromRuntime(rt *TemporalRuntime) string {
+	if rt == nil {
 		return ""
 	}
-	return req.AgentSpec.Name
+	return rt.AgentSpec.Name
 }
 
 func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequest) (*types.AgentRunResult, error) {
-	rt.logger.Debug(ctx, "runtime run dispatch", slog.String("scope", "runtime"), slog.String("agent", agentNameFromExecuteRequest(req)), slog.Int("inputLen", len(req.UserPrompt)))
+	rt.logger.Debug(ctx, "runtime run dispatch", slog.String("scope", "runtime"), slog.String("agent", agentNameFromRuntime(rt)), slog.Int("inputLen", len(req.UserPrompt)))
 
 	runCtx := ctx
-	d := rt.AgentExecution.Limits.Timeout
+	d := rt.AgentConfig.Limits.Timeout
 	if _, ok := ctx.Deadline(); !ok && d > 0 {
 		var cancel context.CancelFunc
 		runCtx, cancel = context.WithTimeout(ctx, d)
@@ -289,7 +308,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 			threadID = runID
 		}
 	}
-	workflowID := rt.getWorkflowID(runID, agentNameFromExecuteRequest(req), false)
+	workflowID := rt.getWorkflowID(runID, agentNameFromRuntime(rt), false)
 
 	rt.logger.Debug(runCtx, "runtime identifiers", slog.String("scope", "runtime"), slog.String("runID", runID), slog.String("threadID", threadID), slog.String("workflowID", workflowID))
 
@@ -305,7 +324,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 		EventWorkflowID:  "",
 		LocalChannelName: eventChannelName(workflowID),
 		ConversationID:   conversationID,
-		AgentFingerprint: rt.agentFingerprint,
+		AgentFingerprint: computeAgentFingerprintFromRuntime(rt, req.Tools),
 		EventTypes:       []events.AgentEventType{},
 		SubAgentDepth:    0,
 		SubAgentRoutes:   buildSubAgentRoutes(req.SubAgents),
@@ -317,9 +336,9 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 			rt.logger.Error(runCtx, "runtime event worker creation failed", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", err))
 			return nil, err
 		}
-		wfInput.EventWorkflowID, wfInput.EventTaskQueue, err = rt.resolveEventPipeline(runCtx, agentNameFromExecuteRequest(req))
+		wfInput.EventWorkflowID, wfInput.EventTaskQueue, err = rt.resolveEventPipeline(runCtx, agentNameFromRuntime(rt))
 		if err != nil {
-			rt.logger.Error(runCtx, "runtime event pipeline resolution failed", slog.String("scope", "runtime"), slog.String("agent", agentNameFromExecuteRequest(req)), slog.Any("error", err))
+			rt.logger.Error(runCtx, "runtime event pipeline resolution failed", slog.String("scope", "runtime"), slog.String("agent", agentNameFromRuntime(rt)), slog.Any("error", err))
 			return nil, err
 		}
 	}
@@ -425,7 +444,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 				approvalResponseCh <- approvalResponse{approvalToken: token, status: status}
 				return nil
 			}
-			approvalCtx, cancel := context.WithTimeout(runCtx, rt.AgentExecution.Limits.ApprovalTimeout)
+			approvalCtx, cancel := context.WithTimeout(runCtx, rt.AgentConfig.Limits.ApprovalTimeout)
 			req.ApprovalHandler(approvalCtx, apprReq)
 			cancel()
 		case resp := <-approvalResponseCh:
@@ -438,7 +457,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 }
 
 func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.ExecuteRequest) (<-chan events.AgentEvent, error) {
-	rt.logger.Debug(ctx, "runtime stream run dispatch", slog.String("scope", "runtime"), slog.String("agent", agentNameFromExecuteRequest(req)), slog.Int("inputLen", len(req.UserPrompt)))
+	rt.logger.Debug(ctx, "runtime stream run dispatch", slog.String("scope", "runtime"), slog.String("agent", agentNameFromRuntime(rt)), slog.Int("inputLen", len(req.UserPrompt)))
 
 	conversationID := base.GetConversationID(req)
 	runID := uuid.New().String()
@@ -450,7 +469,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 			threadID = runID
 		}
 	}
-	workflowID := rt.getWorkflowID(runID, agentNameFromExecuteRequest(req), true)
+	workflowID := rt.getWorkflowID(runID, agentNameFromRuntime(rt), true)
 
 	rt.logger.Debug(ctx, "runtime identifiers", slog.String("scope", "runtime"), slog.String("runID", runID), slog.String("threadID", threadID), slog.String("workflowID", workflowID))
 
@@ -471,9 +490,9 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 			rt.logger.Error(ctx, "runtime event worker creation failed", slog.String("scope", "runtime"), slog.String("taskQueue", rt.taskQueue), slog.Any("error", err))
 			return nil, err
 		}
-		eventWorkflowID, eventTaskQueue, err = rt.resolveEventPipeline(ctx, agentNameFromExecuteRequest(req))
+		eventWorkflowID, eventTaskQueue, err = rt.resolveEventPipeline(ctx, agentNameFromRuntime(rt))
 		if err != nil {
-			rt.logger.Error(ctx, "runtime event pipeline resolution failed", slog.String("scope", "runtime"), slog.String("agent", agentNameFromExecuteRequest(req)), slog.Any("error", err))
+			rt.logger.Error(ctx, "runtime event pipeline resolution failed", slog.String("scope", "runtime"), slog.String("agent", agentNameFromRuntime(rt)), slog.Any("error", err))
 			return nil, err
 		}
 	}
@@ -489,7 +508,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 		LocalChannelName: eventChannelName(workflowID),
 		StreamingEnabled: req.StreamingEnabled,
 		ConversationID:   conversationID,
-		AgentFingerprint: rt.agentFingerprint,
+		AgentFingerprint: computeAgentFingerprintFromRuntime(rt, req.Tools),
 		EventTypes:       streamEventTypes,
 		SubAgentDepth:    0,
 		SubAgentRoutes:   buildSubAgentRoutes(req.SubAgents),
@@ -498,7 +517,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 
 	runCtx := ctx
 	var runCancel context.CancelFunc
-	d := rt.AgentExecution.Limits.Timeout
+	d := rt.AgentConfig.Limits.Timeout
 	if _, ok := ctx.Deadline(); !ok && d > 0 {
 		runCtx, runCancel = context.WithTimeout(ctx, d)
 	}
@@ -549,7 +568,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 	wfErrCh := make(chan error, 1)
 	workflowResultCh := make(chan *types.AgentRunResult, 1)
 	localChannel := wfInput.LocalChannelName
-	rootName := agentNameFromExecuteRequest(req)
+	rootName := agentNameFromRuntime(rt)
 
 	// eventCh → outCh only: all RUN_* and workflow events pass through the local bus (publish then forward).
 	go func() {

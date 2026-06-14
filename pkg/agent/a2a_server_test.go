@@ -99,6 +99,7 @@ func TestBuildSDKAgentCard(t *testing.T) {
 			a2aServerConfig: &A2AServerConfig{Hostname: "127.0.0.1", Port: 9000},
 		},
 	}
+	mustTestRegistries(t, &a.agentConfig)
 	card := a.buildSDKAgentCard()
 	if card.Name != "CardAgent" || card.Description != "desc" || card.Version != a2aServerVersion {
 		t.Fatalf("card metadata: %+v", card)
@@ -121,6 +122,7 @@ func TestBuildSDKAgentCard(t *testing.T) {
 			a2aServerConfig: &A2AServerConfig{Hostname: "localhost", Port: 1},
 		},
 	}
+	mustTestRegistries(t, &a2.agentConfig)
 	c2 := a2.buildSDKAgentCard()
 	if !c2.Capabilities.Streaming {
 		t.Fatal("Streaming should be true when stream enabled and LLM supports it")
@@ -133,6 +135,7 @@ func TestBuildSDKAgentCard(t *testing.T) {
 			a2aServerConfig: &A2AServerConfig{Hostname: "h", Port: 9, BearerTokens: []string{"secret"}},
 		},
 	}
+	mustTestRegistries(t, &a3.agentConfig)
 	c3 := a3.buildSDKAgentCard()
 	if len(c3.SecuritySchemes) == 0 || len(c3.SecurityRequirements) == 0 {
 		t.Fatalf("expected security on card when BearerTokens set: schemes=%v reqs=%v",
@@ -182,8 +185,6 @@ func TestDeriveSDKSkills(t *testing.T) {
 	a := &Agent{
 		agentConfig: agentConfig{
 			tools: []interfaces.Tool{
-				nil,
-				serverTestTool{name: "", display: "x", desc: "y"},
 				serverTestTool{name: "alpha", display: "Alpha", desc: "generic tool"},
 				NewA2ATool("remote", interfaces.ToolSpec{Name: "sk1", Description: "d"},
 					interfaces.A2ASkillSpec{
@@ -194,9 +195,12 @@ func TestDeriveSDKSkills(t *testing.T) {
 			},
 		},
 	}
+	if err := a.buildRegistries(); err != nil {
+		t.Fatal(err)
+	}
 	sk := a.deriveSDKSkills()
 	if len(sk) != 2 {
-		t.Fatalf("want 2 skills (nil and empty name skipped), got %d: %+v", len(sk), sk)
+		t.Fatalf("want 2 skills, got %d: %+v", len(sk), sk)
 	}
 	if sk[0].ID != "alpha" || sk[0].Name != "Alpha" {
 		t.Fatalf("generic skill: %+v", sk[0])
@@ -562,6 +566,7 @@ func TestRunA2A_ServesAgentCardAndSendMessage(t *testing.T) {
 		},
 		runtime: mockRT,
 	}
+	mustTestRegistries(t, &a.agentConfig)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -683,6 +688,7 @@ func TestRunA2A_JSONRPCSendStreamingMessage_ReturnsSSE(t *testing.T) {
 		},
 		runtime: mockRT,
 	}
+	mustTestRegistries(t, &a.agentConfig)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -787,6 +793,7 @@ func TestAgentCardProducer_CardJSON_InjectsURLField(t *testing.T) {
 			a2aServerConfig: &A2AServerConfig{Hostname: "localhost", Port: 8080},
 		},
 	}
+	mustTestRegistries(t, &a.agentConfig)
 	p := (*agentCardProducer)(a)
 	b, err := p.CardJSON(context.Background())
 	if err != nil {
@@ -812,6 +819,7 @@ func TestAgentCardProducer_Card_ReturnsTypedCard(t *testing.T) {
 			a2aServerConfig: &A2AServerConfig{Hostname: "localhost", Port: 8080},
 		},
 	}
+	mustTestRegistries(t, &a.agentConfig)
 	p := (*agentCardProducer)(a)
 	card, err := p.Card(context.Background())
 	if err != nil {
@@ -833,6 +841,7 @@ func TestAgentCardHandler_MethodNotAllowed(t *testing.T) {
 			a2aServerConfig: &A2AServerConfig{Hostname: "localhost", Port: 8080},
 		},
 	}
+	mustTestRegistries(t, &a.agentConfig)
 	srv := httptest.NewServer(a2asrv.NewAgentCardHandler((*agentCardProducer)(a)))
 	defer srv.Close()
 

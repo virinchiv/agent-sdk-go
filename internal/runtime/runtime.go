@@ -26,7 +26,7 @@ type Runtime interface {
 	// Execute runs one execution and returns the result. The agent package supplies approval via ExecuteRequest when needed.
 	// Use WithTimeout or a context with deadline to avoid blocking.
 	// When using conversation, pass the conversation ID on the request; agent and worker must use the same ID.
-	// Agent identity is on req.AgentSpec.Name when AgentSpec is set.
+	// Agent identity lives on the runtime [AgentSpec] configured at construction.
 	Execute(ctx context.Context, req *ExecuteRequest) (*types.AgentRunResult, error)
 
 	// ExecuteStream starts the run and returns a channel of AgentEvent. Streams RUN_* lifecycle,
@@ -36,7 +36,6 @@ type Runtime interface {
 	// For approvals (tool or delegation), receive CUSTOM (AgentEventTypeCustom) events and use the agent
 	// package approval path (e.g. OnApproval with the token from the custom payload).
 	// When using conversation, pass the conversation ID on the request.
-	// Agent identity is on req.AgentSpec.Name when AgentSpec is set.
 	ExecuteStream(ctx context.Context, req *ExecuteRequest) (<-chan events.AgentEvent, error)
 
 	// Approve completes a pending tool approval when the runtime uses out-of-band approval
@@ -79,11 +78,11 @@ type SubAgentSpec struct {
 	ToolName string  // tool name used to invoke this sub-agent (key in runtime route maps)
 	Runtime  Runtime // the sub-agent's runtime instance
 	Children []*SubAgentSpec
+	// Tools is the registry-resolved tool list for this sub-agent at request time.
+	Tools []interfaces.Tool `json:"-"`
 }
 
-// AgentSpec describes agent identity and structured-output preferences for one run.
-// It is attached to [ExecuteRequest.AgentSpec] so custom Runtime implementations can read name, prompts,
-// and response format without importing pkg/agent.
+// AgentSpec describes agent identity and structured-output preferences configured on the runtime.
 type AgentSpec struct {
 	// Name is a human-readable label (may include spaces). Runtimes may sanitize it when embedding in workflow IDs.
 	Name           string
@@ -92,15 +91,13 @@ type AgentSpec struct {
 	ResponseFormat *interfaces.ResponseFormat
 }
 
-// AgentExecution groups per-run execution inputs for custom Runtime implementations. Sub-structs
-// stay stable so callers do not depend on a single flat blob that might be reshaped later.
-// Temporal-backed runtimes typically use worker-local configuration for activities; this is a snapshot.
-type AgentExecution struct {
-	LLM        AgentLLM
-	Tools      AgentTools
-	Retrievers AgentRetrievers
-	Session    AgentSession
-	Limits     AgentLimits
+// AgentConfig is static agent wiring on the runtime at construction: LLM client, tool approval policy, session, limits, and retriever config.
+type AgentConfig struct {
+	LLM                AgentLLM
+	ToolApprovalPolicy interfaces.AgentToolApprovalPolicy
+	Retrievers         AgentRetrievers
+	Session            AgentSession
+	Limits             AgentLimits
 }
 
 // AgentRetrievers holds the retriever instances and mode for prefetch and hybrid RAG.
@@ -121,13 +118,6 @@ type AgentLLM struct {
 	Sampling *LLMSampling
 }
 
-// AgentTools is registered tools, optional registry, and approval policy for this run.
-type AgentTools struct {
-	Tools          []interfaces.Tool
-	Registry       interfaces.ToolRegistry
-	ApprovalPolicy interfaces.AgentToolApprovalPolicy
-}
-
 // AgentSession is conversation storage and how many messages to include in LLM context.
 type AgentSession struct {
 	Conversation                interfaces.Conversation
@@ -143,10 +133,6 @@ type AgentLimits struct {
 }
 
 // ExecuteRequest carries one execution request from Agent to Runtime.
-//
-// AgentSpec and AgentExecution are populated by pkg/agent from its configuration so implementations
-// can read identity (including agent name on AgentSpec.Name), prompts, LLM, tools, and policies
-// for this run. Implementations may ignore fields they do not use.
 type ExecuteRequest struct {
 	UserPrompt string `json:"user_prompt"`
 	// RunOptions is the per-call options forwarded from pkg/agent (e.g. conversation session). May be nil.
@@ -159,10 +145,8 @@ type ExecuteRequest struct {
 	SubAgents        []*SubAgentSpec         `json:"sub_agents,omitempty"`
 	MaxSubAgentDepth int                     `json:"max_sub_agent_depth"`
 
-	ApprovalHandler types.ApprovalHandler `json:"approval_handler"`
+	// Tools is the registry-resolved tool list for this run.
+	Tools []interfaces.Tool `json:"-"`
 
-	// AgentSpec is identity and output-format metadata for this run (name, description, system prompt, response format).
-	AgentSpec *AgentSpec `json:"agent_spec"`
-	// AgentExecution is LLM, tools, conversation, sampling, and policy for this run.
-	AgentExecution *AgentExecution `json:"agent_execution"`
+	ApprovalHandler types.ApprovalHandler `json:"approval_handler"`
 }

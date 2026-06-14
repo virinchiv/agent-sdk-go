@@ -1,6 +1,9 @@
 package local
 
-import sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
+import (
+	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+)
 
 // subAgentRoute is the local runtime's internal representation of a delegatable sub-agent.
 // Built from ExecuteRequest.SubAgents by buildSubAgentRoutes; not shared with any other package.
@@ -8,6 +11,7 @@ type subAgentRoute struct {
 	name     string
 	runtime  *LocalRuntime
 	children map[string]subAgentRoute
+	tools    []interfaces.Tool
 }
 
 // buildSubAgentRoutes converts the runtime-agnostic SubAgentSpec tree (from ExecuteRequest)
@@ -30,6 +34,7 @@ func buildSubAgentRoutes(specs []*sdkruntime.SubAgentSpec) map[string]subAgentRo
 			name:     spec.Name,
 			runtime:  lr,
 			children: buildSubAgentRoutes(spec.Children),
+			tools:    spec.Tools,
 		}
 	}
 	if len(out) == 0 {

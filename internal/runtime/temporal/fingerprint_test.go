@@ -2,9 +2,11 @@ package temporal
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
 
@@ -18,30 +20,9 @@ func (f fpTool) Execute(ctx context.Context, args map[string]any) (any, error) {
 	return nil, nil
 }
 
-func TestComputeAgentFingerprint_stableAndToolOrder(t *testing.T) {
+func TestComputeAgentFingerprint_toolOrderStable(t *testing.T) {
 	spec := sdkruntime.AgentSpec{Name: "a", SystemPrompt: "p"}
 	lim := sdkruntime.AgentLimits{MaxIterations: 3}
-
-	m := BuildAgentFingerprintPayload(
-		spec,
-		[]string{"z", "a"},
-		"auto",
-		nil,
-		10,
-		lim,
-		"",
-		"",
-		"",
-		"",
-		"",
-		"",
-	)
-	h1 := ComputeAgentFingerprint(m)
-	h2 := ComputeAgentFingerprint(m)
-	if len(h1) != 64 || h1 != h2 {
-		t.Fatalf("fingerprint len=%d h1=%q h2=%q", len(h1), h1, h2)
-	}
-
 	hA := ComputeAgentFingerprint(BuildAgentFingerprintPayload(spec, []string{"a", "b", "c"}, "auto", nil, 0, lim, "", "", "", "", "", ""))
 	hB := ComputeAgentFingerprint(BuildAgentFingerprintPayload(spec, []string{"c", "a", "b"}, "auto", nil, 0, lim, "", "", "", "", "", ""))
 	if hA != hB {
@@ -49,7 +30,7 @@ func TestComputeAgentFingerprint_stableAndToolOrder(t *testing.T) {
 	}
 }
 
-func TestComputeAgentFingerprint_agentModeChangesDigest(t *testing.T) {
+func TestComputeAgentFingerprint_stableWithoutTools(t *testing.T) {
 	spec := sdkruntime.AgentSpec{Name: "a", SystemPrompt: "p"}
 	lim := sdkruntime.AgentLimits{MaxIterations: 3}
 	interactive := BuildAgentFingerprintPayload(spec, nil, "auto", nil, 0, lim, "", "", "", "", "", "")
@@ -108,59 +89,37 @@ func TestComputeAgentFingerprint_observabilityFingerprintChangesDigest(t *testin
 	}
 }
 
-func newFingerprintRT(spec sdkruntime.AgentSpec, exec sdkruntime.AgentExecution, policyFP string, opts ...func(*TemporalRuntime)) *TemporalRuntime {
-	rt := &TemporalRuntime{}
-	rt.AgentSpec = spec
-	rt.AgentExecution = exec
-	rt.policyFingerprint = policyFP
-	for _, o := range opts {
-		o(rt)
-	}
-	rt.agentFingerprint = computeAgentFingerprintFromRuntime(rt)
-	return rt
-}
-
 func TestVerifyAgentFingerprint_mismatch(t *testing.T) {
-	rt := newFingerprintRT(
-		sdkruntime.AgentSpec{Name: "x"},
-		sdkruntime.AgentExecution{},
-		"require_all",
-	)
-	err := rt.verifyAgentFingerprint("deadbeef")
+	rt := &TemporalRuntime{
+		resolveToolsFn: func(context.Context) ([]interfaces.Tool, error) {
+			return nil, nil
+		},
+	}
+	err := rt.verifyAgentFingerprint(context.Background(), "caller-fp", nil)
 	if err == nil {
 		t.Fatal("expected mismatch error")
 	}
 }
 
-func TestVerifyAgentFingerprint_bothEmptyOK(t *testing.T) {
-	rt := &TemporalRuntime{}
-	if err := rt.verifyAgentFingerprint(""); err != nil {
+func TestVerifyAgentFingerprint_emptyCallerFingerprintSkipsCheck(t *testing.T) {
+	rt := &TemporalRuntime{
+		resolveToolsFn: func(context.Context) ([]interfaces.Tool, error) {
+			return nil, nil
+		},
+	}
+	if err := rt.verifyAgentFingerprint(context.Background(), "", nil); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestVerifyAgentFingerprint_emptyWantWhenWorkerHasFingerprint(t *testing.T) {
-	rt := newFingerprintRT(
-		sdkruntime.AgentSpec{Name: "x"},
-		sdkruntime.AgentExecution{},
-		"require_all",
-	)
-	if err := rt.verifyAgentFingerprint(""); err == nil {
-		t.Fatal("expected mismatch when caller fingerprint is empty but worker has one")
-	}
-}
-
 func TestVerifyAgentFingerprint_disableCheckAllowsMismatch(t *testing.T) {
-	rt := newFingerprintRT(
-		sdkruntime.AgentSpec{Name: "x"},
-		sdkruntime.AgentExecution{},
-		"require_all",
-		func(rt *TemporalRuntime) {
-			rt.disableFingerprintCheck = true
-			rt.ToolExecutionMode = "sequential"
+	rt := &TemporalRuntime{
+		disableFingerprintCheck: true,
+		resolveToolsFn: func(context.Context) ([]interfaces.Tool, error) {
+			return nil, nil
 		},
-	)
-	if err := rt.verifyAgentFingerprint("definitely-different"); err != nil {
+	}
+	if err := rt.verifyAgentFingerprint(context.Background(), "caller-fp", nil); err != nil {
 		t.Fatalf("expected bypass when skip is enabled, got: %v", err)
 	}
 }
@@ -208,5 +167,49 @@ func TestBuildAgentFingerprintPayload_responseFormatAndSampling(t *testing.T) {
 	sampling.Temperature = &nine
 	if p.Sampling.Temperature == nil || *p.Sampling.Temperature != 0.2 {
 		t.Fatalf("payload temperature should stay 0.2 after original changes: %+v", p.Sampling.Temperature)
+	}
+}
+
+func TestFetchTools_requiresResolver(t *testing.T) {
+	rt := &TemporalRuntime{}
+	_, err := rt.fetchTools(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "tools resolver is not configured") {
+		t.Fatalf("fetchTools() = %v, want resolver not configured error", err)
+	}
+}
+
+func TestFetchTools_delegatesToResolver(t *testing.T) {
+	want := []interfaces.Tool{fpTool{name: "t1"}}
+	rt := &TemporalRuntime{
+		resolveToolsFn: func(context.Context) ([]interfaces.Tool, error) {
+			return want, nil
+		},
+	}
+	got, err := rt.fetchTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name() != "t1" {
+		t.Fatalf("fetchTools() = %+v, want t1", got)
+	}
+}
+
+func TestVerifyAgentFingerprint_usesPreFetchedTools(t *testing.T) {
+	tools := []interfaces.Tool{fpTool{name: "a"}}
+	rt := &TemporalRuntime{
+		Runtime: base.Runtime{
+			AgentSpec: sdkruntime.AgentSpec{Name: "a", SystemPrompt: "p"},
+			AgentConfig: sdkruntime.AgentConfig{
+				Limits: sdkruntime.AgentLimits{MaxIterations: 3},
+			},
+		},
+		resolveToolsFn: func(context.Context) ([]interfaces.Tool, error) {
+			t.Fatal("fetchTools should not run when tools are pre-fetched")
+			return nil, nil
+		},
+	}
+	fp := computeAgentFingerprintFromRuntime(rt, tools)
+	if err := rt.verifyAgentFingerprint(context.Background(), fp, tools); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 )
 
-//go:generate mockgen -destination=./mocks/mock_tool.go -package=mocks github.com/agenticenv/agent-sdk-go/pkg/interfaces Tool,ToolRegistry,ToolApproval,ToolAuthorizer
+//go:generate mockgen -destination=./mocks/mock_tool.go -package=mocks github.com/agenticenv/agent-sdk-go/pkg/interfaces Tool,ToolApproval,ToolAuthorizer,ToolKindProvider
 
 // ToolApproval is an optional interface for tools that require interactive human approval before execution.
 // When implemented, the agent honors ApprovalRequired() when no agent-level approval policy is set.
@@ -74,14 +74,17 @@ func ToolsToSpecs(tools []Tool) []ToolSpec {
 	return specs
 }
 
-// ToolRegistry manages a collection of tools. Use for registering and looking up tools by name.
-type ToolRegistry interface {
-	// Register adds a tool. Overwrites if a tool with the same name exists.
-	Register(tool Tool)
+// ToolKindProvider is an optional interface for tools that report their origin.
+type ToolKindProvider interface {
+	ToolKind() string
+}
 
-	// Get returns the tool by name, or (nil, false) if not found.
-	Get(name string) (Tool, bool)
-
-	// Tools returns all registered tools in registration order.
-	Tools() []Tool
+// KindOf returns ToolKind() from t when implemented, or "native".
+func KindOf(t Tool) string {
+	if k, ok := t.(ToolKindProvider); ok {
+		if s := k.ToolKind(); s != "" {
+			return s
+		}
+	}
+	return "native"
 }

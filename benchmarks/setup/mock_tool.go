@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 
+	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 )
@@ -50,10 +51,12 @@ func (t *MockBenchmarkTool) Execute(ctx context.Context, args map[string]any) (a
 	return map[string]any{"tool": t.name, "input": input, "status": "ok"}, nil
 }
 
-func RegisterBenchmarkTools(count int, cfg ToolConfig, rng *rand.Rand) *tools.Registry {
-	reg := tools.NewRegistry()
+func RegisterBenchmarkTools(count int, cfg ToolConfig, rng *rand.Rand) agent.ToolRegistry {
+	reg := agent.NewToolRegistry()
 	for i := 1; i <= count; i++ {
-		reg.Register(NewMockBenchmarkTool(i, cfg, rng))
+		if err := reg.Register(NewMockBenchmarkTool(i, cfg, rng)); err != nil {
+			panic(err)
+		}
 	}
 	return reg
 }

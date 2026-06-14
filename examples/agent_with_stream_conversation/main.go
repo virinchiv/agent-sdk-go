@@ -12,7 +12,6 @@ import (
 	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
 )
@@ -29,10 +28,13 @@ func main() {
 
 	conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
 
-	reg := tools.NewRegistry()
-	reg.Register(echo.New())
-	reg.Register(calculator.New())
-
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg,
+		echo.New(),
+		calculator.New(),
+	); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 	opts := []agent.Option{
 		agent.WithName("agent-stream-conversation"),
 		agent.WithDescription("Stream with conversation; shows event handling pattern to avoid duplicate output"),

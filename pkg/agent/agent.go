@@ -71,36 +71,7 @@ func buildAgent(opts []Option) (*Agent, error) {
 		a.localAgentWorker = &AgentWorker{agentConfig: *cfg, runtime: rt}
 	}
 
-	// Sub-agents share the parent's in-memory pub/sub when the runtime implements [runtime.EventBusRuntime]
-	// (e.g. Temporal). A custom [runtime.Runtime] from a future WithRuntime need only implement [Runtime];
-	// wiring is skipped when the assert to EventBusRuntime fails.
-	if ir, ok := a.runtime.(runtime.EventBusRuntime); ok {
-		bus := ir.GetEventBus()
-		for _, sub := range a.subAgents {
-			if sub != nil {
-				wireInMemoryEventChannelToSubAgents(bus, sub)
-			}
-		}
-	}
-
 	return a, nil
-}
-
-func wireInMemoryEventChannelToSubAgents(bus eventbus.EventBus, agent *Agent) {
-	if agent == nil || bus == nil {
-		return
-	}
-	if ir, ok := agent.runtime.(runtime.EventBusRuntime); ok {
-		ir.SetEventBus(bus)
-	}
-	if agent.localAgentWorker != nil {
-		if ir, ok := agent.localAgentWorker.runtime.(runtime.EventBusRuntime); ok {
-			ir.SetEventBus(bus)
-		}
-	}
-	for _, child := range agent.subAgents {
-		wireInMemoryEventChannelToSubAgents(bus, child)
-	}
 }
 
 // NewAgent creates an Agent with the given options.
@@ -150,11 +121,19 @@ func (a *Agent) Close() {
 // When using [WithConversation], pass the conversation ID; agent and worker must use the same ID.
 func (a *Agent) Run(ctx context.Context, input string, opts *AgentRunOptions) (*AgentRunResult, error) {
 	a.logger.Debug(ctx, "agent run started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
+	return a.runInternal(ctx, input, opts, false)
+}
 
+func (a *Agent) runInternal(ctx context.Context, input string, opts *AgentRunOptions, runAsync bool) (*AgentRunResult, error) {
 	conversationID := conversationIDFromOpts(opts)
 
+	spanName := "agent.run"
+	if runAsync {
+		spanName = "agent.run.async"
+	}
+
 	start := time.Now()
-	ctx, sp := a.tracer.StartSpan(ctx, "agent.run",
+	ctx, sp := a.tracer.StartSpan(ctx, spanName,
 		interfaces.Attribute{Key: "agent.name", Value: a.Name},
 		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
 		interfaces.Attribute{Key: "input.length", Value: len(input)},
@@ -169,7 +148,15 @@ func (a *Agent) Run(ctx context.Context, input string, opts *AgentRunOptions) (*
 		return nil, err
 	}
 
-	if a.hasApprovalTools() && a.approvalHandler == nil {
+	tools, err := a.resolveTools(ctx)
+	if err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricRunFailed, interfaces.Attribute{Key: "error", Value: "tools_list_failed"})
+		a.metrics.RecordHistogram(ctx, types.MetricRunDurationMs, float64(time.Since(start).Milliseconds()))
+		return nil, err
+	}
+
+	if a.hasApprovalTools(tools) && a.approvalHandler == nil {
 		err := fmt.Errorf("tools require approval but WithApprovalHandler was not set (required for Run)")
 		sp.RecordError(err)
 		a.metrics.IncrementCounter(ctx, types.MetricRunFailed, interfaces.Attribute{Key: "error", Value: "missing_approval_handler"})
@@ -177,7 +164,16 @@ func (a *Agent) Run(ctx context.Context, input string, opts *AgentRunOptions) (*
 		return nil, err
 	}
 
-	req := a.executeRequest(input, opts, false)
+	subAgents, err := a.resolveSubAgentSpecs(ctx)
+	if err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricRunFailed, interfaces.Attribute{Key: "error", Value: "build_sub_agent_specs_failed"})
+		a.metrics.RecordHistogram(ctx, types.MetricRunDurationMs, float64(time.Since(start).Milliseconds()))
+		return nil, err
+	}
+	a.shareEventBusWithSubAgents()
+
+	req := a.executeRequest(input, opts, false, tools, subAgents)
 
 	result, err := a.runtime.Execute(ctx, req)
 	if err != nil {
@@ -191,58 +187,23 @@ func (a *Agent) Run(ctx context.Context, input string, opts *AgentRunOptions) (*
 	return result, nil
 }
 
-// RunAsync starts the run in a goroutine and returns two channels:
-//   - resultCh: receives exactly one RunAsyncResult, then closes.
-//   - approvalCh: receives each pending tool approval; call req.Respond. Channel closes when the run ends.
-//
-// For each approval, call req.Respond(Approved|Rejected) exactly once.
-//
-// WithApprovalHandler is temporarily replaced for the duration of the run; restore happens when the run finishes.
-// If tools do not require approval, approvalCh is still closed immediately with no values.
-func (a *Agent) RunAsync(ctx context.Context, input string, opts *AgentRunOptions) (resultCh <-chan AgentRunAsyncResult, approvalCh <-chan *ApprovalRequest, err error) {
+// RunAsync starts the run in a goroutine and returns a channel that receives exactly one
+// [AgentRunAsyncResult], then closes. Use [WithApprovalHandler] when tools require approval
+// (same as [Agent.Run]).
+func (a *Agent) RunAsync(ctx context.Context, input string, opts *AgentRunOptions) (<-chan AgentRunAsyncResult, error) {
 	a.logger.Debug(ctx, "agent run async started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
 
-	conversationID := conversationIDFromOpts(opts)
-
-	if err := a.validateConversationID(conversationID); err != nil {
-		return nil, nil, err
-	}
-
 	resCh := make(chan AgentRunAsyncResult, 1)
-	apprCh := make(chan *ApprovalRequest, 16)
-
 	go func() {
-		defer close(apprCh)
 		defer close(resCh)
-
-		var saved ApprovalHandler
-		if a.hasApprovalTools() {
-			saved = a.approvalHandler
-			a.approvalHandler = func(handlerCtx context.Context, req *ApprovalRequest) {
-				out := &ApprovalRequest{
-					Name:    req.Name,
-					Value:   req.Value,
-					Respond: req.Respond,
-				}
-				select {
-				case apprCh <- out:
-				default:
-					// Avoid blocking Run's event loop if consumer is slow.
-					go func(p *ApprovalRequest) { apprCh <- p }(out)
-				}
-			}
-			defer func() { a.approvalHandler = saved }()
-		}
-
-		resp, runErr := a.Run(ctx, input, opts)
-		if runErr != nil {
-			resCh <- AgentRunAsyncResult{Error: runErr}
+		resp, err := a.runInternal(ctx, input, opts, true)
+		if err != nil {
+			resCh <- AgentRunAsyncResult{Error: err}
 			return
 		}
 		resCh <- AgentRunAsyncResult{Result: resp}
 	}()
-
-	return resCh, apprCh, nil
+	return resCh, nil
 }
 
 func copyApprovalArgs(src map[string]any) map[string]any {
@@ -284,7 +245,23 @@ func (a *Agent) Stream(ctx context.Context, input string, opts *AgentRunOptions)
 		return nil, err
 	}
 
-	req := a.executeRequest(input, opts, true)
+	tools, err := a.resolveTools(ctx)
+	if err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricStreamFailed, interfaces.Attribute{Key: "error", Value: "tools_list_failed"})
+		a.metrics.RecordHistogram(ctx, types.MetricStreamDurationMs, float64(time.Since(start).Milliseconds()))
+		return nil, err
+	}
+	subAgents, err := a.resolveSubAgentSpecs(ctx)
+	if err != nil {
+		sp.RecordError(err)
+		a.metrics.IncrementCounter(ctx, types.MetricStreamFailed, interfaces.Attribute{Key: "error", Value: "build_sub_agent_specs_failed"})
+		a.metrics.RecordHistogram(ctx, types.MetricStreamDurationMs, float64(time.Since(start).Milliseconds()))
+		return nil, err
+	}
+	a.shareEventBusWithSubAgents()
+
+	req := a.executeRequest(input, opts, true, tools, subAgents)
 
 	streamCh, err := a.runtime.ExecuteStream(ctx, req)
 	if err != nil {
@@ -315,39 +292,71 @@ func (a *Agent) validateConversationID(conversationID string) error {
 	return nil
 }
 
-// executeRequest builds [runtime.ExecuteRequest] with per-run fields plus AgentSpec and AgentExecution for custom Runtime implementations.
-func (a *Agent) executeRequest(userPrompt string, opts *AgentRunOptions, streaming bool) *runtime.ExecuteRequest {
+// executeRequest builds [runtime.ExecuteRequest] with per-run fields for Run, Stream, and RunAsync.
+func (a *Agent) executeRequest(userPrompt string, opts *AgentRunOptions, streaming bool, tools []interfaces.Tool, subAgents []*runtime.SubAgentSpec) *runtime.ExecuteRequest {
 	return &runtime.ExecuteRequest{
 		UserPrompt:       userPrompt,
 		RunOptions:       opts,
 		StreamingEnabled: streaming,
-		SubAgents:        a.buildSubAgentSpecs(),
+		SubAgents:        subAgents,
 		MaxSubAgentDepth: a.maxSubAgentDepth,
 		ApprovalHandler:  a.approvalHandler,
-		AgentSpec:        a.agentSpec(),
-		AgentExecution:   a.agentExecution(),
+		Tools:            tools,
 	}
 }
 
-func (a *Agent) agentSpec() *runtime.AgentSpec {
-	s := a.runtimeAgentSpec()
-	return &s
+// Sub-agents share the parent's in-memory pub/sub when the runtime implements [runtime.EventBusRuntime]
+// (e.g. Temporal). A custom [runtime.Runtime] from a future WithRuntime need only implement [Runtime];
+// wiring is skipped when the assert to EventBusRuntime fails.
+func (a *Agent) shareEventBusWithSubAgents() {
+	if a == nil {
+		return
+	}
+	ir, ok := a.runtime.(runtime.EventBusRuntime)
+	if !ok || a.subAgentRegistry == nil {
+		return
+	}
+	bus := ir.GetEventBus()
+	for _, sub := range a.subAgentRegistry.List() {
+		if sub != nil {
+			shareEventBusWithSubAgent(bus, sub)
+		}
+	}
 }
 
-func (a *Agent) agentExecution() *runtime.AgentExecution {
-	e := a.runtimeAgentExecution()
-	return &e
+func shareEventBusWithSubAgent(bus eventbus.EventBus, agent *Agent) {
+	if agent == nil || bus == nil {
+		return
+	}
+	if ir, ok := agent.runtime.(runtime.EventBusRuntime); ok {
+		ir.SetEventBus(bus)
+	}
+	if agent.localAgentWorker != nil {
+		if ir, ok := agent.localAgentWorker.runtime.(runtime.EventBusRuntime); ok {
+			ir.SetEventBus(bus)
+		}
+	}
+	if agent.subAgentRegistry == nil {
+		return
+	}
+	for _, child := range agent.subAgentRegistry.List() {
+		shareEventBusWithSubAgent(bus, child)
+	}
 }
 
-// buildSubAgentSpecs builds the runtime-agnostic sub-agent spec tree for this agent.
+// resolveSubAgentSpecs builds the runtime-agnostic sub-agent spec tree for this agent.
 // Each runtime receives this tree via ExecuteRequest.SubAgents and constructs its own
 // internal routing structures (local: *LocalRuntime refs; temporal: task queue + fingerprint).
-func (a *Agent) buildSubAgentSpecs() []*runtime.SubAgentSpec {
-	if a == nil || len(a.subAgents) == 0 {
-		return nil
+func (a *Agent) resolveSubAgentSpecs(ctx context.Context) ([]*runtime.SubAgentSpec, error) {
+	if a == nil || a.subAgentRegistry == nil {
+		return nil, nil
 	}
-	out := make([]*runtime.SubAgentSpec, 0, len(a.subAgents))
-	for _, sub := range a.subAgents {
+	subs := a.subAgentRegistry.List()
+	if len(subs) == 0 {
+		return nil, nil
+	}
+	out := make([]*runtime.SubAgentSpec, 0, len(subs))
+	for _, sub := range subs {
 		if sub == nil {
 			continue
 		}
@@ -355,15 +364,24 @@ func (a *Agent) buildSubAgentSpecs() []*runtime.SubAgentSpec {
 		if err != nil || toolName == "" {
 			continue
 		}
+		tools, err := sub.resolveTools(ctx)
+		if err != nil {
+			return nil, err
+		}
+		children, err := sub.resolveSubAgentSpecs(ctx)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, &runtime.SubAgentSpec{
 			Name:     sub.Name,
 			ToolName: toolName,
 			Runtime:  sub.runtime,
-			Children: sub.buildSubAgentSpecs(),
+			Children: children,
+			Tools:    tools,
 		})
 	}
 	if len(out) == 0 {
-		return nil
+		return nil, nil
 	}
 	if a.logger != nil {
 		names := make([]string, 0, len(out))
@@ -376,5 +394,37 @@ func (a *Agent) buildSubAgentSpecs() []*runtime.SubAgentSpec {
 			slog.Any("subAgentToolNames", names),
 			slog.Int("specCount", len(out)))
 	}
-	return out
+	return out, nil
+}
+
+// ToolRegistry returns the agent's tool registry.
+func (a *Agent) ToolRegistry() ToolRegistry {
+	if a == nil {
+		return nil
+	}
+	return a.toolRegistry
+}
+
+// MCPRegistry returns the agent's MCP client registry.
+func (a *Agent) MCPRegistry() MCPRegistry {
+	if a == nil {
+		return nil
+	}
+	return a.mcpRegistry
+}
+
+// A2ARegistry returns the agent's A2A client registry.
+func (a *Agent) A2ARegistry() A2ARegistry {
+	if a == nil {
+		return nil
+	}
+	return a.a2aRegistry
+}
+
+// SubAgentRegistry returns the agent's sub-agent registry.
+func (a *Agent) SubAgentRegistry() SubAgentRegistry {
+	if a == nil {
+		return nil
+	}
+	return a.subAgentRegistry
 }

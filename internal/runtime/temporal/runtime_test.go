@@ -54,16 +54,14 @@ func TestGetEventTaskQueue(t *testing.T) {
 	}
 }
 
-func TestAgentNameFromExecuteRequest(t *testing.T) {
-	if agentNameFromExecuteRequest(nil) != "" {
-		t.Fatal("nil req")
+func TestAgentNameFromRuntime(t *testing.T) {
+	if agentNameFromRuntime(nil) != "" {
+		t.Fatal("nil rt")
 	}
-	if agentNameFromExecuteRequest(&sdkruntime.ExecuteRequest{}) != "" {
-		t.Fatal("nil AgentSpec")
+	rt := &TemporalRuntime{
+		Runtime: base.Runtime{AgentSpec: sdkruntime.AgentSpec{Name: "n"}},
 	}
-	if got := agentNameFromExecuteRequest(&sdkruntime.ExecuteRequest{
-		AgentSpec: &sdkruntime.AgentSpec{Name: "n"},
-	}); got != "n" {
+	if got := agentNameFromRuntime(rt); got != "n" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -320,13 +318,13 @@ func TestTemporalRuntime_Run_Success(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithDisableLocalWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	resp, err := rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi", AgentSpec: &sdkruntime.AgentSpec{Name: "agent-a"}})
+	resp, err := rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -344,7 +342,7 @@ func TestTemporalRuntime_Run_NoWorkers(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithDisableLocalWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +351,7 @@ func TestTemporalRuntime_Run_NoWorkers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, err = rt.Execute(ctx, &sdkruntime.ExecuteRequest{UserPrompt: "hi", AgentSpec: &sdkruntime.AgentSpec{Name: "agent-a"}})
+	_, err = rt.Execute(ctx, &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
 	if err == nil {
 		t.Fatal("expected error when no workers")
 	}
@@ -373,13 +371,13 @@ func TestTemporalRuntime_Run_ExecuteWorkflowError(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithDisableLocalWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi", AgentSpec: &sdkruntime.AgentSpec{Name: "agent-a"}})
+	_, err = rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
 	if err == nil || err.Error() != "start failed" {
 		t.Fatalf("got %v, want start failed", err)
 	}
@@ -398,13 +396,13 @@ func TestTemporalRuntime_Run_WorkflowGetError(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithDisableLocalWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi", AgentSpec: &sdkruntime.AgentSpec{Name: "agent-a"}})
+	_, err = rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
 	if err == nil || err.Error() != "workflow failed" {
 		t.Fatalf("got %v, want workflow failed", err)
 	}
@@ -434,14 +432,14 @@ func TestTemporalRuntime_ExecuteStream_Success(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithDisableLocalWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "root"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	ctx := context.Background()
-	outCh, err := rt.ExecuteStream(ctx, &sdkruntime.ExecuteRequest{UserPrompt: "hi", AgentSpec: &sdkruntime.AgentSpec{Name: "root"}})
+	outCh, err := rt.ExecuteStream(ctx, &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
 	}
@@ -474,13 +472,13 @@ func TestTemporalRuntime_ExecuteStream_WorkflowGetError(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithDisableLocalWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "root"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	outCh, err := rt.ExecuteStream(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi", AgentSpec: &sdkruntime.AgentSpec{Name: "root"}})
+	outCh, err := rt.ExecuteStream(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
 	if err != nil {
 		t.Fatalf("ExecuteStream: %v", err)
 	}
@@ -502,7 +500,7 @@ func TestTemporalRuntime_Start_Idempotent(t *testing.T) {
 	rt, err := NewTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -526,7 +524,7 @@ func TestTemporalRuntime_Stop_RemoteOwnedClient(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithRemoteWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -550,7 +548,7 @@ func TestTemporalRuntime_Stop_RemoteOwnedClientNoAgentWorker(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithRemoteWorker(true),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -568,7 +566,7 @@ func TestTemporalRuntime_Stop_LocalEmbed(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithRemoteWorker(false),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -581,7 +579,7 @@ func TestTemporalRuntime_Close_Minimal(t *testing.T) {
 	rt, err := NewTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -596,7 +594,7 @@ func TestTemporalRuntime_Close_OwnsTemporalClient(t *testing.T) {
 	rt, err := NewTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -611,7 +609,7 @@ func TestTemporalRuntime_Close_StopsWorkers(t *testing.T) {
 	rt, err := NewTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -639,7 +637,7 @@ func TestTemporalRuntime_Close_ActiveWorkflows(t *testing.T) {
 	rt, err := NewTemporalRuntime(
 		WithTemporalClient(tc, "tq"),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "agent-a"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)

@@ -12,7 +12,6 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
 )
 
@@ -24,9 +23,12 @@ func main() {
 		log.Fatalf("failed to create LLM client: %v", err)
 	}
 
-	reg := tools.NewRegistry()
-	reg.Register(echo.New())
-
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg,
+		echo.New(),
+	); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 	opts := []agent.Option{
 		agent.WithName("agent-with-a2a-server"),
 		agent.WithDescription("Example agent exposed as an A2A HTTP server (agent card + JSON-RPC)."),
