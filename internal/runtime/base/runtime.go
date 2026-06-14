@@ -22,10 +22,10 @@ import (
 // Runtime holds the execution inputs shared by all runtime backends.
 // Local and Temporal runtimes embed this struct and call its methods directly.
 type Runtime struct {
-	AgentSpec      runtime.AgentSpec
-	AgentExecution runtime.AgentExecution
-	Tracer         interfaces.Tracer
-	Metrics        interfaces.Metrics
+	AgentSpec   runtime.AgentSpec
+	AgentConfig runtime.AgentConfig
+	Tracer      interfaces.Tracer
+	Metrics     interfaces.Metrics
 	// ToolExecutionMode controls whether tool calls in one LLM round are executed
 	// in parallel or sequentially. Defaults to parallel when empty.
 	ToolExecutionMode types.AgentToolExecutionMode
@@ -33,9 +33,8 @@ type Runtime struct {
 
 // BuildLLMRequest constructs an LLMRequest from the given messages and options.
 // When retrieverContext is non-empty it is appended to the system prompt (prefetch/hybrid mode).
-// Returns the request and the resolved tools slice for later use in response parsing.
-func (rt *Runtime) BuildLLMRequest(messages []interfaces.Message, skipTools bool, retrieverContext string) (*interfaces.LLMRequest, []interfaces.Tool) {
-	tools := rt.AgentExecution.Tools.Tools
+// tools is the per-run resolved tool list from [runtime.ExecuteRequest] or activity resolve.
+func (rt *Runtime) BuildLLMRequest(messages []interfaces.Message, skipTools bool, retrieverContext string, tools []interfaces.Tool) *interfaces.LLMRequest {
 	systemMessage := rt.AgentSpec.SystemPrompt
 	if retrieverContext != "" {
 		systemMessage = fmt.Sprintf("%s\n\nRelevant Context:\n%s", rt.AgentSpec.SystemPrompt, retrieverContext)
@@ -45,25 +44,25 @@ func (rt *Runtime) BuildLLMRequest(messages []interfaces.Message, skipTools bool
 		ResponseFormat: rt.AgentSpec.ResponseFormat,
 		Messages:       messages,
 	}
-	ApplyLLMSampling(rt.AgentExecution.LLM.Sampling, req)
+	ApplyLLMSampling(rt.AgentConfig.LLM.Sampling, req)
 	if skipTools {
 		req.Tools = []interfaces.ToolSpec{}
 	} else {
 		req.Tools = interfaces.ToolsToSpecs(tools)
 	}
-	return req, tools
+	return req
 }
 
 // RequiresApproval reports whether t requires human approval before execution.
 // When no approval policy is configured the tool's own ApprovalRequired flag is used.
 func (rt *Runtime) RequiresApproval(t interfaces.Tool) bool {
-	if rt.AgentExecution.Tools.ApprovalPolicy == nil {
+	if rt.AgentConfig.ToolApprovalPolicy == nil {
 		if ar, ok := t.(interfaces.ToolApproval); ok && ar.ApprovalRequired() {
 			return true
 		}
 		return false
 	}
-	return rt.AgentExecution.Tools.ApprovalPolicy.RequiresApproval(t)
+	return rt.AgentConfig.ToolApprovalPolicy.RequiresApproval(t)
 }
 
 // FetchConversationMessages loads prior messages from the conversation store.
@@ -71,11 +70,11 @@ func (rt *Runtime) RequiresApproval(t interfaces.Tool) bool {
 func (rt *Runtime) FetchConversationMessages(ctx context.Context, log logger.Logger, conversationID string) ([]interfaces.Message, error) {
 	log.Debug(ctx, "runtime: loading conversation history", slog.String("scope", "runtime"), slog.String("conversationID", conversationID))
 
-	if rt.AgentExecution.Session.Conversation == nil {
+	if rt.AgentConfig.Session.Conversation == nil {
 		return nil, fmt.Errorf("conversation is not configured")
 	}
 
-	limit := rt.AgentExecution.Session.ConversationSize
+	limit := rt.AgentConfig.Session.ConversationSize
 	if limit <= 0 {
 		limit = 20
 	}
@@ -86,7 +85,7 @@ func (rt *Runtime) FetchConversationMessages(ctx context.Context, log logger.Log
 	)
 	defer sp.End()
 
-	messages, err := rt.AgentExecution.Session.Conversation.ListMessages(ctx, conversationID, interfaces.WithLimit(limit))
+	messages, err := rt.AgentConfig.Session.Conversation.ListMessages(ctx, conversationID, interfaces.WithLimit(limit))
 	if err != nil {
 		sp.RecordError(err)
 		return nil, fmt.Errorf("failed to list conversation messages: %w", err)
@@ -141,11 +140,12 @@ func (rt *Runtime) ExecuteLLM(
 	messages []interfaces.Message,
 	skipTools bool,
 	retrieverContext string,
+	tools []interfaces.Tool,
 	emit func(events.AgentEvent),
 ) (*LLMResult, error) {
-	req, tools := rt.BuildLLMRequest(messages, skipTools, retrieverContext)
+	req := rt.BuildLLMRequest(messages, skipTools, retrieverContext, tools)
 
-	llmClient := rt.AgentExecution.LLM.Client
+	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
 	provider := string(llmClient.GetProvider())
 	modelAttr := interfaces.Attribute{Key: types.MetricAttrModel, Value: model}
@@ -204,11 +204,12 @@ func (rt *Runtime) ExecuteLLMStream(
 	messages []interfaces.Message,
 	skipTools bool,
 	retrieverContext string,
+	tools []interfaces.Tool,
 	emit func(events.AgentEvent),
 ) (*LLMResult, error) {
-	req, tools := rt.BuildLLMRequest(messages, skipTools, retrieverContext)
+	req := rt.BuildLLMRequest(messages, skipTools, retrieverContext, tools)
 
-	llmClient := rt.AgentExecution.LLM.Client
+	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
 	provider := string(llmClient.GetProvider())
 	modelAttr := interfaces.Attribute{Key: types.MetricAttrModel, Value: model}
@@ -372,10 +373,10 @@ func (rt *Runtime) ExecuteLLMStream(
 
 // ExecuteTool finds the named tool and executes it, recording tracing and metrics.
 // Returns the string representation of the tool result.
-func (rt *Runtime) ExecuteTool(ctx context.Context, log logger.Logger, toolName string, args map[string]any) (string, error) {
+func (rt *Runtime) ExecuteTool(ctx context.Context, log logger.Logger, tools []interfaces.Tool, toolName string, args map[string]any) (string, error) {
 	log.Debug(ctx, "runtime: tool execute started", slog.String("scope", "runtime"), slog.String("tool", toolName), slog.Int("argCount", len(args)))
 
-	tool, ok := FindToolByName(rt.AgentExecution.Tools.Tools, toolName)
+	tool, ok := FindToolByName(tools, toolName)
 	if !ok {
 		log.Warn(ctx, "runtime: unknown tool", slog.String("scope", "runtime"), slog.String("tool", toolName))
 		return "", fmt.Errorf("unknown tool: %s", toolName)
@@ -408,10 +409,10 @@ func (rt *Runtime) ExecuteTool(ctx context.Context, log logger.Logger, toolName 
 
 // AuthorizeTool checks programmatic authorization for a tool before approval/execution.
 // Tools that do not implement interfaces.ToolAuthorizer are allowed by default.
-func (rt *Runtime) AuthorizeTool(ctx context.Context, log logger.Logger, toolName string, args map[string]any) (AuthorizeResult, error) {
+func (rt *Runtime) AuthorizeTool(ctx context.Context, log logger.Logger, tools []interfaces.Tool, toolName string, args map[string]any) (AuthorizeResult, error) {
 	log.Debug(ctx, "runtime: tool authorize started", slog.String("scope", "runtime"), slog.String("tool", toolName), slog.Int("argCount", len(args)))
 
-	tool, ok := FindToolByName(rt.AgentExecution.Tools.Tools, toolName)
+	tool, ok := FindToolByName(tools, toolName)
 	if !ok {
 		log.Warn(ctx, "runtime: unknown tool in authorization", slog.String("scope", "runtime"), slog.String("tool", toolName))
 		return AuthorizeResult{}, fmt.Errorf("unknown tool: %s", toolName)
@@ -453,7 +454,7 @@ func (rt *Runtime) AuthorizeTool(ctx context.Context, log logger.Logger, toolNam
 // returns a combined document context string for injection into the LLM system prompt.
 // Partial failures are logged and skipped; all retrievers failing returns an error.
 func (rt *Runtime) ExecuteRetrievers(ctx context.Context, log logger.Logger, query string) (string, error) {
-	retrievers := rt.AgentExecution.Retrievers.Retrievers
+	retrievers := rt.AgentConfig.Retrievers.Retrievers
 	if len(retrievers) == 0 {
 		return "", nil
 	}

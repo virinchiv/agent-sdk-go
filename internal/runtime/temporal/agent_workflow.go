@@ -115,7 +115,7 @@ func (rt *TemporalRuntime) sendAgentEventWorkflowUpdate(ctx context.Context, eve
 // EventTaskQueue is the Temporal task queue for AgentEventWorkflow (e.g. main TaskQueue + "-events"); required
 // for UpdateWithStartWorkflow when EventWorkflowID is set.
 // EventTypes is set by the SDK; a single "*" element means emit all event kinds (used for Stream).
-// AgentFingerprint is the SHA-256 hex digest of the worker-local agent config; activities reject on mismatch.
+// AgentFingerprint is the per-run digest (config + resolved tools). Caller and worker compute it at resolve time.
 type AgentWorkflowInput struct {
 	UserPrompt       string                   `json:"user_prompt,omitempty"`
 	EventWorkflowID  string                   `json:"event_workflow_id,omitempty"`
@@ -289,9 +289,9 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	eventWorkflowID := input.EventWorkflowID
 	eventTaskQueue := input.EventTaskQueue
 	agentName := rt.AgentSpec.Name
-	model := rt.AgentExecution.LLM.Client.GetModel()
+	model := rt.AgentConfig.LLM.Client.GetModel()
 
-	maxIter := rt.AgentExecution.Limits.MaxIterations
+	maxIter := rt.AgentConfig.Limits.MaxIterations
 
 	var activityIDSuffix string
 	err := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
@@ -379,7 +379,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		return nil
 	}
 
-	useStreaming := input.StreamingEnabled && rt.AgentExecution.LLM.Client.IsStreamSupported()
+	useStreaming := input.StreamingEnabled && rt.AgentConfig.LLM.Client.IsStreamSupported()
 
 	// State restored after ContinueAsNew (iteration + conversation messages).
 	if input.State == nil {
@@ -395,10 +395,10 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	// The resulting retrieverContext is forwarded to every AgentLLMInput in the run so the LLM always
 	// sees the retrieved documents in its system prompt, regardless of the number of iterations.
 	retrieverContext := ""
-	retrieverMode := rt.AgentExecution.Retrievers.Mode
+	retrieverMode := rt.AgentConfig.Retrievers.Mode
 	if (retrieverMode == types.RetrieverModePrefetch || retrieverMode == types.RetrieverModeHybrid) &&
-		len(rt.AgentExecution.Retrievers.Retrievers) > 0 {
-		logger.Debug("workflow: retriever prefetch started", "scope", "workflow", "retrieverMode", string(retrieverMode), "retrieverCount", len(rt.AgentExecution.Retrievers.Retrievers))
+		len(rt.AgentConfig.Retrievers.Retrievers) > 0 {
+		logger.Debug("workflow: retriever prefetch started", "scope", "workflow", "retrieverMode", string(retrieverMode), "retrieverCount", len(rt.AgentConfig.Retrievers.Retrievers))
 		retrieverInput := AgentRetrieverInput{
 			AgentFingerprint: input.AgentFingerprint,
 			UserPrompt:       input.UserPrompt,
@@ -624,7 +624,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 		messages = append(messages, toolResults...)
 
-		if rt.conversationMemoryEnabled(input.ConversationID) && rt.AgentExecution.Session.ConversationSaveOnIteration && len(messages) > 0 {
+		if rt.conversationMemoryEnabled(input.ConversationID) && rt.AgentConfig.Session.ConversationSaveOnIteration && len(messages) > 0 {
 			if err := workflow.ExecuteActivity(convCtx, rt.AddConversationMessagesActivity, AddConversationMessagesInput{
 				ConversationID:   input.ConversationID,
 				Messages:         messages,
@@ -664,7 +664,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			AgentFingerprint: input.AgentFingerprint,
 		}).Get(convCtx, nil); err != nil {
 			logger.Warn("workflow: persist conversation failed", "scope", "workflow", "conversationID", input.ConversationID, "messagesCount", len(messages), "error", err)
-			if !rt.AgentExecution.Session.ConversationSaveOnIteration {
+			if !rt.AgentConfig.Session.ConversationSaveOnIteration {
 				return nil, err
 			}
 		}
@@ -678,7 +678,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 }
 
 func (rt *TemporalRuntime) conversationMemoryEnabled(conversationID string) bool {
-	return conversationID != "" && rt.AgentExecution.Session.Conversation != nil
+	return conversationID != "" && rt.AgentConfig.Session.Conversation != nil
 }
 
 // newAgentToolCallInput builds activity contexts for one tool-call branch.
@@ -690,7 +690,7 @@ func (rt *TemporalRuntime) newAgentToolCallInput(
 	emitAgentEvent func(workflow.Context, events.AgentEvent) error,
 	parallelSlot string,
 ) agentToolCallInput {
-	approvalTaskTimeout := rt.AgentExecution.Limits.ApprovalTimeout
+	approvalTaskTimeout := rt.AgentConfig.Limits.ApprovalTimeout
 	if approvalTaskTimeout == 0 {
 		approvalTaskTimeout = types.MaxApprovalTimeout
 	}
@@ -921,7 +921,11 @@ func (rt *TemporalRuntime) publishAgentEventToStream(ctx context.Context, agentN
 // (REASONING_*), then TEXT_MESSAGE_START → TEXT_MESSAGE_CONTENT* → TEXT_MESSAGE_END.
 // When input.ConversationID is set, fetches messages from conversation and prepends to workflow messages.
 func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input AgentLLMInput) (*AgentLLMResult, error) {
-	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+	tools, err := rt.fetchTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, tools); err != nil {
 		return nil, err
 	}
 	stopHB := startLongActivityHeartbeats(ctx)
@@ -943,7 +947,7 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
 	}
 
-	result, err := rt.ExecuteLLMStream(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, emit)
+	result, err := rt.ExecuteLLMStream(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, tools, emit)
 	if err != nil {
 		return nil, err
 	}
@@ -956,7 +960,7 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 // Partial failures (some retrievers fail) are logged and skipped; if all retrievers fail, the activity
 // returns an error so Temporal can retry per the retry policy.
 func (rt *TemporalRuntime) AgentRetrieverActivity(ctx context.Context, input AgentRetrieverInput) (*AgentRetrieverResult, error) {
-	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, nil); err != nil {
 		return nil, err
 	}
 	actLog := newActivityLogger(activity.GetLogger(ctx))
@@ -970,7 +974,11 @@ func (rt *TemporalRuntime) AgentRetrieverActivity(ctx context.Context, input Age
 // AgentLLMActivity calls the LLM and returns content plus any tool calls.
 // When input.ConversationID is set, fetches from store and adds assistant message on completion.
 func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMInput) (*AgentLLMResult, error) {
-	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+	tools, err := rt.fetchTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, tools); err != nil {
 		return nil, err
 	}
 	actLog := newActivityLogger(activity.GetLogger(ctx))
@@ -989,7 +997,7 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
 	}
 
-	result, err := rt.ExecuteLLM(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, emit)
+	result, err := rt.ExecuteLLM(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, tools, emit)
 	if err != nil {
 		return nil, err
 	}
@@ -1001,7 +1009,7 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 // When EventWorkflowID is set, UpdateWorkflow uses WorkflowUpdateStageCompleted and updateWorkflowApprovalRPCTimeout
 // so the event handler has returned before ErrResultPending; RPC timeout maps to ApprovalStatusUnavailable.
 func (rt *TemporalRuntime) AgentToolApprovalActivity(ctx context.Context, input AgentToolApprovalInput) (types.ApprovalStatus, error) {
-	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, nil); err != nil {
 		return types.ApprovalStatusNone, err
 	}
 	logger := activity.GetLogger(ctx)
@@ -1110,7 +1118,7 @@ func (rt *TemporalRuntime) SendAgentEventUpdateActivity(ctx context.Context, in 
 
 // AddConversationMessagesActivity adds messages to the conversation memory.
 func (rt *TemporalRuntime) AddConversationMessagesActivity(ctx context.Context, input AddConversationMessagesInput) error {
-	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, nil); err != nil {
 		return err
 	}
 	conversationID := input.ConversationID
@@ -1121,7 +1129,7 @@ func (rt *TemporalRuntime) AddConversationMessagesActivity(ctx context.Context, 
 
 	logger.Debug("activity: add conversation messages started", "scope", "activity", "conversationID", conversationID, "messagesCount", msgCount)
 
-	if rt.AgentExecution.Session.Conversation == nil {
+	if rt.AgentConfig.Session.Conversation == nil {
 		return fmt.Errorf("conversation is not configured")
 	}
 
@@ -1133,7 +1141,7 @@ func (rt *TemporalRuntime) AddConversationMessagesActivity(ctx context.Context, 
 
 	failCount := 0
 	for _, msg := range messages {
-		if err := rt.AgentExecution.Session.Conversation.AddMessage(ctx, conversationID, msg); err != nil {
+		if err := rt.AgentConfig.Session.Conversation.AddMessage(ctx, conversationID, msg); err != nil {
 			failCount++
 			msgCount--
 			logger.Warn("activity: add conversation message failed", "scope", "activity", "conversationID", conversationID, "error", err)
@@ -1149,22 +1157,30 @@ func (rt *TemporalRuntime) AddConversationMessagesActivity(ctx context.Context, 
 
 // AgentToolExecuteActivity executes a tool by name and adds tool message to conversation when ConversationID is set.
 func (rt *TemporalRuntime) AgentToolExecuteActivity(ctx context.Context, input AgentToolExecuteInput) (string, error) {
-	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+	tools, err := rt.fetchTools(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, tools); err != nil {
 		return "", err
 	}
 	stopHB := startLongActivityHeartbeats(ctx)
 	defer stopHB()
 	actLog := newActivityLogger(activity.GetLogger(ctx))
-	return rt.ExecuteTool(ctx, actLog, input.ToolName, input.Args)
+	return rt.ExecuteTool(ctx, actLog, tools, input.ToolName, input.Args)
 }
 
 // AgentToolAuthorizeActivity checks optional programmatic authorization before approval/execute.
 func (rt *TemporalRuntime) AgentToolAuthorizeActivity(ctx context.Context, input AgentToolAuthorizeInput) (AgentToolAuthorizeResult, error) {
-	if err := rt.verifyAgentFingerprint(input.AgentFingerprint); err != nil {
+	tools, err := rt.fetchTools(ctx)
+	if err != nil {
+		return AgentToolAuthorizeResult{}, err
+	}
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, tools); err != nil {
 		return AgentToolAuthorizeResult{}, err
 	}
 	actLog := newActivityLogger(activity.GetLogger(ctx))
-	authResult, err := rt.AuthorizeTool(ctx, actLog, input.ToolName, input.Args)
+	authResult, err := rt.AuthorizeTool(ctx, actLog, tools, input.ToolName, input.Args)
 	if err != nil {
 		return AgentToolAuthorizeResult{}, err
 	}
@@ -1273,7 +1289,7 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 // Uses the main agent worker's agent timeout (same package as delegateToSubAgent); sub-agent workers may define
 // their own limits separately, but this bounds the child execution from the main agent's perspective.
 func (rt *TemporalRuntime) subAgentChildWorkflowTimeout() time.Duration {
-	return rt.AgentExecution.Limits.Timeout
+	return rt.AgentConfig.Limits.Timeout
 }
 
 func retryPolicy(maxAttempts int32) *temporal.RetryPolicy {

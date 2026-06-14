@@ -1,5 +1,5 @@
-// agent_with_run_async demonstrates RunAsync: result and approval channels without
-// WithApprovalHandler or Stream. Complete each approval with req.Respond.
+// agent_with_run_async demonstrates RunAsync: non-blocking result channel with
+// WithApprovalHandler for tool approvals (same as Run).
 package main
 
 import (
@@ -10,11 +10,9 @@ import (
 	"log"
 	"os"
 	"strings"
-	"sync"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
 )
@@ -27,10 +25,13 @@ func main() {
 		log.Fatalf("failed to create LLM client: %v", err)
 	}
 
-	reg := tools.NewRegistry()
-	reg.Register(echo.New())
-	reg.Register(calculator.New())
-
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg,
+		echo.New(),
+		calculator.New(),
+	); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 	lineCh := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
@@ -42,10 +43,11 @@ func main() {
 
 	opts := []agent.Option{
 		agent.WithName("agent-with-run-async"),
-		agent.WithDescription("RunAsync demo: approvals on approvalCh, outcome on resultCh"),
+		agent.WithDescription("RunAsync demo: WithApprovalHandler, outcome on resultCh"),
 		agent.WithSystemPrompt("You are a helpful assistant. Use the echo or calculator tool when asked."),
 		agent.WithLLMClient(llmClient),
 		agent.WithToolRegistry(reg),
+		agent.WithApprovalHandler(makeApprovalHandler(lineCh)),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
 	opts = append(opts, config.ToolApprovalOptions()...)
@@ -63,43 +65,13 @@ func main() {
 	}
 
 	ctx := context.Background()
-	resultCh, approvalCh, err := a.RunAsync(ctx, prompt, nil)
+	resultCh, err := a.RunAsync(ctx, prompt, nil)
 	if err != nil {
 		log.Fatalf("RunAsync: %v", err)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for req := range approvalCh {
-			v, err := agent.ParseToolApproval(req)
-			if err != nil {
-				log.Printf("approval from RunAsync: %v", err)
-				continue
-			}
-			args := v.Args
-			if args == nil {
-				args = map[string]any{}
-			}
-			argsJSON, _ := json.MarshalIndent(args, "", "  ")
-			fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", v.ToolName, string(argsJSON))
-			line, ok := <-lineCh
-			if ok && strings.TrimSpace(strings.ToLower(line)) == "y" {
-				if err := req.Respond(agent.ApprovalStatusApproved); err != nil {
-					log.Printf("respond approved: %v", err)
-				}
-			} else if ok {
-				if err := req.Respond(agent.ApprovalStatusRejected); err != nil {
-					log.Printf("respond rejected: %v", err)
-				}
-			}
-		}
-	}()
-
 	fmt.Println("user:", prompt)
 	res := <-resultCh
-	wg.Wait()
 
 	if res.Error != nil {
 		log.Printf("run failed: %v", res.Error)
@@ -110,4 +82,30 @@ func main() {
 		return
 	}
 	fmt.Println("agent:", res.Result.Content)
+}
+
+func makeApprovalHandler(lineCh <-chan string) agent.ApprovalHandler {
+	return func(ctx context.Context, req *agent.ApprovalRequest) {
+		v, err := agent.ParseToolApproval(req)
+		if err != nil {
+			log.Printf("approval handler: %v", err)
+			return
+		}
+		args := v.Args
+		if args == nil {
+			args = map[string]any{}
+		}
+		argsJSON, _ := json.MarshalIndent(args, "", "  ")
+		fmt.Printf("\n--- Tool approval required ---\nTool: %s\nArgs:\n%s\nApprove? (y/n): ", v.ToolName, string(argsJSON))
+		select {
+		case <-ctx.Done():
+			return
+		case line, ok := <-lineCh:
+			if ok && strings.TrimSpace(strings.ToLower(line)) == "y" {
+				_ = req.Respond(agent.ApprovalStatusApproved)
+			} else if ok {
+				_ = req.Respond(agent.ApprovalStatusRejected)
+			}
+		}
+	}
 }

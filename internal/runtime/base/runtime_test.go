@@ -17,15 +17,15 @@ import (
 )
 
 // newTestRuntime returns a Runtime wired with noop tracer/metrics and the provided execution.
-func newTestRuntime(exec sdkruntime.AgentExecution) *Runtime {
+func newTestRuntime(exec sdkruntime.AgentConfig) *Runtime {
 	return &Runtime{
 		AgentSpec: sdkruntime.AgentSpec{
 			Name:         "test-agent",
 			SystemPrompt: "you are helpful",
 		},
-		AgentExecution: exec,
-		Tracer:         observability.DefaultNoopTracer,
-		Metrics:        observability.DefaultNoopMetrics,
+		AgentConfig: exec,
+		Tracer:      observability.DefaultNoopTracer,
+		Metrics:     observability.DefaultNoopMetrics,
 	}
 }
 
@@ -50,22 +50,22 @@ func (stubLLMClient) IsStreamSupported() bool             { return false }
 // --- BuildLLMRequest ---
 
 func TestBuildLLMRequest_Basic(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
 	msgs := []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "hello"}}
-	req, tools := rt.BuildLLMRequest(msgs, false, "")
+	req := rt.BuildLLMRequest(msgs, false, "", nil)
 
 	require.Equal(t, "you are helpful", req.SystemMessage)
 	require.Equal(t, msgs, req.Messages)
-	require.Empty(t, tools)
+	require.Empty(t, req.Tools)
 }
 
 func TestBuildLLMRequest_WithRetrieverContext(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
-	req, _ := rt.BuildLLMRequest(nil, false, "extra context")
+	req := rt.BuildLLMRequest(nil, false, "extra context", nil)
 	require.Contains(t, req.SystemMessage, "you are helpful")
 	require.Contains(t, req.SystemMessage, "extra context")
 }
@@ -77,11 +77,10 @@ func TestBuildLLMRequest_SkipTools(t *testing.T) {
 	tool.EXPECT().Description().Return("").AnyTimes()
 	tool.EXPECT().Parameters().Return(nil).AnyTimes()
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		LLM:   sdkruntime.AgentLLM{Client: stubLLMClient{}},
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
-	req, _ := rt.BuildLLMRequest(nil, true, "")
+	req := rt.BuildLLMRequest(nil, true, "", []interfaces.Tool{tool})
 	require.Empty(t, req.Tools)
 }
 
@@ -120,7 +119,7 @@ func (a authorizerToolStub) Authorize(_ context.Context, _ map[string]any) (inte
 // --- RequiresApproval ---
 
 func TestRequiresApproval_NoPolicyToolHasApproval(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{})
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
 	tool := approvalToolStub{name: "t", approvalRequired: true}
 	require.True(t, rt.RequiresApproval(tool))
 }
@@ -128,14 +127,14 @@ func TestRequiresApproval_NoPolicyToolHasApproval(t *testing.T) {
 func TestRequiresApproval_NoPolicyToolNoApproval(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	tool := ifmocks.NewMockTool(ctrl)
-	rt := newTestRuntime(sdkruntime.AgentExecution{})
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
 	require.False(t, rt.RequiresApproval(tool))
 }
 
 // --- FetchConversationMessages ---
 
 func TestFetchConversationMessages_NoConversation(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Session: sdkruntime.AgentSession{Conversation: nil},
 	})
 	_, err := rt.FetchConversationMessages(context.Background(), noopLog(), "conv-1")
@@ -149,7 +148,7 @@ func TestFetchConversationMessages_Success(t *testing.T) {
 	msgs := []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "hi"}}
 	conv.EXPECT().ListMessages(gomock.Any(), "conv-1", gomock.Any()).Return(msgs, nil)
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Session: sdkruntime.AgentSession{Conversation: conv, ConversationSize: 10},
 	})
 	got, err := rt.FetchConversationMessages(context.Background(), noopLog(), "conv-1")
@@ -162,7 +161,7 @@ func TestFetchConversationMessages_Error(t *testing.T) {
 	conv := ifmocks.NewMockConversation(ctrl)
 	conv.EXPECT().ListMessages(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errors.New("store down"))
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Session: sdkruntime.AgentSession{Conversation: conv},
 	})
 	_, err := rt.FetchConversationMessages(context.Background(), noopLog(), "c")
@@ -173,10 +172,8 @@ func TestFetchConversationMessages_Error(t *testing.T) {
 // --- ExecuteTool ---
 
 func TestExecuteTool_UnknownTool(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{Tools: nil},
-	})
-	_, err := rt.ExecuteTool(context.Background(), noopLog(), "missing", nil)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	_, err := rt.ExecuteTool(context.Background(), noopLog(), nil, "missing", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
@@ -187,10 +184,8 @@ func TestExecuteTool_Success(t *testing.T) {
 	tool.EXPECT().Name().Return("calc").AnyTimes()
 	tool.EXPECT().Execute(gomock.Any(), gomock.Any()).Return("42", nil)
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
-	})
-	result, err := rt.ExecuteTool(context.Background(), noopLog(), "calc", map[string]any{"x": 1})
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	result, err := rt.ExecuteTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "calc", map[string]any{"x": 1})
 	require.NoError(t, err)
 	require.Equal(t, "42", result)
 }
@@ -201,10 +196,8 @@ func TestExecuteTool_ToolError(t *testing.T) {
 	tool.EXPECT().Name().Return("fail-tool").AnyTimes()
 	tool.EXPECT().Execute(gomock.Any(), gomock.Any()).Return(nil, errors.New("tool failed"))
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
-	})
-	_, err := rt.ExecuteTool(context.Background(), noopLog(), "fail-tool", nil)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	_, err := rt.ExecuteTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "fail-tool", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "tool failed")
 }
@@ -212,8 +205,8 @@ func TestExecuteTool_ToolError(t *testing.T) {
 // --- AuthorizeTool ---
 
 func TestAuthorizeTool_UnknownTool(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{})
-	_, err := rt.AuthorizeTool(context.Background(), noopLog(), "ghost", nil)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	_, err := rt.AuthorizeTool(context.Background(), noopLog(), nil, "ghost", nil)
 	require.Error(t, err)
 }
 
@@ -222,30 +215,24 @@ func TestAuthorizeTool_NoAuthorizer_AllowedByDefault(t *testing.T) {
 	tool := ifmocks.NewMockTool(ctrl)
 	tool.EXPECT().Name().Return("plain").AnyTimes()
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
-	})
-	result, err := rt.AuthorizeTool(context.Background(), noopLog(), "plain", nil)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	result, err := rt.AuthorizeTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "plain", nil)
 	require.NoError(t, err)
 	require.True(t, result.Allowed)
 }
 
 func TestAuthorizeTool_Allowed(t *testing.T) {
 	tool := authorizerToolStub{name: "secure", allow: true}
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
-	})
-	result, err := rt.AuthorizeTool(context.Background(), noopLog(), "secure", nil)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	result, err := rt.AuthorizeTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "secure", nil)
 	require.NoError(t, err)
 	require.True(t, result.Allowed)
 }
 
 func TestAuthorizeTool_Denied(t *testing.T) {
 	tool := authorizerToolStub{name: "gated", allow: false, reason: "not allowed"}
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
-	})
-	result, err := rt.AuthorizeTool(context.Background(), noopLog(), "gated", nil)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	result, err := rt.AuthorizeTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "gated", nil)
 	require.NoError(t, err)
 	require.False(t, result.Allowed)
 	require.Equal(t, "not allowed", result.Reason)
@@ -254,7 +241,7 @@ func TestAuthorizeTool_Denied(t *testing.T) {
 // --- ExecuteRetrievers ---
 
 func TestExecuteRetrievers_NoRetrievers(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{})
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "query")
 	require.NoError(t, err)
 	require.Equal(t, "", got)
@@ -266,7 +253,7 @@ func TestExecuteRetrievers_AllFail(t *testing.T) {
 	r.EXPECT().Name().Return("r1").AnyTimes()
 	r.EXPECT().Search(gomock.Any(), gomock.Any()).Return(nil, errors.New("down"))
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
 	})
 	_, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
@@ -282,7 +269,7 @@ func TestExecuteRetrievers_Success(t *testing.T) {
 		{Content: "doc content", Source: "src", Score: 0.95},
 	}, nil)
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
 	})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "my query")
@@ -293,28 +280,28 @@ func TestExecuteRetrievers_Success(t *testing.T) {
 // --- ExecuteLLM ---
 
 func TestExecuteLLM_LLMError(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{err: errors.New("llm unavailable")}},
 	})
-	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil)
+	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm unavailable")
 }
 
 func TestExecuteLLM_Success_NoTools(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{Content: "hello world"},
 		}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil)
+	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "hello world", result.Content)
 	require.Empty(t, result.ToolCalls)
 }
 
 func TestExecuteLLM_EmitsTextMessageEvents(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{Content: "response text"},
 		}},
@@ -325,7 +312,7 @@ func TestExecuteLLM_EmitsTextMessageEvents(t *testing.T) {
 		emitted = append(emitted, ev.Type())
 	}
 
-	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", emit)
+	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil, emit)
 	require.NoError(t, err)
 	require.Equal(t, []events.AgentEventType{
 		events.AgentEventTypeTextMessageStart,
@@ -335,18 +322,18 @@ func TestExecuteLLM_EmitsTextMessageEvents(t *testing.T) {
 }
 
 func TestExecuteLLM_NilEmitDoesNotPanic(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{Content: "ok"},
 		}},
 	})
 	require.NotPanics(t, func() {
-		_, _ = rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil)
+		_, _ = rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
 	})
 }
 
 func TestExecuteLLM_UnknownToolCallReturnsError(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{
 				Content: "",
@@ -356,13 +343,13 @@ func TestExecuteLLM_UnknownToolCallReturnsError(t *testing.T) {
 			},
 		}},
 	})
-	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil)
+	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
 
 func TestExecuteLLM_WithUsageMetrics(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{
 				Content: "ok",
@@ -370,7 +357,7 @@ func TestExecuteLLM_WithUsageMetrics(t *testing.T) {
 			},
 		}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil)
+	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result.Usage)
 	require.EqualValues(t, 10, result.Usage.PromptTokens)
@@ -384,7 +371,7 @@ func TestExecuteLLM_ToolCallWithEmptyDisplayName(t *testing.T) {
 	tool.EXPECT().Parameters().Return(nil).AnyTimes()
 	tool.EXPECT().DisplayName().Return("").AnyTimes() // empty → falls back to tool name
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{
 				ToolCalls: []*interfaces.ToolCall{
@@ -392,16 +379,15 @@ func TestExecuteLLM_ToolCallWithEmptyDisplayName(t *testing.T) {
 				},
 			},
 		}},
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil)
+	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", []interfaces.Tool{tool}, nil)
 	require.NoError(t, err)
 	require.Len(t, result.ToolCalls, 1)
 	require.Equal(t, "my-tool", result.ToolCalls[0].ToolDisplayName)
 }
 
 func TestExecuteLLM_NilToolCallInResponse(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{
 				Content:   "answer",
@@ -409,7 +395,7 @@ func TestExecuteLLM_NilToolCallInResponse(t *testing.T) {
 			},
 		}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil)
+	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
 	require.NoError(t, err)
 	require.Empty(t, result.ToolCalls)
 }
@@ -422,8 +408,8 @@ func TestRequiresApproval_PolicyOverrides(t *testing.T) {
 	policy := ifmocks.NewMockAgentToolApprovalPolicy(ctrl)
 	policy.EXPECT().RequiresApproval(tool).Return(true)
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{ApprovalPolicy: policy},
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		ToolApprovalPolicy: policy,
 	})
 	require.True(t, rt.RequiresApproval(tool))
 }
@@ -432,10 +418,8 @@ func TestRequiresApproval_PolicyOverrides(t *testing.T) {
 
 func TestAuthorizeTool_AuthorizerError(t *testing.T) {
 	tool := authorizerToolStub{name: "err-tool", err: errors.New("auth backend down")}
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
-	})
-	_, err := rt.AuthorizeTool(context.Background(), noopLog(), "err-tool", nil)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	_, err := rt.AuthorizeTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "err-tool", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "auth backend down")
 }
@@ -454,7 +438,7 @@ func TestExecuteRetrievers_PartialFailure(t *testing.T) {
 	bad.EXPECT().Name().Return("bad").AnyTimes()
 	bad.EXPECT().Search(gomock.Any(), gomock.Any()).Return(nil, errors.New("timeout"))
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{good, bad}},
 	})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
@@ -502,27 +486,27 @@ func (s *fixedStream) Err() error                         { return s.err }
 func (s *fixedStream) GetResult() *interfaces.LLMResponse { return s.result }
 
 func TestExecuteLLMStream_FallbackGenerate_Success(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{Content: "fallback answer"},
 		}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "fallback answer", result.Content)
 }
 
 func TestExecuteLLMStream_FallbackGenerate_LLMError(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{err: errors.New("llm down")}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm down")
 }
 
 func TestExecuteLLMStream_FallbackGenerate_EmitsEvents(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{Content: "hi"},
 		}},
@@ -530,7 +514,7 @@ func TestExecuteLLMStream_FallbackGenerate_EmitsEvents(t *testing.T) {
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", emit)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, emit)
 	require.NoError(t, err)
 	require.Equal(t, []events.AgentEventType{
 		events.AgentEventTypeTextMessageStart,
@@ -540,12 +524,12 @@ func TestExecuteLLMStream_FallbackGenerate_EmitsEvents(t *testing.T) {
 }
 
 func TestExecuteLLMStream_GenerateStreamError(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{
 			streamErr: errors.New("stream init failed"),
 		}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "stream init failed")
 }
@@ -556,10 +540,10 @@ func TestExecuteLLMStream_StreamError_AfterChunks(t *testing.T) {
 	}, nil)
 	s.err = errors.New("connection reset")
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "connection reset")
 }
@@ -567,10 +551,10 @@ func TestExecuteLLMStream_StreamError_AfterChunks(t *testing.T) {
 func TestExecuteLLMStream_StreamNilResult(t *testing.T) {
 	s := newFixedStream(nil, nil) // no chunks, GetResult() returns nil
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "stream completed without result")
 }
@@ -581,14 +565,14 @@ func TestExecuteLLMStream_TextChunks_EmitsCorrectEvents(t *testing.T) {
 		{ContentDelta: " world"},
 	}, &interfaces.LLMResponse{Content: "hello world"})
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
 
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", emit)
+	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, emit)
 	require.NoError(t, err)
 	require.Equal(t, "hello world", result.Content)
 	require.Equal(t, events.AgentEventTypeTextMessageStart, emitted[0])
@@ -603,14 +587,14 @@ func TestExecuteLLMStream_ReasoningChunks_EmitsReasoningEvents(t *testing.T) {
 		{ContentDelta: "answer"},
 	}, &interfaces.LLMResponse{Content: "answer"})
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
 
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", emit)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, emit)
 	require.NoError(t, err)
 
 	// Reasoning events must appear before text events
@@ -635,15 +619,14 @@ func TestExecuteLLMStream_ToolOnlyResponse_EmitsEmptyAssistantTurn(t *testing.T)
 		ToolCalls: []*interfaces.ToolCall{{ToolCallID: "1", ToolName: "search"}},
 	})
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
-		LLM:   sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
-		Tools: sdkruntime.AgentTools{Tools: []interfaces.Tool{tool}},
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
 
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", emit)
+	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", []interfaces.Tool{tool}, emit)
 	require.NoError(t, err)
 	require.Len(t, result.ToolCalls, 1)
 	// finalizeAssistantText emits a start/content/end even when no text chunks arrived
@@ -656,10 +639,10 @@ func TestExecuteLLMStream_WithUsageMetrics(t *testing.T) {
 		Content: "done",
 		Usage:   &interfaces.LLMUsage{PromptTokens: 8, CompletionTokens: 4, TotalTokens: 12},
 	})
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result.Usage)
 	require.EqualValues(t, 8, result.Usage.PromptTokens)
@@ -671,16 +654,16 @@ func TestExecuteLLMStream_NilChunkSkipped(t *testing.T) {
 		{ContentDelta: "text"},
 	}, &interfaces.LLMResponse{Content: "text"})
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.NoError(t, err)
 	require.Equal(t, "text", result.Content)
 }
 
 func TestExecuteLLMStream_FallbackGenerate_WithUsage(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{
 				Content: "done",
@@ -688,21 +671,21 @@ func TestExecuteLLMStream_FallbackGenerate_WithUsage(t *testing.T) {
 			},
 		}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result.Usage)
 	require.EqualValues(t, 5, result.Usage.PromptTokens)
 }
 
 func TestExecuteLLMStream_FallbackGenerate_UnknownToolCallError(t *testing.T) {
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
 			resp: &interfaces.LLMResponse{
 				ToolCalls: []*interfaces.ToolCall{{ToolCallID: "1", ToolName: "ghost"}},
 			},
 		}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
@@ -711,10 +694,10 @@ func TestExecuteLLMStream_Stream_UnknownToolCallError(t *testing.T) {
 	s := newFixedStream(nil, &interfaces.LLMResponse{
 		ToolCalls: []*interfaces.ToolCall{{ToolCallID: "1", ToolName: "ghost"}},
 	})
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil)
+	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
@@ -725,7 +708,7 @@ func TestExecuteRetrievers_EmptyDocsSkipped(t *testing.T) {
 	r.EXPECT().Name().Return("empty-kb").AnyTimes()
 	r.EXPECT().Search(gomock.Any(), gomock.Any()).Return([]interfaces.Document{}, nil) // no docs
 
-	rt := newTestRuntime(sdkruntime.AgentExecution{
+	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
 	})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")

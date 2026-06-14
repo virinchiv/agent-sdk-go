@@ -10,7 +10,6 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 )
 
@@ -49,9 +48,10 @@ func MustParseOTLP() OTLP {
 
 // BaseAgentOptions returns shared [agent.Option]s for both examples (identity, Temporal, LLM, logger).
 func BaseAgentOptions(cfg *excfg.Config, llm interfaces.LLMClient) []agent.Option {
-	reg := tools.NewRegistry()
-	reg.Register(calculator.New())
-
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg, calculator.New()); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 	opts := []agent.Option{
 		agent.WithName("observability-example-agent"),
 		agent.WithDescription("Agent demonstrating OTLP wiring (see examples/agent_with_observability)."),

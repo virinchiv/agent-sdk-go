@@ -20,15 +20,26 @@ import (
 )
 
 func testAgentWithRuntime(rt runtime.Runtime) *Agent {
+	cfg := agentConfig{
+		Name:             "TestAgent",
+		logger:           logger.DefaultLogger("error"),
+		maxSubAgentDepth: 2,
+		tracer:           observability.DefaultNoopTracer,
+		metrics:          observability.DefaultNoopMetrics,
+	}
+	if err := cfg.buildRegistries(); err != nil {
+		panic(err)
+	}
 	return &Agent{
-		agentConfig: agentConfig{
-			Name:             "TestAgent",
-			logger:           logger.DefaultLogger("error"),
-			maxSubAgentDepth: 2,
-			tracer:           observability.DefaultNoopTracer,
-			metrics:          observability.DefaultNoopMetrics,
-		},
-		runtime: rt,
+		agentConfig: cfg,
+		runtime:     rt,
+	}
+}
+
+func mustTestRegistries(t *testing.T, cfg *agentConfig) {
+	t.Helper()
+	if err := cfg.buildRegistries(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -43,10 +54,7 @@ func TestAgent_Run_ForwardsRequestAndReturnsResponse(t *testing.T) {
 		if req.UserPrompt != "hello" {
 			t.Errorf("UserPrompt = %q", req.UserPrompt)
 		}
-		name := ""
-		if req.AgentSpec != nil {
-			name = req.AgentSpec.Name
-		}
+		name := "TestAgent"
 		return &types.AgentRunResult{Content: "reply", AgentName: name, Model: "m1"}, nil
 	})
 
@@ -68,11 +76,7 @@ func TestAgent_Stream_SetsStreamingEnabled(t *testing.T) {
 	mockRT.EXPECT().ExecuteStream(gomock.Any(), gomock.Any()).DoAndReturn(func(ctx context.Context, req *runtime.ExecuteRequest) (<-chan events.AgentEvent, error) {
 		streamReq = req
 		ch := make(chan events.AgentEvent, 2)
-		evName := ""
-		if req.AgentSpec != nil {
-			evName = req.AgentSpec.Name
-		}
-		ch <- events.NewAgentRunFinishedEvent("", "", &types.AgentRunResult{AgentName: evName, Content: "done"})
+		ch <- events.NewAgentRunFinishedEvent("", "", &types.AgentRunResult{AgentName: "TestAgent", Content: "done"})
 		close(ch)
 		var recv <-chan events.AgentEvent = ch
 		return recv, nil
@@ -123,7 +127,7 @@ func TestAgent_RunAsync_DeliversResult(t *testing.T) {
 	mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).Return(&types.AgentRunResult{Content: "mock", AgentName: "TestAgent", Model: "stub"}, nil)
 
 	a := testAgentWithRuntime(mockRT)
-	resCh, apprCh, err := a.RunAsync(context.Background(), "async", nil)
+	resCh, err := a.RunAsync(context.Background(), "async", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +141,6 @@ func TestAgent_RunAsync_DeliversResult(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for RunAsync result")
-	}
-	for range apprCh {
-		t.Fatal("unexpected approval request")
 	}
 }
 
@@ -296,9 +297,16 @@ func (s *stubRuntime) Close()                                                   
 func TestBuildSubAgentSpecs_flat(t *testing.T) {
 	childRT := &stubRuntime{}
 	child := &Agent{agentConfig: agentConfig{Name: "Child"}, runtime: childRT}
-	parent := &Agent{agentConfig: agentConfig{Name: "Parent", subAgents: []*Agent{child}}, runtime: &stubRuntime{}}
+	mustTestRegistries(t, &child.agentConfig)
+	parentReg := NewSubAgentRegistry()
+	_ = parentReg.Register(child)
+	parent := &Agent{agentConfig: agentConfig{Name: "Parent", subAgentRegistry: parentReg}, runtime: &stubRuntime{}}
+	mustTestRegistries(t, &parent.agentConfig)
 
-	got := parent.buildSubAgentSpecs()
+	got, err := parent.resolveSubAgentSpecs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("want 1 spec, got %d", len(got))
 	}
@@ -324,11 +332,21 @@ func TestBuildSubAgentSpecs_flat(t *testing.T) {
 func TestBuildSubAgentSpecs_nested(t *testing.T) {
 	leafRT := &stubRuntime{}
 	leaf := &Agent{agentConfig: agentConfig{Name: "Leaf"}, runtime: leafRT}
+	mustTestRegistries(t, &leaf.agentConfig)
 	midRT := &stubRuntime{}
-	mid := &Agent{agentConfig: agentConfig{Name: "Mid", subAgents: []*Agent{leaf}}, runtime: midRT}
-	root := &Agent{agentConfig: agentConfig{Name: "Root", subAgents: []*Agent{mid}}, runtime: &stubRuntime{}}
+	midReg := NewSubAgentRegistry()
+	_ = midReg.Register(leaf)
+	mid := &Agent{agentConfig: agentConfig{Name: "Mid", subAgentRegistry: midReg}, runtime: midRT}
+	mustTestRegistries(t, &mid.agentConfig)
+	rootReg := NewSubAgentRegistry()
+	_ = rootReg.Register(mid)
+	root := &Agent{agentConfig: agentConfig{Name: "Root", subAgentRegistry: rootReg}, runtime: &stubRuntime{}}
+	mustTestRegistries(t, &root.agentConfig)
 
-	got := root.buildSubAgentSpecs()
+	got, err := root.resolveSubAgentSpecs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("want 1 top-level spec, got %d", len(got))
 	}
@@ -351,9 +369,16 @@ func TestBuildSubAgentSpecs_nested(t *testing.T) {
 func TestBuildSubAgentSpecs_noRuntimeStillBuilds(t *testing.T) {
 	// Sub-agent with no runtime still gets a spec — runtime decides what to do with it.
 	sub := &Agent{agentConfig: agentConfig{Name: "X"}}
-	parent := &Agent{agentConfig: agentConfig{subAgents: []*Agent{sub}}}
+	mustTestRegistries(t, &sub.agentConfig)
+	parentReg := NewSubAgentRegistry()
+	_ = parentReg.Register(sub)
+	parent := &Agent{agentConfig: agentConfig{subAgentRegistry: parentReg}}
+	mustTestRegistries(t, &parent.agentConfig)
 
-	got := parent.buildSubAgentSpecs()
+	got, err := parent.resolveSubAgentSpecs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("want 1 spec, got %v", got)
 	}
@@ -395,6 +420,9 @@ func TestAgent_Run_RequiresApprovalHandlerWhenToolsNeedApproval(t *testing.T) {
 		},
 		runtime: mockRT,
 	}
+	if err := a.buildToolRegistry(); err != nil {
+		t.Fatal(err)
+	}
 	_, err := a.Run(context.Background(), "hi", nil)
 	if err == nil || !strings.Contains(err.Error(), "WithApprovalHandler") {
 		t.Fatalf("got %v", err)
@@ -428,9 +456,176 @@ func TestWireInMemoryEventChannelToSubAgents(t *testing.T) {
 		agentConfig: agentConfig{Name: "Child", taskQueue: "q-c"},
 		runtime:     childRT,
 	}
+	parentReg := NewSubAgentRegistry()
+	_ = parentReg.Register(child)
 	parent := &Agent{
-		agentConfig: agentConfig{Name: "Parent", taskQueue: "q-p", subAgents: []*Agent{child}},
+		agentConfig: agentConfig{Name: "Parent", taskQueue: "q-p", subAgentRegistry: parentReg},
 		runtime:     parentRT,
 	}
-	wireInMemoryEventChannelToSubAgents(bus, parent)
+	shareEventBusWithSubAgent(bus, parent)
+}
+
+func TestToolsList_picksUpRegistryChange(t *testing.T) {
+	child := &Agent{agentConfig: agentConfig{Name: "Child"}}
+	mustTestRegistries(t, &child.agentConfig)
+	parentReg := NewSubAgentRegistry()
+	parent := &Agent{
+		agentConfig: agentConfig{
+			Name:             "Parent",
+			toolRegistry:     NewToolRegistry(),
+			subAgentRegistry: parentReg,
+			logger:           NoopLogger(),
+		},
+		runtime: &stubRuntime{},
+	}
+	if err := parent.buildMCPRegistry(); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.buildA2ARegistry(); err != nil {
+		t.Fatal(err)
+	}
+	_ = parent.toolRegistry.Register(mockTool{name: "echo"})
+
+	tools1, err := parent.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools1) != 1 {
+		t.Fatalf("tools1 = %d, want 1", len(tools1))
+	}
+
+	_ = parent.subAgentRegistry.Register(child)
+	tools2, err := parent.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tools2) != 2 {
+		t.Fatalf("tools2 = %d, want 2 after sub-agent register", len(tools2))
+	}
+	subAgents, err := parent.resolveSubAgentSpecs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subAgents) != 1 {
+		t.Fatalf("subAgents = %d, want 1", len(subAgents))
+	}
+	if agentConfigFingerprintTools(&parent.agentConfig, tools1) == agentConfigFingerprintTools(&parent.agentConfig, tools2) {
+		t.Fatal("run fingerprint should change when tools change")
+	}
+}
+
+func TestToolsList_stableOrder(t *testing.T) {
+	c := &agentConfig{
+		toolRegistry: NewToolRegistry(),
+	}
+	_ = c.toolRegistry.Register(mockTool{name: "b"})
+	_ = c.toolRegistry.Register(mockTool{name: "a"})
+	tools1, err := c.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp1 := agentConfigFingerprintTools(c, tools1)
+	tools2, err := c.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp2 := agentConfigFingerprintTools(c, tools2)
+	if fp1 != fp2 {
+		t.Fatalf("fingerprints differ: %q vs %q", fp1, fp2)
+	}
+}
+
+func TestAgent_RegistryAccessors(t *testing.T) {
+	if (*Agent)(nil).ToolRegistry() != nil {
+		t.Fatal("nil agent ToolRegistry should be nil")
+	}
+	if (*Agent)(nil).MCPRegistry() != nil {
+		t.Fatal("nil agent MCPRegistry should be nil")
+	}
+	if (*Agent)(nil).A2ARegistry() != nil {
+		t.Fatal("nil agent A2ARegistry should be nil")
+	}
+	if (*Agent)(nil).SubAgentRegistry() != nil {
+		t.Fatal("nil agent SubAgentRegistry should be nil")
+	}
+
+	toolReg := NewToolRegistry()
+	mcpReg := NewMCPRegistry(nil)
+	a2aReg := NewA2ARegistry(nil)
+	subReg := NewSubAgentRegistry()
+	child := &Agent{agentConfig: agentConfig{Name: "Child", taskQueue: "q-child"}}
+	mustTestRegistries(t, &child.agentConfig)
+	if err := subReg.Register(child); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Agent{
+		agentConfig: agentConfig{
+			Name:             "Parent",
+			toolRegistry:     toolReg,
+			mcpRegistry:      mcpReg,
+			a2aRegistry:      a2aReg,
+			subAgentRegistry: subReg,
+		},
+	}
+	if a.ToolRegistry() != toolReg {
+		t.Fatal("ToolRegistry accessor should return configured registry")
+	}
+	if a.MCPRegistry() != mcpReg {
+		t.Fatal("MCPRegistry accessor should return configured registry")
+	}
+	if a.A2ARegistry() != a2aReg {
+		t.Fatal("A2ARegistry accessor should return configured registry")
+	}
+	if a.SubAgentRegistry() != subReg {
+		t.Fatal("SubAgentRegistry accessor should return configured registry")
+	}
+}
+
+func TestAgent_Run_resolvesToolsPerRun(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockRT := rtmocks.NewMockRuntime(ctrl)
+
+	reg := NewToolRegistry()
+	if err := reg.Register(mockTool{name: "first"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := agentConfig{
+		Name:               "TestAgent",
+		toolRegistry:       reg,
+		logger:             logger.DefaultLogger("error"),
+		maxSubAgentDepth:   2,
+		tracer:             observability.DefaultNoopTracer,
+		metrics:            observability.DefaultNoopMetrics,
+		toolApprovalPolicy: AutoToolApprovalPolicy(),
+	}
+	mustTestRegistries(t, &cfg)
+	a := &Agent{agentConfig: cfg, runtime: mockRT}
+
+	var toolCounts []int
+	gomock.InOrder(
+		mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, req *runtime.ExecuteRequest) (*types.AgentRunResult, error) {
+			toolCounts = append(toolCounts, len(req.Tools))
+			return &types.AgentRunResult{Content: "ok"}, nil
+		}),
+		mockRT.EXPECT().Execute(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, req *runtime.ExecuteRequest) (*types.AgentRunResult, error) {
+			toolCounts = append(toolCounts, len(req.Tools))
+			return &types.AgentRunResult{Content: "ok"}, nil
+		}),
+	)
+
+	if _, err := a.Run(context.Background(), "one", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ToolRegistry().Register(mockTool{name: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Run(context.Background(), "two", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(toolCounts) != 2 || toolCounts[0] != 1 || toolCounts[1] != 2 {
+		t.Fatalf("tool counts per run = %v, want [1 2]", toolCounts)
+	}
 }

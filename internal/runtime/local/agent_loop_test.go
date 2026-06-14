@@ -19,21 +19,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// newLoopRT builds a LocalRuntime with the given LLM client and tools.
-// Unlike newLocalRT it also accepts MaxIterations so loop tests can control iterations precisely.
-func newLoopRT(t *testing.T, maxIter int, client interfaces.LLMClient, tools ...interfaces.Tool) *LocalRuntime {
+// newLoopRT builds a LocalRuntime with the given LLM client and optional tools.
+func newLoopRT(t *testing.T, maxIter int, client interfaces.LLMClient, tools ...interfaces.Tool) (*LocalRuntime, []interfaces.Tool) {
 	t.Helper()
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "loop-agent", SystemPrompt: "sys"}),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM:    sdkruntime.AgentLLM{Client: client},
-			Tools:  sdkruntime.AgentTools{Tools: tools},
 			Limits: sdkruntime.AgentLimits{MaxIterations: maxIter, Timeout: 10 * time.Second},
 		}),
 	)
 	require.NoError(t, err)
-	return rt
+	return rt, tools
+}
+
+func runLoop(ctx context.Context, rt *LocalRuntime, tools []interfaces.Tool, in AgentLoopInput) (*AgentLoopResult, error) {
+	if len(in.Tools) == 0 {
+		in.Tools = tools
+	}
+	return rt.RunAgentLoop(ctx, in)
+}
+
+func loopToolsInput(tools []interfaces.Tool) AgentLoopInput {
+	return AgentLoopInput{Tools: tools}
 }
 
 // noopEmit discards all events.
@@ -53,18 +62,18 @@ func TestRunAgentLoop_SimpleTextResponse(t *testing.T) {
 	client := &seqLLMClient{
 		responses: []*interfaces.LLMResponse{{Content: "hello world"}},
 	}
-	rt := newLoopRT(t, 5, client)
+	rt, _ := newLoopRT(t, 5, client)
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "hi"})
+	result, err := runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "hi"})
 	require.NoError(t, err)
 	require.Equal(t, "hello world", result.Content)
 }
 
 func TestRunAgentLoop_LLMError(t *testing.T) {
 	client := &seqLLMClient{errs: []error{errors.New("llm fail")}}
-	rt := newLoopRT(t, 5, client)
+	rt, _ := newLoopRT(t, 5, client)
 
-	_, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "hi"})
+	_, err := runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "hi"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm fail")
 }
@@ -77,14 +86,14 @@ func TestRunAgentLoop_DefaultMaxIterations(t *testing.T) {
 	}
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM:    sdkruntime.AgentLLM{Client: client},
 			Limits: sdkruntime.AgentLimits{MaxIterations: 0, Timeout: 10 * time.Second},
 		}),
 	)
 	require.NoError(t, err)
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "hi"})
+	result, err := runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "hi"})
 	require.NoError(t, err)
 	require.Equal(t, "early exit", result.Content)
 }
@@ -97,9 +106,9 @@ func TestRunAgentLoop_ToolCallThenFinalAnswer(t *testing.T) {
 		},
 	}
 	tool := stubTool{name: "add", result: "7"}
-	rt := newLoopRT(t, 5, client, tool)
+	rt, tools := newLoopRT(t, 5, client, tool)
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "add"})
+	result, err := runLoop(context.Background(), rt, tools, AgentLoopInput{UserPrompt: "add"})
 	require.NoError(t, err)
 	require.Equal(t, "sum is 7", result.Content)
 }
@@ -114,9 +123,9 @@ func TestRunAgentLoop_MaxIterationsForcesFinalCall(t *testing.T) {
 		},
 	}
 	tool := stubTool{name: "add", result: "7"}
-	rt := newLoopRT(t, 1, client, tool)
+	rt, tools := newLoopRT(t, 1, client, tool)
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "add"})
+	result, err := runLoop(context.Background(), rt, tools, AgentLoopInput{UserPrompt: "add"})
 	require.NoError(t, err)
 	require.Equal(t, "forced final answer", result.Content)
 }
@@ -137,10 +146,10 @@ func TestRunAgentLoop_SequentialMode(t *testing.T) {
 	}
 	tool1 := stubTool{name: "t1", result: "r1"}
 	tool2 := stubTool{name: "t2", result: "r2"}
-	rt := newLoopRT(t, 5, client, tool1, tool2)
+	rt, tools := newLoopRT(t, 5, client, tool1, tool2)
 	rt.ToolExecutionMode = types.AgentToolExecutionModeSequential
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "go"})
+	result, err := runLoop(context.Background(), rt, tools, AgentLoopInput{UserPrompt: "go"})
 	require.NoError(t, err)
 	require.Equal(t, "sequential done", result.Content)
 }
@@ -152,10 +161,10 @@ func TestRunAgentLoop_InvalidToolMode(t *testing.T) {
 		},
 	}
 	tool := stubTool{name: "t1", result: "r"}
-	rt := newLoopRT(t, 5, client, tool)
+	rt, tools := newLoopRT(t, 5, client, tool)
 	rt.ToolExecutionMode = "invalid-mode"
 
-	_, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "go"})
+	_, err := runLoop(context.Background(), rt, tools, AgentLoopInput{UserPrompt: "go"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "invalid tool execution mode")
 }
@@ -178,7 +187,7 @@ func TestRunAgentLoop_WithConversationID(t *testing.T) {
 	}
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM:     sdkruntime.AgentLLM{Client: client},
 			Session: sdkruntime.AgentSession{Conversation: conv, ConversationSize: 10},
 			Limits:  sdkruntime.AgentLimits{MaxIterations: 5, Timeout: 5 * time.Second},
@@ -186,7 +195,7 @@ func TestRunAgentLoop_WithConversationID(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{
+	result, err := runLoop(context.Background(), rt, nil, AgentLoopInput{
 		UserPrompt:     "new question",
 		ConversationID: "conv-x",
 	})
@@ -206,7 +215,7 @@ func TestRunAgentLoop_ConversationFetchErrorContinues(t *testing.T) {
 	}
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM:     sdkruntime.AgentLLM{Client: client},
 			Session: sdkruntime.AgentSession{Conversation: conv},
 			Limits:  sdkruntime.AgentLimits{MaxIterations: 5, Timeout: 5 * time.Second},
@@ -214,7 +223,7 @@ func TestRunAgentLoop_ConversationFetchErrorContinues(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{
+	result, err := runLoop(context.Background(), rt, nil, AgentLoopInput{
 		UserPrompt:     "hi",
 		ConversationID: "bad-conv",
 	})
@@ -240,7 +249,7 @@ func TestRunAgentLoop_RetrieverPrefetch(t *testing.T) {
 	}
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM: sdkruntime.AgentLLM{Client: client},
 			Retrievers: sdkruntime.AgentRetrievers{
 				Mode:       types.RetrieverModePrefetch,
@@ -251,7 +260,7 @@ func TestRunAgentLoop_RetrieverPrefetch(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "fetch me"})
+	result, err := runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "fetch me"})
 	require.NoError(t, err)
 	require.Equal(t, "answer with context", result.Content)
 }
@@ -265,7 +274,7 @@ func TestRunAgentLoop_RetrieverPrefetchError(t *testing.T) {
 	client := &seqLLMClient{}
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM: sdkruntime.AgentLLM{Client: client},
 			Retrievers: sdkruntime.AgentRetrievers{
 				Mode:       types.RetrieverModePrefetch,
@@ -276,7 +285,7 @@ func TestRunAgentLoop_RetrieverPrefetchError(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = rt.RunAgentLoop(context.Background(), AgentLoopInput{UserPrompt: "fetch"})
+	_, err = runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "fetch"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "retriever prefetch")
 }
@@ -293,7 +302,7 @@ func TestRunAgentLoop_ToolEventsEmittedToChannel(t *testing.T) {
 		},
 	}
 	tool := stubTool{name: "calc", result: "99"}
-	rt := newLoopRT(t, 5, client, tool)
+	rt, tools := newLoopRT(t, 5, client, tool)
 
 	ctx := context.Background()
 	channel := "test-tool-events"
@@ -307,7 +316,7 @@ func TestRunAgentLoop_ToolEventsEmittedToChannel(t *testing.T) {
 
 	// Run the loop in a goroutine; close the subscription after it finishes so eventCh drains.
 	go func() {
-		_, _ = rt.RunAgentLoop(ctx, AgentLoopInput{
+		_, _ = runLoop(ctx, rt, tools, AgentLoopInput{
 			UserPrompt:  "compute",
 			ChannelName: channel,
 		})
@@ -343,14 +352,14 @@ done:
 func TestExecuteToolsParallel_AllSucceed(t *testing.T) {
 	t1 := stubTool{name: "t1", result: "r1"}
 	t2 := stubTool{name: "t2", result: "r2"}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, t1, t2)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, t1, t2)
 
 	calls := []base.ToolCallRequest{
 		{ToolCallID: "c1", ToolName: "t1"},
 		{ToolCallID: "c2", ToolName: "t2"},
 	}
 
-	msgs, err := rt.executeToolsParallel(context.Background(), AgentLoopInput{}, "msg-1", calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg-1", calls, noopEmit)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	// Order must match submission order (parallel but results are indexed).
@@ -361,10 +370,10 @@ func TestExecuteToolsParallel_AllSucceed(t *testing.T) {
 func TestExecuteToolsParallel_ToolErrorInMessage(t *testing.T) {
 	// Parallel: individual tool errors become synthetic error messages, not hard failures.
 	failing := stubTool{name: "bad", execErr: errors.New("boom")}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, failing)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, failing)
 
 	calls := []base.ToolCallRequest{{ToolCallID: "c1", ToolName: "bad"}}
-	msgs, err := rt.executeToolsParallel(context.Background(), AgentLoopInput{}, "msg", calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg", calls, noopEmit)
 	require.NoError(t, err) // parallel swallows into message
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0].Content, "boom")
@@ -372,19 +381,19 @@ func TestExecuteToolsParallel_ToolErrorInMessage(t *testing.T) {
 
 func TestExecuteToolsParallel_ResultsOrderPreserved(t *testing.T) {
 	// Three tools; verify result order matches submission order despite concurrency.
-	tools := []interfaces.Tool{
+	toolSet := []interfaces.Tool{
 		stubTool{name: "a", result: "A"},
 		stubTool{name: "b", result: "B"},
 		stubTool{name: "c", result: "C"},
 	}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tools...)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, toolSet...)
 
 	calls := []base.ToolCallRequest{
 		{ToolCallID: "1", ToolName: "a"},
 		{ToolCallID: "2", ToolName: "b"},
 		{ToolCallID: "3", ToolName: "c"},
 	}
-	msgs, err := rt.executeToolsParallel(context.Background(), AgentLoopInput{}, "m", calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "m", calls, noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, []string{"A", "B", "C"}, []string{msgs[0].Content, msgs[1].Content, msgs[2].Content})
 }
@@ -396,13 +405,13 @@ func TestExecuteToolsParallel_ResultsOrderPreserved(t *testing.T) {
 func TestExecuteToolsSequential_AllSucceed(t *testing.T) {
 	t1 := stubTool{name: "s1", result: "v1"}
 	t2 := stubTool{name: "s2", result: "v2"}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, t1, t2)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, t1, t2)
 
 	calls := []base.ToolCallRequest{
 		{ToolCallID: "c1", ToolName: "s1"},
 		{ToolCallID: "c2", ToolName: "s2"},
 	}
-	msgs, err := rt.executeToolsSequential(context.Background(), AgentLoopInput{}, "msg", calls, noopEmit)
+	msgs, err := rt.executeToolsSequential(context.Background(), loopToolsInput(tools), "msg", calls, noopEmit)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	require.Equal(t, "v1", msgs[0].Content)
@@ -412,7 +421,7 @@ func TestExecuteToolsSequential_AllSucceed(t *testing.T) {
 func TestExecuteToolsSequential_HardErrorOnContextCancel(t *testing.T) {
 	// A tool that blocks until ctx is cancelled → executeSingleTool returns ctx.Err().
 	// Sequential should propagate that error.
-	rt := newLoopRT(t, 5, &seqLLMClient{})
+	rt, _ := newLoopRT(t, 5, &seqLLMClient{})
 	// Add a fake tool that needs approval with no channel or handler → unavailable (not an error).
 	// Instead: use a blocking LLM as a proxy — but we need a tool-level error.
 	// We'll cancel the context before calling.
@@ -431,10 +440,10 @@ func TestExecuteToolsSequential_HardErrorOnContextCancel(t *testing.T) {
 
 func TestExecuteSingleTool_Approved(t *testing.T) {
 	tool := stubTool{name: "my-tool", result: "hello"}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	emit, evs := captureEmit()
-	msg, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg-1",
+	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg-1",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "my-tool"}, emit)
 
 	require.NoError(t, err)
@@ -450,16 +459,16 @@ func TestExecuteSingleTool_Approved(t *testing.T) {
 
 func TestExecuteSingleTool_ToolExecError(t *testing.T) {
 	tool := stubTool{name: "boom", execErr: errors.New("exec failed")}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
-	msg, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg",
+	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "boom"}, noopEmit)
 	require.NoError(t, err) // tool errors become a content message, not a hard error
 	require.Contains(t, msg.Content, "exec failed")
 }
 
 func TestExecuteSingleTool_UnknownToolErrors(t *testing.T) {
-	rt := newLoopRT(t, 5, &seqLLMClient{}) // no tools registered
+	rt, _ := newLoopRT(t, 5, &seqLLMClient{}) // no tools registered
 
 	_, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "ghost"}, noopEmit)
@@ -480,9 +489,9 @@ func TestExecuteSingleTool_AuthorizationDenied(t *testing.T) {
 
 	// Use an authorizerToolStub from the runtime_test helpers (same package).
 	authTool := authorizerStubLocal{name: "restricted", allow: false, reason: "policy denied"}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, authTool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, authTool)
 
-	msg, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg",
+	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "restricted"}, noopEmit)
 	require.NoError(t, err)
 	require.Contains(t, msg.Content, msgToolUnauthorized)
@@ -491,9 +500,9 @@ func TestExecuteSingleTool_AuthorizationDenied(t *testing.T) {
 
 func TestExecuteSingleTool_AuthorizationError(t *testing.T) {
 	authTool := authorizerStubLocal{name: "err-tool", allow: false, authErr: errors.New("auth backend down")}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, authTool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, authTool)
 
-	_, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg",
+	_, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "err-tool"}, noopEmit)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "auth backend down")
@@ -502,10 +511,10 @@ func TestExecuteSingleTool_AuthorizationError(t *testing.T) {
 func TestExecuteSingleTool_ApprovalUnavailable(t *testing.T) {
 	// No channel, no handler → approval status = unavailable, tool not run.
 	tool := stubTool{name: "guarded", result: "secret", needsApproval: true}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	msg, err := rt.executeSingleTool(context.Background(),
-		AgentLoopInput{ChannelName: "", ApprovalHandler: nil}, "msg",
+		AgentLoopInput{ChannelName: "", ApprovalHandler: nil, Tools: tools}, "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "guarded", NeedsApproval: true}, noopEmit)
 	require.NoError(t, err)
 	require.Contains(t, msg.Content, msgToolApprovalUnavailable)
@@ -513,14 +522,14 @@ func TestExecuteSingleTool_ApprovalUnavailable(t *testing.T) {
 
 func TestExecuteSingleTool_ApprovalHandlerApproves(t *testing.T) {
 	tool := stubTool{name: "guarded", result: "ok", needsApproval: true}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	handler := func(_ context.Context, req *types.ApprovalRequest) {
 		_ = req.Respond(types.ApprovalStatusApproved)
 	}
 
 	msg, err := rt.executeSingleTool(context.Background(),
-		AgentLoopInput{ApprovalHandler: handler}, "msg",
+		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "guarded", NeedsApproval: true}, noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, "ok", msg.Content)
@@ -528,14 +537,14 @@ func TestExecuteSingleTool_ApprovalHandlerApproves(t *testing.T) {
 
 func TestExecuteSingleTool_ApprovalHandlerRejects(t *testing.T) {
 	tool := stubTool{name: "guarded", result: "secret", needsApproval: true}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	handler := func(_ context.Context, req *types.ApprovalRequest) {
 		_ = req.Respond(types.ApprovalStatusRejected)
 	}
 
 	msg, err := rt.executeSingleTool(context.Background(),
-		AgentLoopInput{ApprovalHandler: handler}, "msg",
+		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "guarded", NeedsApproval: true}, noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, msgToolRejected, msg.Content)
@@ -545,7 +554,7 @@ func TestExecuteSingleTool_StreamingApproveUnblocks(t *testing.T) {
 	// Streaming path: ChannelName set, no ApprovalHandler.
 	// We call rt.Approve from a goroutine to unblock executeSingleTool.
 	tool := stubTool{name: "guarded", result: "stream-ok", needsApproval: true}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	// Capture the approval token from the emitted CUSTOM event.
 	var capturedToken string
@@ -583,7 +592,7 @@ func TestExecuteSingleTool_StreamingApproveUnblocks(t *testing.T) {
 		defer close(done)
 		resultMsg, resultErr = rt.executeSingleTool(
 			context.Background(),
-			AgentLoopInput{ChannelName: "some-channel"}, // streaming path
+			AgentLoopInput{ChannelName: "some-channel", Tools: tools}, // streaming path
 			"msg",
 			base.ToolCallRequest{ToolCallID: "c1", ToolName: "guarded", NeedsApproval: true},
 			emit,
@@ -609,7 +618,7 @@ func TestExecuteSingleTool_StreamingApproveUnblocks(t *testing.T) {
 
 func TestExecuteSingleTool_ApprovalContextCancel(t *testing.T) {
 	tool := stubTool{name: "guarded", result: "should not run", needsApproval: true}
-	rt := newLoopRT(t, 5, &seqLLMClient{}, tool)
+	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -621,7 +630,7 @@ func TestExecuteSingleTool_ApprovalContextCancel(t *testing.T) {
 	}()
 
 	_, err := rt.executeSingleTool(ctx,
-		AgentLoopInput{ChannelName: "some-channel"}, "msg",
+		AgentLoopInput{ChannelName: "some-channel", Tools: tools}, "msg",
 		base.ToolCallRequest{ToolCallID: "c1", ToolName: "guarded", NeedsApproval: true}, noopEmit)
 
 	<-done
@@ -634,14 +643,14 @@ func TestExecuteSingleTool_ApprovalContextCancel(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPublishEventToChannel_NoOpWhenChannelEmpty(t *testing.T) {
-	rt := newLoopRT(t, 5, &seqLLMClient{})
+	rt, _ := newLoopRT(t, 5, &seqLLMClient{})
 	require.NotPanics(t, func() {
 		rt.publishEventToChannel(context.Background(), "", events.NewAgentRunErrorEvent("x"))
 	})
 }
 
 func TestPublishEventToChannel_NoOpWhenNilEvent(t *testing.T) {
-	rt := newLoopRT(t, 5, &seqLLMClient{})
+	rt, _ := newLoopRT(t, 5, &seqLLMClient{})
 	require.NotPanics(t, func() {
 		rt.publishEventToChannel(context.Background(), "ch", nil)
 	})
@@ -665,7 +674,7 @@ func TestPublishEventToChannel_NoOpWhenNilEventbus(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPersistConversationMessages_NilConversation(t *testing.T) {
-	rt := newLoopRT(t, 5, &seqLLMClient{})
+	rt, _ := newLoopRT(t, 5, &seqLLMClient{})
 	// No conversation configured — must not panic or error.
 	err := persistConversationMessages(context.Background(), rt, "c", []interfaces.Message{
 		{Role: interfaces.MessageRoleUser, Content: "hi"},
@@ -680,7 +689,7 @@ func TestPersistConversationMessages_StoresAllMessages(t *testing.T) {
 
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM:     sdkruntime.AgentLLM{Client: &seqLLMClient{}},
 			Session: sdkruntime.AgentSession{Conversation: conv},
 			Limits:  sdkruntime.AgentLimits{Timeout: 5 * time.Second},
@@ -704,7 +713,7 @@ func TestPersistConversationMessages_AddMessageErrorWarnsOnly(t *testing.T) {
 
 	rt, err := NewLocalRuntime(
 		WithLogger(logger.NoopLogger()),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM:     sdkruntime.AgentLLM{Client: &seqLLMClient{}},
 			Session: sdkruntime.AgentSession{Conversation: conv},
 			Limits:  sdkruntime.AgentLimits{Timeout: 5 * time.Second},

@@ -33,6 +33,7 @@
   - [A2A](#a2a-agent-to-agent)
   - [Retrieval (RAG)](#retrieval-rag)
   - [Sub-agents](#sub-agents)
+  - [Managing Capabilities at Runtime](#managing-capabilities-at-runtime)
   - [Approvals](#approvals)
   - [Timeouts and deadlines](#timeouts-and-deadlines)
   - [Custom tools](#custom-tools)
@@ -347,11 +348,13 @@ Custom tools may also implement:
 
 - `interfaces.ToolApproval` — tool-level hint for **interactive human approval**. Use this when a person should decide whether the tool runs, and no agent-level approval policy is set.
 - `interfaces.ToolAuthorizer` — tool-level **programmatic authorization**. Use this when code should decide whether the tool runs before approval/execute (for example: scopes, tenancy, environment flags, or feature access). Return `Allow=false` to deny the tool call without executing it.
+- `interfaces.ToolKindProvider` — optional interface that reports the tool's origin category. The built-in tool wrappers already implement it (`"mcp"`, `"a2a"`, `"sub-agent"`, `"retriever"`). Implement it on custom tools when you want to distinguish origin in logs or metrics. Use `interfaces.KindOf(tool)` to read the kind from any tool; returns `"native"` when the interface is not implemented.
 
 ```go
-reg := tools.NewRegistry()
-reg.Register(calculator.New())
-reg.Register(weather.New())
+reg := agent.NewToolRegistry()
+if err := agent.RegisterTools(reg, calculator.New(), weather.New()); err != nil {
+    log.Fatal(err)
+}
 
 a, _ := agent.NewAgent(
     agent.WithTemporalConfig(...),
@@ -372,7 +375,7 @@ result, _ := a.Run(ctx, "What's the weather in Tokyo?", nil)
 
 MCP servers extend your agent with external tools that work identically to built-in tools across `Run`, `Stream`, `RunAsync`, and approval gates. Each server needs a **unique** name in config (the `WithMCPConfig` map key or the first argument to `mcpclient.NewClient`); tools are registered under stable names so they do not collide when several servers expose the same logical tool id.
 
-At `NewAgent`, the SDK connects to each server, discovers its tools, applies any `**ToolFilter`** (`AllowTools`/`BlockTools`), and registers the results — failing fast if a server is unreachable.
+At `NewAgent`, the SDK connects to each server, discovers its tools, applies any `**ToolFilter`** (`AllowTools`/`BlockTools`), and validates the setup — failing fast if a server is unreachable. After creation, add or remove MCP servers at any time via `a.MCPRegistry()` (see [Managing Capabilities at Runtime](#managing-capabilities-at-runtime)); the next `Run`, `Stream`, or `RunAsync` uses whatever servers are in the registry at that point.
 
 Use `mcp.MCPStdio` (local process) or `mcp.MCPStreamableHTTP` (remote) from `pkg/mcp` for transport. Streamable HTTP supports `Token`, `OAuthClientCreds`, custom `Headers`, and `SkipTLSVerify` for local HTTPS. You can register multiple servers per agent with different transports, timeouts, retries, and filters per server.
 
@@ -516,7 +519,7 @@ if err := a.RunA2A(ctx); err != nil {
 
 Remote [A2A](https://github.com/a2aproject/A2A) agents connect as tool providers: the SDK fetches the agent card, discovers skills, and registers each skill as a first-class tool available to the LLM across `Run`, `Stream`, `RunAsync`, and approval gates. Each server entry needs a **unique** name (the `WithA2AConfig` map key or the first argument to `a2aclient.NewClient`); tools are registered under stable names (`a2a_<server>_<skillId>`) that do not collide across multiple remote agents.
 
-At `NewAgent`, the SDK resolves the agent card, applies any `**SkillFilter`** (`AllowSkills`/`BlockSkills`), and registers the resulting tools — failing fast if a server is unreachable.
+At `NewAgent`, the SDK resolves the agent card, applies any `**SkillFilter`** (`AllowSkills`/`BlockSkills`), and validates the setup — failing fast if a server is unreachable. After creation, add or remove A2A agents at any time via `a.A2ARegistry()` (see [Managing Capabilities at Runtime](#managing-capabilities-at-runtime)); the next run uses whatever agents are in the registry at that point.
 
 Configure auth, timeout, and skill filtering per server entry. `SkipTLSVerify` is available for local HTTPS development only.
 
@@ -701,6 +704,66 @@ result, _ := mainAgent.Run(ctx, "What is 144 divided by 12?", nil)
 
 **Stream event fan-in:** Subscribe once on the main agent; the stream includes the full tree (tool events, `**AgentEventTypeCustom`** for approvals/delegation, optional `**AgentEventTypeStepStarted` / `AgentEventTypeStepFinished**` around sub-agent runs, `**AgentEventTypeRunFinished**`, etc.). For each event, use `**ev.Type()**` and type-assert to the concrete struct (see [examples/agent_with_stream](examples/agent_with_stream), [examples/agent_with_subagents](examples/agent_with_subagents)). For `**CUSTOM**`, assert `***AgentCustomEvent**`, then `[ParseCustomEventApproval](pkg/agent/event.go)` or `[ParseCustomEventDelegation](pkg/agent/event.go)` to read `**AgentName**`, `**ApprovalToken**`, `**ToolName**` or `**SubAgentName**`, and call `[OnApproval](pkg/agent/approval.go)` with the token.
 
+### Managing Capabilities at Runtime
+
+All capabilities are resolved from their respective registries at execution time. Each `Run`, `Stream`, or `RunAsync` picks up the current registry state at call time — no restart needed.
+
+| What you want to change | Accessor | Methods |
+|---|---|---|
+| Native / custom tools | `a.ToolRegistry()` | `Register(tool)` · `Unregister(name)` |
+| MCP servers | `a.MCPRegistry()` | `Register(name, config)` · `RegisterClient(cl)` · `Unregister(name)` |
+| A2A remote agents | `a.A2ARegistry()` | `Register(name, config)` · `RegisterClient(cl)` · `Unregister(name)` |
+| Specialist sub-agents | `a.SubAgentRegistry()` | `Register(sub)` · `Unregister(name)` |
+
+All registries are safe for concurrent use. Name uniqueness is enforced — `Register` on a name already in the registry returns `agent.ErrRegistryDuplicate`. To update an existing entry, call `Unregister` first then `Register` with the new configuration.
+
+**Tools example**
+
+```go
+a, _ := agent.NewAgent(agent.WithToolRegistry(reg), ...)
+
+// first run — only tools already in reg
+result, _ := a.Run(ctx, "What is 17 * 23?", nil)
+
+// add a tool before the next run
+_ = a.ToolRegistry().Register(calculator.New())
+result, _ = a.Run(ctx, "What is 17 * 23?", nil) // now has calculator
+
+// remove it again
+_ = a.ToolRegistry().Unregister("calculator")
+```
+
+**MCP example** — add a new MCP server after the agent is already running:
+
+```go
+mcpReg := a.MCPRegistry()
+cl, _ := mcpclient.NewClient("extra-server", mcp.MCPStreamableHTTP{URL: "https://..."})
+_ = mcpReg.RegisterClient(cl)
+// next run includes tools from extra-server
+result, _ := a.Run(ctx, prompt, nil)
+```
+
+**Sub-agent example** — attach a specialist to a running main agent:
+
+```go
+math, _ := agent.NewAgent(agent.WithName("Math"), ...)
+_ = a.SubAgentRegistry().Register(math)
+// next run can delegate to Math
+result, _ := a.Run(ctx, "What is 144 / 12?", nil)
+
+// revoke delegation
+_ = a.SubAgentRegistry().Unregister("Math")
+```
+
+See [examples/agent_with_tools/dynamic_registry](examples/agent_with_tools/dynamic_registry) for a runnable tool registration example.
+
+**When to use static vs dynamic setup**
+
+- **Static** (`WithTools`, `WithMCPConfig`, `WithSubAgents`, etc.) — all options resolved at `NewAgent`; fastest, most straightforward for fixed configurations.
+- **Dynamic** (registries after `NewAgent`) — needed when the capability set changes based on tenant, user session, runtime feature flags, or incremental deployment.
+
+Both styles can be combined: pass initial tools via `WithTools` or `WithToolRegistry` at creation, then add or remove via the registry later.
+
 ### Approvals
 
 The model can trigger registry tools (`WithTools` / registry), MCP tools, and delegation to specialists (`WithSubAgents`). **User approval** can be required before any of those run. `WithToolApprovalPolicy` is the one setting that governs all of them. If you omit it, the default is **require-all**—each path goes through your approval handler. For `Run`, set `WithApprovalHandler` whenever approvals can occur. See [examples/agent_with_subagents](examples/agent_with_subagents).
@@ -745,7 +808,7 @@ Math agent:  WithToolApprovalPolicy(Auto)         → calculator inside speciali
 Math agent:  WithToolApprovalPolicy(RequireAll)   → calculator inside specialist → approval (fan-in on main stream)
 ```
 
-Each `ApprovalRequest` includes `Respond`; call `req.Respond(Approved|Rejected)` when ready (same as RunAsync):
+Each `ApprovalRequest` includes `Respond`; call `req.Respond(Approved|Rejected)` in `WithApprovalHandler`:
 
 ```go
 a, _ := agent.NewAgent(
@@ -777,21 +840,20 @@ for ev := range eventCh {
 }
 ```
 
-**RunAsync** — channel-based completion without streaming. Do not set `WithApprovalHandler` for this path (it is replaced for the duration of the run). Receive each pending approval on `approvalCh` and call `req.Respond` (same idea as `WithApprovalHandler`):
+**RunAsync** — starts the run in a goroutine and returns `resultCh`, which delivers one `AgentRunAsyncResult` when the run finishes (including after any tool approvals). Use `resultCh` for the final response; handle tool and sub-agent approvals with `WithApprovalHandler`, the same callback as `Run`.
 
 ```go
-resultCh, approvalCh, err := a.RunAsync(ctx, prompt, nil)
-if err != nil { /* validation error before goroutine started */ }
+a, _ := agent.NewAgent(
+    agent.WithApprovalHandler(func(ctx context.Context, req *agent.ApprovalRequest) {
+        _ = req.Respond(agent.ApprovalStatusApproved)
+    }),
+    // ...
+)
 
-go func() {
-    for req := range approvalCh {
-        _ = req.Respond(agent.ApprovalStatusApproved) // or Rejected
-    }
-}()
-
+resultCh, _ := a.RunAsync(ctx, prompt, nil)
 res := <-resultCh
-if res.Err != nil { /* handle */ }
-// res.Response.Content
+if res.Error != nil { /* handle */ }
+fmt.Println(res.Result.Content)
 ```
 
 For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use `**OnApproval`** as in the snippet above—the activity token string is `**ApprovalToken**` from `**ParseCustomEventApproval**` / `**ParseCustomEventDelegation**` (not a field on the `**AgentEvent**` interface).
@@ -804,7 +866,7 @@ For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use `**OnApp
 
 - **Run:** `Run()` returns `nil, err` with the failure.
 - **Stream:** An `AgentEventError` is emitted on the event channel with the error message.
-- **RunAsync:** `resultCh` receives `RunAsyncResult` with `Err` set.
+- **RunAsync:** `resultCh` receives `AgentRunAsyncResult` with `Error` set.
 
 ### Timeouts and deadlines
 
@@ -1113,7 +1175,8 @@ a, _ := agent.NewAgent(
 
 | Span | Emitted by |
 |---|---|
-| `agent.run` | `Agent.Run` / `Agent.RunAsync` |
+| `agent.run` | `Agent.Run` |
+| `agent.run.async` | `Agent.RunAsync` |
 | `agent.stream` | `Agent.Stream` (dispatch phase) |
 | `a2a.execute` | A2A server executor per request |
 | `llm.generate` | `AgentLLMActivity` (sync LLM call) |

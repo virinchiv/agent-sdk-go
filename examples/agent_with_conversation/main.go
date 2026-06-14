@@ -11,7 +11,6 @@ import (
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/conversation/redis"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
 )
@@ -34,10 +33,13 @@ func main() {
 	}
 	defer func() { _ = conv.Close() }()
 
-	reg := tools.NewRegistry()
-	reg.Register(echo.New())
-	reg.Register(calculator.New())
-
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg,
+		echo.New(),
+		calculator.New(),
+	); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 	opts := []agent.Option{
 		agent.WithName("agent-with-conversation"),
 		agent.WithDescription("Agent with Redis conversation and tools for multi-turn context"),

@@ -13,6 +13,7 @@ import (
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	"github.com/google/uuid"
 )
@@ -100,7 +101,7 @@ func (rt *LocalRuntime) publishLifecycleEvent(channel string, ev events.AgentEve
 // Execute runs the agent loop synchronously and returns the final result.
 // Approval is handled inline via req.ApprovalHandler (no out-of-band tokens).
 func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequest) (*types.AgentRunResult, error) {
-	agentName := agentNameFromRequest(req)
+	agentName := agentNameFromRuntime(rt)
 	rt.logger.Debug(ctx, "runtime execute",
 		slog.String("scope", "runtime"),
 		slog.String("agent", agentName),
@@ -108,7 +109,7 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 
 	// Apply agent timeout when the caller has not set a deadline.
 	runCtx := ctx
-	if d := rt.AgentExecution.Limits.Timeout; d > 0 {
+	if d := rt.AgentConfig.Limits.Timeout; d > 0 {
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 			var cancel context.CancelFunc
 			runCtx, cancel = context.WithTimeout(ctx, d)
@@ -119,6 +120,8 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 	conversationID := base.GetConversationID(req)
 	runID := uuid.New().String()
 
+	tools := req.Tools
+
 	loopResult, err := rt.RunAgentLoop(runCtx, AgentLoopInput{
 		UserPrompt:       req.UserPrompt,
 		ConversationID:   conversationID,
@@ -128,6 +131,7 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 		SubAgentRoutes:   buildSubAgentRoutes(req.SubAgents),
 		SubAgentDepth:    0,
 		MaxSubAgentDepth: req.MaxSubAgentDepth,
+		Tools:            tools,
 	})
 	if err != nil {
 		return nil, err
@@ -137,7 +141,7 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 	return &types.AgentRunResult{
 		Content:   loopResult.Content,
 		AgentName: strings.TrimSpace(agentName),
-		Model:     rt.AgentExecution.LLM.Client.GetModel(),
+		Model:     rt.AgentConfig.LLM.Client.GetModel(),
 		Metadata:  map[string]any{},
 		Usage:     loopResult.Usage,
 	}, nil
@@ -146,7 +150,7 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 // ExecuteStream starts the agent loop in a goroutine and returns a channel of AgentEvent.
 // RUN_STARTED is emitted before the loop begins; RUN_FINISHED or RUN_ERROR closes the channel.
 func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.ExecuteRequest) (<-chan events.AgentEvent, error) {
-	agentName := agentNameFromRequest(req)
+	agentName := agentNameFromRuntime(rt)
 	rt.logger.Debug(ctx, "runtime execute stream",
 		slog.String("scope", "runtime"),
 		slog.String("agent", agentName),
@@ -164,7 +168,7 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 	// Apply agent timeout.
 	runCtx := ctx
 	var runCancel context.CancelFunc
-	if d := rt.AgentExecution.Limits.Timeout; d > 0 {
+	if d := rt.AgentConfig.Limits.Timeout; d > 0 {
 		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 			runCtx, runCancel = context.WithTimeout(ctx, d)
 		}
@@ -196,13 +200,16 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 
 	// Run the agent loop in a goroutine; emit lifecycle terminal event on completion.
 	go func() {
+		var tools []interfaces.Tool
+		if req != nil {
+			tools = req.Tools
+		}
 		defer func() {
 			if runCancel != nil {
 				runCancel()
 			}
 			_ = closeSub()
 		}()
-
 		result, loopErr := rt.RunAgentLoop(runCtx, AgentLoopInput{
 			UserPrompt:       req.UserPrompt,
 			ConversationID:   conversationID,
@@ -212,6 +219,7 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 			SubAgentRoutes:   buildSubAgentRoutes(req.SubAgents),
 			SubAgentDepth:    0,
 			MaxSubAgentDepth: req.MaxSubAgentDepth,
+			Tools:            tools,
 		})
 
 		if loopErr != nil {
@@ -226,7 +234,7 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 		agentRunResult := &types.AgentRunResult{
 			Content:   result.Content,
 			AgentName: strings.TrimSpace(agentName),
-			Model:     rt.AgentExecution.LLM.Client.GetModel(),
+			Model:     rt.AgentConfig.LLM.Client.GetModel(),
 			Metadata:  map[string]any{},
 			Usage:     result.Usage,
 		}
@@ -268,9 +276,9 @@ func (rt *LocalRuntime) SetEventBus(bus eventbus.EventBus) {
 	rt.eventbus = bus
 }
 
-func agentNameFromRequest(req *sdkruntime.ExecuteRequest) string {
-	if req == nil || req.AgentSpec == nil {
+func agentNameFromRuntime(rt *LocalRuntime) string {
+	if rt == nil {
 		return ""
 	}
-	return req.AgentSpec.Name
+	return rt.AgentSpec.Name
 }

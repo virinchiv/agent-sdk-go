@@ -90,7 +90,7 @@ func TestBuildTemporalRuntime_userProvidedTemporalClient_otelTracer_warns(t *tes
 		WithLogger(log),
 		WithTracer(newTestOTelTracer()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "x"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestBuildTemporalRuntime_userProvidedTemporalClient_defaultTracer_noManualI
 		WithTemporalClient(tc, "tq"),
 		WithLogger(log),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "x"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestBuildTemporalRuntime_userProvidedTemporalClient_explicitNoopTracer_noMa
 		WithLogger(log),
 		WithTracer(observability.DefaultNoopTracer),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "x"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestBuildTemporalRuntime_RequiresTemporalOrClient(t *testing.T) {
 		WithPolicyFingerprint("test"),
 		WithMCPFingerprint("test"),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "test"}),
-		WithAgentExecution(sdkruntime.AgentExecution{
+		WithAgentConfig(sdkruntime.AgentConfig{
 			LLM: sdkruntime.AgentLLM{Client: stubLLM{}},
 		}),
 	}
@@ -165,7 +165,7 @@ func TestBuildTemporalRuntime_RequiresLLMClient(t *testing.T) {
 		WithTemporalClient(tc, "tq"),
 		WithLogger(logger.NoopLogger()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "x"}),
-		WithAgentExecution(sdkruntime.AgentExecution{}),
+		WithAgentConfig(sdkruntime.AgentConfig{}),
 	)
 	if err == nil || !strings.Contains(err.Error(), "llm client is required") {
 		t.Fatalf("got %v", err)
@@ -179,7 +179,7 @@ func TestBuildTemporalRuntime_InstanceIdSuffix(t *testing.T) {
 		WithInstanceId("pod1"),
 		WithLogger(logger.NoopLogger()),
 		WithAgentSpec(sdkruntime.AgentSpec{Name: "x"}),
-		WithAgentExecution(sdkruntime.AgentExecution{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
+		WithAgentConfig(sdkruntime.AgentConfig{LLM: sdkruntime.AgentLLM{Client: stubLLM{}}}),
 	)
 	if err != nil {
 		t.Fatal(err)

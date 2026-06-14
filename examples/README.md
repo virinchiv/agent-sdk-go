@@ -29,10 +29,11 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | `agent_with_tools/approval` | Tools + `WithApprovalHandler` — user approves or rejects each tool run (`Run` only) | — |
 | `agent_with_tools/authorizer` | Custom tool authorization via `interfaces.ToolAuthorizer` — denied calls surface as `tool_result` with `denied` status | — |
 | `agent_with_tools/custom` | Custom tools via `WithTools` — implementing `interfaces.Tool` | — |
+| `agent_with_tools/dynamic_registry` | Register a tool on a live agent between two runs — shows `ToolRegistry().Register` changing what the model can call without restarting | — |
 | `agent_with_stream` | Streaming with `Stream` — **`TEXT_MESSAGE_*`**, **`TOOL_CALL_*`**, **`RUN_FINISHED`**; prints token usage from **`RUN_FINISHED`** result when present | — |
 | `agent_with_agui` | Go **`POST /agui` SSE** + **Next.js + CopilotKit** ([`agent_with_agui/README.md`](agent_with_agui/README.md)) — agent server, then `ui/` dev server | UI manual (`npm run dev` in `ui/`) |
 | `agent_with_stream_conversation` | Stream + conversation; avoid printing the same text twice (**`TEXT_MESSAGE_CONTENT`** deltas vs **`RUN_FINISHED`** body) | — |
-| `agent_with_run_async` | `RunAsync` — `resultCh` + `approvalCh`; use `req.Respond` (no `WithApprovalHandler`) | — |
+| `agent_with_run_async` | `RunAsync` — `resultCh`; `WithApprovalHandler` for approvals (same as `Run`) | — |
 | `multiple_agents` | Multiple agents with `WithInstanceId` — sequential or concurrent | — |
 | `agent_with_subagents` | Main agent + math specialist — `WithSubAgents`; prints **`STEP_STARTED` / `STEP_FINISHED`** (sub-agent name) around each child run when using `Stream` | — |
 | `agent_with_json_response` | Structured LLM output — `WithResponseFormat` + `interfaces.JSONSchema` (JSON with schema; no tools) | — |
@@ -99,6 +100,7 @@ go run ./agent_with_tools/basic "What's the weather in Tokyo?"
 go run ./agent_with_tools/approval "What is 15 + 27?"
 go run ./agent_with_tools/authorizer "Get the protected note for roadmap."
 go run ./agent_with_tools/custom "Reverse 'hello world'"
+go run ./agent_with_tools/dynamic_registry
 ```
 
 ### Streaming (partial content as tokens arrive)

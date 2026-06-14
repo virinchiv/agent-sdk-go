@@ -13,7 +13,8 @@ type SubAgentRoute struct {
 
 // buildSubAgentRoutes converts the runtime-agnostic SubAgentSpec tree (from ExecuteRequest)
 // into a Temporal-specific SubAgentRoute map. Each spec's Runtime is type-asserted to
-// *TemporalRuntime to extract the task queue and agent fingerprint.
+// *TemporalRuntime to extract the task queue and per-run agent fingerprint (static runtime
+// digests + resolved spec.Tools).
 func buildSubAgentRoutes(specs []*sdkruntime.SubAgentSpec) map[string]SubAgentRoute {
 	if len(specs) == 0 {
 		return nil
@@ -26,7 +27,7 @@ func buildSubAgentRoutes(specs []*sdkruntime.SubAgentSpec) map[string]SubAgentRo
 		route := SubAgentRoute{Name: spec.Name}
 		if tr, ok := spec.Runtime.(*TemporalRuntime); ok {
 			route.TaskQueue = tr.taskQueue
-			route.AgentFingerprint = tr.agentFingerprint
+			route.AgentFingerprint = computeAgentFingerprintFromRuntime(tr, spec.Tools)
 		}
 		route.ChildRoutes = buildSubAgentRoutes(spec.Children)
 		out[spec.ToolName] = route

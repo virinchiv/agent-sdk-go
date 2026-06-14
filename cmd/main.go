@@ -14,7 +14,6 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
-	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/currenttime"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
@@ -58,15 +57,18 @@ func main() {
 		log.Fatalf("failed to create LLM client: %v", err)
 	}
 
-	reg := tools.NewRegistry()
-	reg.Register(echo.New())
-	reg.Register(currenttime.New())
-	reg.Register(random.New())
-	reg.Register(calculator.New())
-	reg.Register(weather.New())
-	reg.Register(wikipedia.New())
-	reg.Register(search.New())
-
+	reg := agent.NewToolRegistry()
+	if err := agent.RegisterTools(reg,
+		echo.New(),
+		currenttime.New(),
+		random.New(),
+		calculator.New(),
+		weather.New(),
+		wikipedia.New(),
+		search.New(),
+	); err != nil {
+		log.Fatalf("register tools: %v", err)
+	}
 	mcpServers, err := BuildMCPServers(cfg)
 	if err != nil {
 		log.Fatalf("mcp config: %v", err)
