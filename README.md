@@ -1,6 +1,6 @@
 # Agent SDK for Go
 
-**Build production-grade AI agents in Go** — backed by [Temporal](https://temporal.io) for durable, crash-resilient execution, or run in-process with zero setup. See [Capabilities](#capabilities) for the full feature set.
+**Build production-grade AI agents in Go** — extensible and pluggable by design, backed by [Temporal](https://temporal.io) for durable, crash-resilient execution, or run in-process with zero setup. See [Capabilities](#capabilities) for the full feature set.
 
 [![CI](https://github.com/agenticenv/agent-sdk-go/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/agenticenv/agent-sdk-go/actions)
 [![Release](https://img.shields.io/github/v/release/agenticenv/agent-sdk-go?label=Release)](https://github.com/agenticenv/agent-sdk-go/releases)
