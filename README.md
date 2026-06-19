@@ -43,6 +43,7 @@
   - [Agent and worker in separate processes](#agent-and-worker-in-separate-processes)
   - [Conversation](#conversation-message-history)
   - [AG-UI Protocol](#ag-ui-protocol)
+- [Telemetry](#telemetry)
 - [Observability](#observability)
   - [Wire OTLP](#wire-otlp-traces--metrics--logs-in-one-block)
   - [Bring your own tracer / metrics](#bring-your-own-tracer--metrics)
@@ -54,6 +55,7 @@
   - [Code Coverage](#code-coverage)
 - [Setup and run examples](#setup-and-run-examples)
 - [Benchmarks](#benchmarks)
+- [Eval Harness](#eval-harness)
 - [Production Readiness Checklist](#production-readiness-checklist)
 - [Disclaimer](#disclaimer)
 
@@ -328,8 +330,8 @@ Streaming text deltas (`TEXT_MESSAGE_*`) versus the `**RUN_FINISHED**` body ofte
 
 Each LLM completion can report token counts via `[interfaces.LLMUsage](pkg/interfaces/llm.go)` on `[interfaces.LLMResponse.Usage](pkg/interfaces/llm.go)`. OpenAI, Anthropic, and Gemini clients populate `**PromptTokens**`, `**CompletionTokens**`, `**TotalTokens**`, and optional `**CachedPromptTokens**` / `**ReasoningTokens**` when the provider returns them.
 
-- `**Agent.Run` / `RunAsync`:** `**Usage`** on [*AgentRunResult](pkg/agent/agent.go) is the **sum** across all LLM calls in that run (including tool rounds). Use it for cost estimates, quotas, and logging.
-- `**Stream`:** the same aggregate appears as `**Usage*`* on `**RUN_FINISHED**`: assert `**[*AgentRunFinishedEvent](pkg/agent/agent.go)**`, then `**Result**` as `**[*AgentRunResult](pkg/agent/agent.go)**`. OpenAI streaming `**include_usage**` surfaces totals there. Helpers: [examples/shared/utils.go](examples/shared/utils.go) (`UsageFooter`, `RunResultFromFinishedEvent`).
+- `**Agent.Run` / `RunAsync`:** `**LLMUsage**` on [*AgentRunResult](pkg/agent/agent.go) is the **sum** across all LLM calls in that run (including tool rounds). Use it for cost estimates, quotas, and logging.
+- `**Stream`:** the same aggregate is on `**LLMUsage**` in `**RUN_FINISHED**` `**Result**` (`**[*AgentRunFinishedEvent](pkg/agent/agent.go)**`; `**Result**` is `**[*AgentRunResult](pkg/agent/agent.go)**`). OpenAI streaming `**include_usage**` surfaces totals there. Helpers: [examples/shared/utils.go](examples/shared/utils.go) (`LLMUsageFooter`, `RunResultFromFinishedEvent`).
 
 Examples: [examples/simple_agent](examples/simple_agent) (prints usage after `Run`), [examples/agent_with_stream](examples/agent_with_stream) (prints usage on `**RUN_FINISHED**`).
 
@@ -348,7 +350,6 @@ Custom tools may also implement:
 
 - `interfaces.ToolApproval` — tool-level hint for **interactive human approval**. Use this when a person should decide whether the tool runs, and no agent-level approval policy is set.
 - `interfaces.ToolAuthorizer` — tool-level **programmatic authorization**. Use this when code should decide whether the tool runs before approval/execute (for example: scopes, tenancy, environment flags, or feature access). Return `Allow=false` to deny the tool call without executing it.
-- `interfaces.ToolKindProvider` — optional interface that reports the tool's origin category. The built-in tool wrappers already implement it (`"mcp"`, `"a2a"`, `"sub-agent"`, `"retriever"`). Implement it on custom tools when you want to distinguish origin in logs or metrics. Use `interfaces.KindOf(tool)` to read the kind from any tool; returns `"native"` when the interface is not implemented.
 
 ```go
 reg := agent.NewToolRegistry()
@@ -1116,6 +1117,41 @@ for ev := range ch {
 
 ---
 
+## Telemetry
+
+Every run populates `AgentTelemetry` inside `AgentRunResult` with behavioral metrics across three areas:
+
+> Telemetry fields are designed to support eval harness assertions — see [eval-harness/](eval-harness/) for examples with PromptFoo and DeepEval.
+
+- **Run** — start/end time, total LLM calls, and finish reason (`complete` or `max_iterations`)
+- **Tools** — total calls, failed calls, and per-tool breakdown for registered tools and MCP tools
+- **Storage** — RAG retriever search counts split by mode (`prefetch_searches`, `agentic_searches`) and failure count; all fields are zero when no retriever is configured
+
+```go
+result, _ := ag.Run(ctx, "prompt")
+t := result.Telemetry
+fmt.Printf("llm_calls=%d  finish=%s\n", t.Run.TotalLLMCalls, t.Run.FinishReason)
+fmt.Printf("tool_calls=%d  failed=%d\n", t.Tools.TotalCalls, t.Tools.FailedCalls)
+fmt.Printf("retriever_searches=%d  prefetch=%d  agentic=%d\n",
+    t.Storage.TotalRetrieverSearches,
+    t.Storage.PrefetchSearches,
+    t.Storage.AgenticSearches)
+```
+
+**Stream** — telemetry is on `Result.Telemetry` inside the `RUN_FINISHED` event:
+
+```go
+for ev := range ch {
+    if result := shared.RunResultFromFinishedEvent(ev); result != nil {
+        fmt.Println(result.Telemetry.Run.TotalLLMCalls)
+    }
+}
+```
+
+Examples can print a formatted telemetry footer — see [examples/README.md](examples/README.md#run-output).
+
+---
+
 ## Observability
 
 The SDK emits **traces**, **metrics**, and **logs** via OpenTelemetry. All signals are **no-op by default** — if you set nothing, the agent runs without any overhead. Wire them only when you need them.
@@ -1248,7 +1284,7 @@ A Temporal connection (`WithTemporalConfig` or `WithTemporalClient`) is **option
 - **WithMaxSubAgentDepth**: Maximum delegation hops from this agent (default 2). See [Sub-agents](#sub-agents).
 - **WithMaxIterations**: Max LLM rounds (default 5).
 - **WithStream**: Enable `Stream` partial content streaming.
-- **Token usage:** Not a separate option. On `**Run`**, read `**Usage**` on `**[*AgentRunResult](pkg/agent/agent.go)**` when set. On `**Stream**`, assert `**[*AgentRunFinishedEvent](pkg/agent/agent.go)**` with `**[*AgentRunResult](pkg/agent/agent.go)**` in `**Result**` (aggregate across LLM/tool rounds when the provider reports it). See [Token usage](#token-usage-llmusage).
+- **Token usage:** Not a separate option. On `**Run`**, read `**LLMUsage**` on `**[*AgentRunResult](pkg/agent/agent.go)**` when set. On `**Stream**`, assert `**[*AgentRunFinishedEvent](pkg/agent/agent.go)**` and read `**Result.LLMUsage**` (aggregate across LLM/tool rounds when the provider reports it). See [Token usage](#token-usage-llmusage).
 - **WithLLMSampling**: Pass `&agent.LLMSampling{...}`; nil or zero fields leave that knob to the provider default. Which fields apply where:
   - `**Temperature`** — OpenAI, Anthropic, Gemini.
   - `**MaxTokens**` — OpenAI, Anthropic, Gemini (max output / completion tokens).
@@ -1272,7 +1308,7 @@ A Temporal connection (`WithTemporalConfig` or `WithTemporalClient`) is **option
 Contributors: see **[CONTRIBUTING.md](CONTRIBUTING.md)** for prerequisites (Go, Temporal setup, workflow, and guidelines).
 Project policies: **[SECURITY.md](SECURITY.md)** for vulnerability reporting and **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** for community standards.
 
-Quick commands: `make test` | `make lint` | `make fmt` | `make spell` | `make tidy` | `make test-coverage` (`make lint` runs `gofmt -s`, `misspell`, then `go vet` + `golangci-lint`)
+Quick commands: `make test` | `make check` | `make eval-harness` | `make lint` | `make fmt` | `make spell` | `make tidy` | `make test-coverage` (`make lint` runs `gofmt -s`, `misspell`, then `go vet` + `golangci-lint`)
 
 ## Code Coverage
 
@@ -1318,6 +1354,12 @@ See **[cmd/README.md](cmd/README.md)** for CLI details and env vars.
 Config-driven benchmark suite to measure agent performance in your environment.
 
 See [benchmarks/README.md](benchmarks/README.md).
+
+## Eval Harness
+
+Behavioral regression suite for agent runs — verify tools, completion, and telemetry without a live LLM. Use it to catch breaking changes in CI and as a reference for wiring your own agents into eval tools.
+
+See [eval-harness/README.md](eval-harness/README.md).
 
 ## Production Readiness Checklist
 

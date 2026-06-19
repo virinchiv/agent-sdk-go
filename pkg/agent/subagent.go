@@ -8,13 +8,14 @@ import (
 	"strings"
 
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 )
 
 var _ AgentTool = (*subAgentTool)(nil)
 var _ interfaces.Tool = (*subAgentTool)(nil)
-var _ interfaces.ToolKindProvider = (*subAgentTool)(nil)
+var _ types.ToolKindProvider = (*subAgentTool)(nil)
 
 // Sub-agent tool names must be identifier-like for LLM tool APIs; normalize display names accordingly.
 var subAgentToolNameNonIdent = regexp.MustCompile(`[^a-zA-Z0-9]+`)
@@ -119,5 +120,5 @@ func (t *subAgentTool) Execute(_ context.Context, _ map[string]any) (any, error)
 
 func (t *subAgentTool) SubAgent() *Agent { return t.agent }
 
-// ToolKind implements [interfaces.ToolKindProvider].
-func (t *subAgentTool) ToolKind() string { return "sub-agent" }
+// ToolKind implements [types.ToolKindProvider].
+func (t *subAgentTool) ToolKind() types.ToolKind { return types.ToolKindSubAgent }

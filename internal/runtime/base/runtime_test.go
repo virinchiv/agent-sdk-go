@@ -244,7 +244,8 @@ func TestExecuteRetrievers_NoRetrievers(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "query")
 	require.NoError(t, err)
-	require.Equal(t, "", got)
+	require.Equal(t, "", got.Context)
+	require.Equal(t, int64(0), got.TotalSearches)
 }
 
 func TestExecuteRetrievers_AllFail(t *testing.T) {
@@ -256,9 +257,11 @@ func TestExecuteRetrievers_AllFail(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
 	})
-	_, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "all")
+	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
+	require.NoError(t, err)
+	require.Equal(t, "", got.Context)
+	require.Equal(t, int64(1), got.TotalSearches)
+	require.Equal(t, int64(1), got.FailedSearches)
 }
 
 func TestExecuteRetrievers_Success(t *testing.T) {
@@ -274,7 +277,9 @@ func TestExecuteRetrievers_Success(t *testing.T) {
 	})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "my query")
 	require.NoError(t, err)
-	require.Contains(t, got, "doc content")
+	require.Contains(t, got.Context, "doc content")
+	require.Equal(t, int64(1), got.TotalSearches)
+	require.Equal(t, int64(0), got.FailedSearches)
 }
 
 // --- ExecuteLLM ---
@@ -283,7 +288,17 @@ func TestExecuteLLM_LLMError(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{err: errors.New("llm unavailable")}},
 	})
-	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg-1",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLM(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm unavailable")
 }
@@ -294,7 +309,17 @@ func TestExecuteLLM_Success_NoTools(t *testing.T) {
 			resp: &interfaces.LLMResponse{Content: "hello world"},
 		}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg-1",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLM(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, "hello world", result.Content)
 	require.Empty(t, result.ToolCalls)
@@ -312,7 +337,17 @@ func TestExecuteLLM_EmitsTextMessageEvents(t *testing.T) {
 		emitted = append(emitted, ev.Type())
 	}
 
-	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "agent", "msg-1", nil, false, "", nil, emit)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg-1",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             emit,
+	}
+	_, err := rt.ExecuteLLM(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, []events.AgentEventType{
 		events.AgentEventTypeTextMessageStart,
@@ -328,7 +363,17 @@ func TestExecuteLLM_NilEmitDoesNotPanic(t *testing.T) {
 		}},
 	})
 	require.NotPanics(t, func() {
-		_, _ = rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
+		input := ExecuteLLMInput{
+			Logger:           noopLog(),
+			AgentName:        "a",
+			MessageID:        "m",
+			Messages:         nil,
+			SkipTools:        false,
+			RetrieverContext: "",
+			Tools:            nil,
+			Emit:             nil,
+		}
+		_, _ = rt.ExecuteLLM(context.Background(), input)
 	})
 }
 
@@ -343,7 +388,17 @@ func TestExecuteLLM_UnknownToolCallReturnsError(t *testing.T) {
 			},
 		}},
 	})
-	_, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "a",
+		MessageID:        "m",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLM(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
@@ -357,7 +412,17 @@ func TestExecuteLLM_WithUsageMetrics(t *testing.T) {
 			},
 		}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "a",
+		MessageID:        "m",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLM(context.Background(), input)
 	require.NoError(t, err)
 	require.NotNil(t, result.Usage)
 	require.EqualValues(t, 10, result.Usage.PromptTokens)
@@ -380,7 +445,17 @@ func TestExecuteLLM_ToolCallWithEmptyDisplayName(t *testing.T) {
 			},
 		}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", []interfaces.Tool{tool}, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "a",
+		MessageID:        "m",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            []interfaces.Tool{tool},
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLM(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, result.ToolCalls, 1)
 	require.Equal(t, "my-tool", result.ToolCalls[0].ToolDisplayName)
@@ -395,7 +470,17 @@ func TestExecuteLLM_NilToolCallInResponse(t *testing.T) {
 			},
 		}},
 	})
-	result, err := rt.ExecuteLLM(context.Background(), noopLog(), "a", "m", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "a",
+		MessageID:        "m",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLM(context.Background(), input)
 	require.NoError(t, err)
 	require.Empty(t, result.ToolCalls)
 }
@@ -443,7 +528,9 @@ func TestExecuteRetrievers_PartialFailure(t *testing.T) {
 	})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
 	require.NoError(t, err) // partial is ok
-	require.Contains(t, got, "useful")
+	require.Contains(t, got.Context, "useful")
+	require.Equal(t, int64(2), got.TotalSearches)
+	require.Equal(t, int64(1), got.FailedSearches)
 }
 
 // --- ExecuteLLMStream ---
@@ -491,7 +578,17 @@ func TestExecuteLLMStream_FallbackGenerate_Success(t *testing.T) {
 			resp: &interfaces.LLMResponse{Content: "fallback answer"},
 		}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, "fallback answer", result.Content)
 }
@@ -500,7 +597,17 @@ func TestExecuteLLMStream_FallbackGenerate_LLMError(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{err: errors.New("llm down")}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm down")
 }
@@ -514,7 +621,17 @@ func TestExecuteLLMStream_FallbackGenerate_EmitsEvents(t *testing.T) {
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, emit)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             emit,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, []events.AgentEventType{
 		events.AgentEventTypeTextMessageStart,
@@ -529,7 +646,17 @@ func TestExecuteLLMStream_GenerateStreamError(t *testing.T) {
 			streamErr: errors.New("stream init failed"),
 		}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "stream init failed")
 }
@@ -543,7 +670,17 @@ func TestExecuteLLMStream_StreamError_AfterChunks(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "connection reset")
 }
@@ -554,7 +691,17 @@ func TestExecuteLLMStream_StreamNilResult(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "stream completed without result")
 }
@@ -572,7 +719,17 @@ func TestExecuteLLMStream_TextChunks_EmitsCorrectEvents(t *testing.T) {
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, emit)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             emit,
+	}
+	result, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, "hello world", result.Content)
 	require.Equal(t, events.AgentEventTypeTextMessageStart, emitted[0])
@@ -594,7 +751,17 @@ func TestExecuteLLMStream_ReasoningChunks_EmitsReasoningEvents(t *testing.T) {
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, emit)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             emit,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 
 	// Reasoning events must appear before text events
@@ -626,7 +793,17 @@ func TestExecuteLLMStream_ToolOnlyResponse_EmitsEmptyAssistantTurn(t *testing.T)
 	var emitted []events.AgentEventType
 	emit := func(ev events.AgentEvent) { emitted = append(emitted, ev.Type()) }
 
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", []interfaces.Tool{tool}, emit)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            []interfaces.Tool{tool},
+		Emit:             emit,
+	}
+	result, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 	require.Len(t, result.ToolCalls, 1)
 	// finalizeAssistantText emits a start/content/end even when no text chunks arrived
@@ -642,7 +819,17 @@ func TestExecuteLLMStream_WithUsageMetrics(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 	require.NotNil(t, result.Usage)
 	require.EqualValues(t, 8, result.Usage.PromptTokens)
@@ -657,7 +844,17 @@ func TestExecuteLLMStream_NilChunkSkipped(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 	require.Equal(t, "text", result.Content)
 }
@@ -671,7 +868,17 @@ func TestExecuteLLMStream_FallbackGenerate_WithUsage(t *testing.T) {
 			},
 		}},
 	})
-	result, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	result, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.NoError(t, err)
 	require.NotNil(t, result.Usage)
 	require.EqualValues(t, 5, result.Usage.PromptTokens)
@@ -685,7 +892,17 @@ func TestExecuteLLMStream_FallbackGenerate_UnknownToolCallError(t *testing.T) {
 			},
 		}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
@@ -697,7 +914,17 @@ func TestExecuteLLMStream_Stream_UnknownToolCallError(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: streamCapableLLMClient{stream: s}},
 	})
-	_, err := rt.ExecuteLLMStream(context.Background(), noopLog(), "agent", "msg", nil, false, "", nil, nil)
+	input := ExecuteLLMInput{
+		Logger:           noopLog(),
+		AgentName:        "agent",
+		MessageID:        "msg",
+		Messages:         nil,
+		SkipTools:        false,
+		RetrieverContext: "",
+		Tools:            nil,
+		Emit:             nil,
+	}
+	_, err := rt.ExecuteLLMStream(context.Background(), input)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
@@ -713,7 +940,9 @@ func TestExecuteRetrievers_EmptyDocsSkipped(t *testing.T) {
 	})
 	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
 	require.NoError(t, err)
-	require.Equal(t, "", got)
+	require.Equal(t, "", got.Context)
+	require.Equal(t, int64(1), got.TotalSearches)
+	require.Equal(t, int64(0), got.FailedSearches)
 }
 
 // --- ApplyLLMSampling Reasoning field ---

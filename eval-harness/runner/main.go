@@ -1,0 +1,49 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"log"
+	"os"
+
+	"github.com/agenticenv/agent-sdk-go/eval-harness/runner/setup"
+)
+
+func main() {
+	configPath := flag.String("config", "", "path to config.yaml (default: runner/config.yaml)")
+	prompt := flag.String("prompt", "", "override user_prompt from config")
+	runtimeFlag := flag.String("runtime", "", "override runtime: local or temporal")
+	toolCount := flag.Int("tools", 0, "override agent.tool_count (0 = use config)")
+	flag.Parse()
+
+	fileCfg, err := setup.LoadConfig(*configPath)
+	if err != nil {
+		log.Fatalf("load config: %v", err)
+	}
+
+	runCfg := fileCfg.Config()
+	if *prompt != "" {
+		runCfg.UserPrompt = *prompt
+	} else if args := flag.Args(); len(args) > 0 && args[0] != "" {
+		// Promptfoo exec provider passes the rendered prompt as the first positional arg.
+		runCfg.UserPrompt = args[0]
+	}
+	if *runtimeFlag != "" {
+		runCfg.Runtime = setup.Runtime(*runtimeFlag)
+	}
+	if *toolCount > 0 {
+		runCfg.ToolCount = *toolCount
+	}
+
+	result, err := Run(context.Background(), runCfg)
+	if err != nil {
+		log.Fatalf("eval run failed: %v", err)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(OutputFromResult(result)); err != nil {
+		log.Fatalf("encode result: %v", err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
@@ -47,8 +48,14 @@ type AgentLoopInput struct {
 
 // AgentLoopResult is the outcome of a completed local agent run.
 type AgentLoopResult struct {
-	Content string
-	Usage   *interfaces.LLMUsage
+	Content   string
+	LLMUsage  *interfaces.LLMUsage
+	Telemetry *types.AgentTelemetry
+}
+
+type toolResult struct {
+	message interfaces.Message
+	failed  bool // true: hard err, ExecuteTool err, or ctx cancel
 }
 
 // publishEventToChannel marshals ev and publishes it on channelName via the runtime eventbus.
@@ -78,8 +85,15 @@ func (rt *LocalRuntime) publishEventToChannel(ctx context.Context, channelName s
 // Events are published to rt.eventbus on input.ChannelName; callers subscribe to that channel.
 func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) (*AgentLoopResult, error) {
 	log := rt.logger
+	telemetry := base.NewAgentTelemetry(time.Now())
 	agentName := rt.AgentSpec.Name
 	model := rt.AgentConfig.LLM.Client.GetModel()
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "agent.loop",
+		interfaces.Attribute{Key: "agent.name", Value: agentName},
+		interfaces.Attribute{Key: "model", Value: model},
+	)
+	defer sp.End()
 
 	tools := input.Tools
 
@@ -127,22 +141,24 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 			slog.String("scope", "loop"),
 			slog.String("mode", string(retrieverMode)),
 			slog.Int("retrieverCount", len(rt.AgentConfig.Retrievers.Retrievers)))
-		rc, err := rt.ExecuteRetrievers(ctx, log, input.UserPrompt)
+		res, err := rt.ExecuteRetrievers(ctx, log, input.UserPrompt)
 		if err != nil {
 			return nil, fmt.Errorf("retriever prefetch: %w", err)
 		}
-		retrieverContext = rc
+		retrieverContext = res.Context
+		telemetry.Storage.TotalRetrieverSearches += res.TotalSearches
+		telemetry.Storage.FailedRetrieverSearches += res.FailedSearches
+		telemetry.Storage.PrefetchSearches += res.TotalSearches
 		log.Debug(ctx, "local: retriever prefetch done",
 			slog.String("scope", "loop"),
 			slog.Bool("hasContext", retrieverContext != ""))
 	}
 
-	var runUsage *interfaces.LLMUsage
-	lastContent := ""
+	var lastContent string
+	var llmUsage *interfaces.LLMUsage
 
 	for iter := 0; iter < maxIter; iter++ {
 		messageID := uuid.New().String()
-
 		log.Debug(ctx, "local: LLM call started",
 			slog.String("scope", "loop"),
 			slog.Int("iteration", iter),
@@ -150,16 +166,27 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 
 		var llmResult *base.LLMResult
 		var err error
+		executeLLMInput := base.ExecuteLLMInput{
+			Logger:           log,
+			AgentName:        agentName,
+			MessageID:        messageID,
+			Messages:         messages,
+			SkipTools:        false,
+			RetrieverContext: retrieverContext,
+			Tools:            tools,
+			Emit:             emit,
+		}
 		if input.StreamingEnabled {
-			llmResult, err = rt.ExecuteLLMStream(ctx, log, agentName, messageID, messages, false, retrieverContext, tools, emit)
+			llmResult, err = rt.ExecuteLLMStream(ctx, executeLLMInput)
 		} else {
-			llmResult, err = rt.ExecuteLLM(ctx, log, agentName, messageID, messages, false, retrieverContext, tools, emit)
+			llmResult, err = rt.ExecuteLLM(ctx, executeLLMInput)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("llm call (iter %d): %w", iter, err)
 		}
 
-		runUsage = base.MergeLLMUsage(runUsage, llmResult.Usage)
+		telemetry.Run.TotalLLMCalls++
+		llmUsage = base.MergeLLMUsage(llmUsage, llmResult.Usage)
 
 		// Final response: no tool calls → done.
 		if len(llmResult.ToolCalls) == 0 {
@@ -177,20 +204,32 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 				slog.String("scope", "loop"),
 				slog.Int("iteration", iter))
 			finalMessageID := uuid.New().String()
+			executeLLMInput := base.ExecuteLLMInput{
+				Logger:           log,
+				AgentName:        agentName,
+				MessageID:        finalMessageID,
+				Messages:         messages,
+				SkipTools:        true,
+				RetrieverContext: retrieverContext,
+				Tools:            tools,
+				Emit:             emit,
+			}
 			if input.StreamingEnabled {
-				llmResult, err = rt.ExecuteLLMStream(ctx, log, agentName, finalMessageID, messages, true, retrieverContext, tools, emit)
+				llmResult, err = rt.ExecuteLLMStream(ctx, executeLLMInput)
 			} else {
-				llmResult, err = rt.ExecuteLLM(ctx, log, agentName, finalMessageID, messages, true, retrieverContext, tools, emit)
+				llmResult, err = rt.ExecuteLLM(ctx, executeLLMInput)
 			}
 			if err != nil {
 				return nil, fmt.Errorf("llm final call (iter %d): %w", iter, err)
 			}
-			runUsage = base.MergeLLMUsage(runUsage, llmResult.Usage)
+			llmUsage = base.MergeLLMUsage(llmUsage, llmResult.Usage)
 			messages = append(messages, interfaces.Message{
 				Role:    interfaces.MessageRoleAssistant,
 				Content: llmResult.Content,
 			})
 			lastContent = llmResult.Content
+			telemetry.Run.TotalLLMCalls++
+			telemetry.Run.FinishReason = types.FinishReasonMaxIterations
 			break
 		}
 
@@ -210,7 +249,7 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		messages = append(messages, assistantMsg)
 
 		// Execute tools according to the requested execution mode.
-		var toolResults []interfaces.Message
+		var toolResults []toolResult
 		switch toolExecMode {
 		case types.AgentToolExecutionModeParallel:
 			toolResults, err = rt.executeToolsParallel(ctx, input, messageID, llmResult.ToolCalls, emit)
@@ -226,28 +265,30 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 			return nil, err
 		}
 
-		messages = append(messages, toolResults...)
+		for idx, result := range toolResults {
+			messages = append(messages, result.message)
+			tc := llmResult.ToolCalls[idx]
+			if tc.ToolKind.CountsTowardToolTelemetry() {
+				telemetry.Tools.Record(tc.ToolName, result.failed)
+			}
+			if tc.ToolKind == types.ToolKindRetriever {
+				telemetry.Storage.TotalRetrieverSearches++
+				telemetry.Storage.AgenticSearches++
+				if result.failed {
+					telemetry.Storage.FailedRetrieverSearches++
+				}
+			}
+		}
 
 		if rt.conversationMemoryEnabled(input) && rt.AgentConfig.Session.ConversationSaveOnIteration && len(messages) > persistedMessageCount {
-			if err := persistConversationMessages(ctx, rt, input.ConversationID, messages[persistedMessageCount:]); err != nil {
-				log.Warn(ctx, "local: persist conversation failed",
-					slog.String("scope", "loop"),
-					slog.String("conversationID", input.ConversationID),
-					slog.Any("error", err))
-			} else {
-				persistedMessageCount = len(messages)
-			}
+			rt.persistConversationMessages(ctx, input.ConversationID, messages[persistedMessageCount:])
+			persistedMessageCount = len(messages)
 		}
 	}
 
 	// Persist unsaved messages: full run when ConversationSaveOnIteration is false; final assistant only when true.
 	if rt.conversationMemoryEnabled(input) && len(messages) > persistedMessageCount {
-		if err := persistConversationMessages(ctx, rt, input.ConversationID, messages[persistedMessageCount:]); err != nil {
-			log.Warn(ctx, "local: persist conversation failed",
-				slog.String("scope", "loop"),
-				slog.String("conversationID", input.ConversationID),
-				slog.Any("error", err))
-		}
+		rt.persistConversationMessages(ctx, input.ConversationID, messages[persistedMessageCount:])
 	}
 
 	log.Info(ctx, "local: agent run completed",
@@ -256,7 +297,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		slog.String("model", model),
 		slog.Int("contentLen", len(lastContent)))
 
-	return &AgentLoopResult{Content: lastContent, Usage: runUsage}, nil
+	telemetry.Run.CompletedAt = time.Now()
+
+	return &AgentLoopResult{
+		Content:   lastContent,
+		LLMUsage:  llmUsage,
+		Telemetry: telemetry,
+	}, nil
 }
 
 func (rt *LocalRuntime) conversationMemoryEnabled(input AgentLoopInput) bool {
@@ -272,29 +319,34 @@ func (rt *LocalRuntime) executeToolsParallel(
 	messageID string,
 	toolCalls []base.ToolCallRequest,
 	emit func(events.AgentEvent),
-) ([]interfaces.Message, error) {
+) ([]toolResult, error) {
 	rt.logger.Info(ctx, "local: tool execution (parallel)",
 		slog.String("scope", "loop"),
 		slog.Int("toolCount", len(toolCalls)))
 
-	results := make([]interfaces.Message, len(toolCalls))
+	results := make([]toolResult, len(toolCalls))
 	var wg sync.WaitGroup
 
 	for i := range toolCalls {
 		wg.Add(1)
 		go func(idx int, tc base.ToolCallRequest) {
 			defer wg.Done()
-			msg, err := rt.executeSingleTool(ctx, input, messageID, tc, emit)
+			result, err := rt.executeSingleTool(ctx, input, messageID, tc, emit)
 			if err != nil {
-				results[idx] = interfaces.Message{
+				rt.logger.Info(ctx, "local: parallel tool failed",
+					slog.String("scope", "loop"),
+					slog.Int("toolIndex", idx),
+					slog.String("toolName", tc.ToolName),
+					slog.Any("error", err))
+				result.message = interfaces.Message{
 					Role:       interfaces.MessageRoleTool,
 					Content:    "Tool execution failed: " + err.Error(),
 					ToolName:   tc.ToolName,
 					ToolCallID: tc.ToolCallID,
 				}
-				return
+				result.failed = true
 			}
-			results[idx] = msg
+			results[idx] = result
 		}(i, toolCalls[i])
 	}
 	wg.Wait()
@@ -302,30 +354,38 @@ func (rt *LocalRuntime) executeToolsParallel(
 	return results, nil
 }
 
-// executeToolsSequential runs tool calls one at a time and returns on the first hard error.
+// executeToolsSequential runs tool calls one at a time.
+// Hard errors from individual tools become synthetic tool messages; the batch always continues.
 func (rt *LocalRuntime) executeToolsSequential(
 	ctx context.Context,
 	input AgentLoopInput,
 	messageID string,
 	toolCalls []base.ToolCallRequest,
 	emit func(events.AgentEvent),
-) ([]interfaces.Message, error) {
+) ([]toolResult, error) {
 	rt.logger.Info(ctx, "local: tool execution (sequential)",
 		slog.String("scope", "loop"),
 		slog.Int("toolCount", len(toolCalls)))
 
-	results := make([]interfaces.Message, 0, len(toolCalls))
-	for i, tc := range toolCalls {
-		msg, err := rt.executeSingleTool(ctx, input, messageID, tc, emit)
+	results := make([]toolResult, len(toolCalls))
+	for idx, tc := range toolCalls {
+		result, err := rt.executeSingleTool(ctx, input, messageID, tc, emit)
 		if err != nil {
 			rt.logger.Info(ctx, "local: sequential tool failed",
 				slog.String("scope", "loop"),
-				slog.Int("toolIndex", i),
+				slog.Int("toolIndex", idx),
 				slog.String("toolName", tc.ToolName),
 				slog.Any("error", err))
-			return nil, err
+
+			result.message = interfaces.Message{
+				Role:       interfaces.MessageRoleTool,
+				Content:    "Tool execution failed: " + err.Error(),
+				ToolName:   tc.ToolName,
+				ToolCallID: tc.ToolCallID,
+			}
+			result.failed = true
 		}
-		results = append(results, msg)
+		results[idx] = result
 	}
 	return results, nil
 }
@@ -338,7 +398,7 @@ func (rt *LocalRuntime) executeSingleTool(
 	messageID string,
 	tc base.ToolCallRequest,
 	emit func(events.AgentEvent),
-) (interfaces.Message, error) {
+) (toolResult, error) {
 	log := rt.logger
 	tools := input.Tools
 
@@ -361,7 +421,10 @@ func (rt *LocalRuntime) executeSingleTool(
 	// Authorization check.
 	authResult, err := rt.AuthorizeTool(ctx, log, tools, tc.ToolName, tc.Args)
 	if err != nil {
-		return interfaces.Message{}, fmt.Errorf("tool authorization error for %q: %w", tc.ToolName, err)
+		return toolResult{
+			message: interfaces.Message{},
+			failed:  true,
+		}, fmt.Errorf("tool authorization error for %q: %w", tc.ToolName, err)
 	}
 	if !authResult.Allowed {
 		content := msgToolUnauthorized
@@ -373,11 +436,14 @@ func (rt *LocalRuntime) executeSingleTool(
 			slog.String("toolName", tc.ToolName),
 			slog.String("reason", authResult.Reason))
 		emitToolEndThenResult(tc.ToolCallID, content)
-		return interfaces.Message{
-			Role:       interfaces.MessageRoleTool,
-			Content:    content,
-			ToolName:   tc.ToolName,
-			ToolCallID: tc.ToolCallID,
+		return toolResult{
+			message: interfaces.Message{
+				Role:       interfaces.MessageRoleTool,
+				Content:    content,
+				ToolName:   tc.ToolName,
+				ToolCallID: tc.ToolCallID,
+			},
+			failed: false,
 		}, nil
 	}
 
@@ -452,12 +518,16 @@ func (rt *LocalRuntime) executeSingleTool(
 			case status := <-resultCh:
 				approvalStatus = status
 			case <-ctx.Done():
-				return interfaces.Message{}, ctx.Err()
+				return toolResult{
+					message: interfaces.Message{},
+					failed:  true,
+				}, ctx.Err()
 			}
 		}
 	}
 
 	var content string
+	failed := false
 	switch approvalStatus {
 	case types.ApprovalStatusApproved:
 		if isSubAgent {
@@ -507,6 +577,7 @@ func (rt *LocalRuntime) executeSingleTool(
 			result, execErr := rt.ExecuteTool(ctx, log, tools, tc.ToolName, tc.Args)
 			if execErr != nil {
 				content = "Tool execution failed: " + execErr.Error()
+				failed = true
 			} else {
 				content = result
 			}
@@ -516,31 +587,49 @@ func (rt *LocalRuntime) executeSingleTool(
 	case types.ApprovalStatusUnavailable:
 		content = msgToolApprovalUnavailable
 	default:
-		return interfaces.Message{}, fmt.Errorf("unexpected approval status %q for tool %q", approvalStatus, tc.ToolName)
+		return toolResult{
+			message: interfaces.Message{},
+			failed:  true,
+		}, fmt.Errorf("unexpected approval status %q for tool %q", approvalStatus, tc.ToolName)
 	}
 
 	emitToolEndThenResult(tc.ToolCallID, content)
-	return interfaces.Message{
-		Role:       interfaces.MessageRoleTool,
-		Content:    content,
-		ToolName:   tc.ToolName,
-		ToolCallID: tc.ToolCallID,
+	return toolResult{
+		message: interfaces.Message{
+			Role:       interfaces.MessageRoleTool,
+			Content:    content,
+			ToolName:   tc.ToolName,
+			ToolCallID: tc.ToolCallID,
+		},
+		failed: failed,
 	}, nil
 }
 
-// persistConversationMessages stores all accumulated messages from the run into the conversation store.
-func persistConversationMessages(ctx context.Context, rt *LocalRuntime, conversationID string, messages []interfaces.Message) error {
+// persistConversationMessages stores messages in the conversation store.
+// Logs per-message failures and continues; does not fail the run.
+func (rt *LocalRuntime) persistConversationMessages(ctx context.Context, conversationID string, messages []interfaces.Message) {
 	conv := rt.AgentConfig.Session.Conversation
-	if conv == nil {
-		return nil
+	if conv == nil || len(messages) == 0 {
+		return
 	}
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "conversation.add_messages",
+		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
+		interfaces.Attribute{Key: "message.count", Value: len(messages)},
+	)
+	defer sp.End()
+
+	failCount := 0
 	for _, msg := range messages {
 		if err := conv.AddMessage(ctx, conversationID, msg); err != nil {
+			failCount++
 			rt.logger.Warn(ctx, "local: add conversation message failed",
 				slog.String("scope", "loop"),
 				slog.String("conversationID", conversationID),
 				slog.Any("error", err))
 		}
 	}
-	return nil
+	if failCount > 0 {
+		sp.SetAttribute("failed.count", failCount)
+	}
 }

@@ -172,13 +172,15 @@ func printEvent(ev agent.AgentEvent, streamedContent bool) {
 		}
 	case agent.AgentEventTypeRunFinished:
 		res := shared.RunResultFromFinishedEvent(ev)
-		if res != nil && res.Content != "" && !streamedContent {
+		if res == nil {
+			return
+		}
+		if res.Content != "" && !streamedContent {
 			fmt.Printf("\n[%s] %s\n", eventType, res.Content)
+		} else {
+			fmt.Printf("\n[%s]\n", eventType)
 		}
-		if u := shared.UsageFooter(res); u != "" {
-			fmt.Println()
-			fmt.Println(u)
-		}
+		shared.PrintRunFooters(res)
 	default:
 		//fmt.Printf("[%s] %+v\n", eventType, ev)
 		return

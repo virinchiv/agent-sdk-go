@@ -62,7 +62,7 @@ Keep your branch short and descriptive. Sync with `main` before opening a PR: `g
 make check
 ```
 
-Runs `fmt-check`, spell check, `make lint`, `make test`, `make build`, and `make secrets-scan` — same core gates as CI (coverage is CI-only; use `make test-coverage` locally if you want a report).
+Runs `fmt-check`, spell check, `make lint`, `make test`, `make build`, and `make secrets-scan` — same core gates as the main CI job (coverage is CI-only; use `make test-coverage` locally if you want a report). `make test` includes eval-harness Go tests; the full Promptfoo/DeepEval suite runs in CI and via `make eval-harness` (see below).
 
 Also run the full example suite on any code change to catch regressions unit tests may miss:
 
@@ -71,6 +71,14 @@ task examples:all
 ```
 
 Requires Task, Docker, and LLM credentials — see [examples/README.md](examples/README.md).
+
+If you change **agent behavior** (e.g. `pkg/agent`, telemetry, tools, runtime) or **`eval-harness/`**, run:
+
+```bash
+make eval-harness
+```
+
+Behavioral regression tests use mock LLM/tools and assert on run output — SDK changes can break them even when eval-harness files are untouched. Requires Node.js and Python 3.10+ — see [eval-harness/README.md](eval-harness/README.md). CI runs this automatically on PRs (`eval-harness` job).
 
 **CI runs automatically** on pull requests to `main` (open a PR or push updates to an existing PR to re-run checks). Pushes or merges to `main` do not trigger CI; use **workflow_dispatch** in GitHub Actions for an on-demand run. Run `make check` locally before opening a PR; CI must pass on the PR before merge.
 
@@ -172,6 +180,7 @@ Using the SDK and ran into issues, unclear docs, or confusing behavior? **Raise 
 2. **Tests**
    - Add tests for new features and bug fixes.
    - Unit tests go in `*_test.go` files alongside the code.
+   - Agent behavior changes (`pkg/agent`, telemetry, tools, runtime) or **`eval-harness/`** edits — run `make eval-harness` before submitting a PR.
 
 3. **Commits**
    - Use [conventional commits](https://www.conventionalcommits.org) — these drive the release changelog:

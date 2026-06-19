@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/conversation/redis"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
@@ -96,6 +97,7 @@ func runSingleTurn(ctx context.Context, a *agent.Agent, prompt, convID string) {
 		return
 	}
 	fmt.Println("assistant:", result.Content)
+	shared.PrintRunFooters(result)
 }
 
 func runInteractive(ctx context.Context, a *agent.Agent, convID string) {
@@ -124,5 +126,6 @@ func runInteractive(ctx context.Context, a *agent.Agent, convID string) {
 			continue
 		}
 		fmt.Println("assistant:", result.Content)
+		shared.PrintRunFooters(result)
 	}
 }

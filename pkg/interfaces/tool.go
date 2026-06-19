@@ -6,7 +6,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 )
 
-//go:generate mockgen -destination=./mocks/mock_tool.go -package=mocks github.com/agenticenv/agent-sdk-go/pkg/interfaces Tool,ToolApproval,ToolAuthorizer,ToolKindProvider
+//go:generate mockgen -destination=./mocks/mock_tool.go -package=mocks github.com/agenticenv/agent-sdk-go/pkg/interfaces Tool,ToolApproval,ToolAuthorizer
 
 // ToolApproval is an optional interface for tools that require interactive human approval before execution.
 // When implemented, the agent honors ApprovalRequired() when no agent-level approval policy is set.
@@ -72,19 +72,4 @@ func ToolsToSpecs(tools []Tool) []ToolSpec {
 		specs[i] = ToolToSpec(t)
 	}
 	return specs
-}
-
-// ToolKindProvider is an optional interface for tools that report their origin.
-type ToolKindProvider interface {
-	ToolKind() string
-}
-
-// KindOf returns ToolKind() from t when implemented, or "native".
-func KindOf(t Tool) string {
-	if k, ok := t.(ToolKindProvider); ok {
-		if s := k.ToolKind(); s != "" {
-			return s
-		}
-	}
-	return "native"
 }

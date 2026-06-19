@@ -1,0 +1,14 @@
+runtime: local          # local or temporal
+
+user_prompt: "run eval check"
+
+agent:
+  name: eval-agent
+  system_prompt: "You are an evaluation agent. Use available tools when helpful, then answer concisely."
+  tool_count: 3
+
+temporal:
+  host: localhost
+  port: 7233
+  namespace: default
+  task_queue: eval-harness

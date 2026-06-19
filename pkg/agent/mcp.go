@@ -19,7 +19,7 @@ var (
 )
 
 var _ interfaces.Tool = (*MCPTool)(nil)
-var _ interfaces.ToolKindProvider = (*MCPTool)(nil)
+var _ types.ToolKindProvider = (*MCPTool)(nil)
 
 // NOTE: MCPTools for the same server share one MCPClient. The default pkg/mcp/client serializes
 // RPCs on that client with a mutex; custom MCPClient implementations should document concurrency behavior.
@@ -63,8 +63,8 @@ func NewMCPTool(serverName string, spec interfaces.ToolSpec, client interfaces.M
 	}
 }
 
-// ToolKind implements [interfaces.ToolKindProvider].
-func (t *MCPTool) ToolKind() string { return "mcp" }
+// ToolKind implements [types.ToolKindProvider].
+func (t *MCPTool) ToolKind() types.ToolKind { return types.ToolKindMCP }
 
 // Name implements interfaces.Tool.
 func (t *MCPTool) Name() string {

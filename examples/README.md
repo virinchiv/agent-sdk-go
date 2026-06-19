@@ -270,6 +270,23 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
   go run ./simple_agent "Hello" 2>/dev/null
   ```
 
+## Run output
+
+All examples call [`shared.PrintRunFooters`](shared/utils.go) after each run. Set these in `examples/.env` (defaults in [`.env.defaults`](.env.defaults)) to print formatted footers:
+
+| Env var | Default | When `true` |
+|---------|---------|-------------|
+| `SHOW_LLM_USAGE` | `false` | Prints token usage (`prompt_tokens`, `completion_tokens`, etc.) |
+| `SHOW_TELEMETRY` | `false` | Prints run telemetry (`total_llm_calls`, tool counts, retriever searches, etc.) |
+
+```bash
+SHOW_LLM_USAGE=true go run ./simple_agent "Hello, what can you do?"
+SHOW_TELEMETRY=true go run ./simple_agent "Hello, what can you do?"
+SHOW_LLM_USAGE=true SHOW_TELEMETRY=true go run ./agent_with_stream "What's 17 * 23?"
+```
+
+For retriever examples, `SHOW_TELEMETRY=true` also prints prefetch/agentic search breakdowns — see [agent_with_retriever/README.md](agent_with_retriever/README.md).
+
 ## Env vars
 
 | Env var | Description |
@@ -283,6 +300,8 @@ Examples send conversation (user prompt, assistant response) to **stdout** and i
 | `LLM_MODEL` | e.g. `gpt-4o`, `claude-3-5-sonnet-20241022` |
 | `LLM_BASEURL` | Optional (custom/proxy endpoints) |
 | `LOG_LEVEL` | `error` (default), `warn`, `info`, `debug` — logs go to stderr |
+| `SHOW_LLM_USAGE` | Set to `true` to print token usage footer after each run (default: `false`) |
+| `SHOW_TELEMETRY` | Set to `true` to print run telemetry footer after each run (default: `false`) |
 | `SERPER_API_KEY` | For search tool |
 | `MCP_TRANSPORT` | **Required** for MCP examples: `stdio` or `streamable_http` (aliases: `local`, `http`, `remote`, …) |
 | `MCP_SERVER_NAME` | Optional server id for wiring (defaults: `local` for stdio, `remote` for HTTP) |

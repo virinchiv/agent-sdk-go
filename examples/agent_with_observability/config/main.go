@@ -15,6 +15,7 @@ import (
 
 	excfg "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/examples/agent_with_observability/setup"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
 
@@ -50,4 +51,5 @@ func main() {
 		return
 	}
 	fmt.Printf("assistant: %s\n", result.Content)
+	shared.PrintRunFooters(result)
 }

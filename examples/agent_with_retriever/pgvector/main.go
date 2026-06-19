@@ -16,6 +16,7 @@ import (
 
 	examplecfg "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/examples/agent_with_retriever/common"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	pgretriever "github.com/agenticenv/agent-sdk-go/pkg/retriever/pgvector"
 )
@@ -87,4 +88,5 @@ func main() {
 		return
 	}
 	fmt.Println("assistant:", result.Content)
+	shared.PrintRunFooters(result)
 }

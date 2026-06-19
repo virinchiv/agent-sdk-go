@@ -1,4 +1,4 @@
-.PHONY: build install test lint tidy clean fmt fmt-check spell secrets-scan check
+.PHONY: build install test lint tidy clean fmt fmt-check spell secrets-scan check eval-harness
 
 BIN_DIR := cmd/bin
 BINARY := $(BIN_DIR)/agentctl
@@ -26,12 +26,23 @@ install: build
 	cp $(BINARY) $(GOPATH_BIN)/agentctl
 	@echo "Installed to $(GOPATH_BIN)/agentctl"
 
-# Run tests under pkg
+# Run Go tests (pkg, internal, eval-harness runner)
 test:
 	@echo "==> Running tests..."
 	go test ./pkg/... -count=1
 	go test ./internal/... -count=1
+	go test ./eval-harness/... -count=1
 	@echo "==> Tests complete"
+
+# Promptfoo + DeepEval (same as CI eval-harness job). Requires Node.js and Python 3.10+.
+eval-harness:
+	@echo "==> Running eval-harness (Promptfoo + DeepEval)..."
+	cd eval-harness/promptfoo && npx --yes promptfoo@latest eval -c config.yaml
+	cd eval-harness/deepeval && \
+		(test -d .venv || python3 -m venv .venv) && \
+		.venv/bin/pip install -q -r requirements.txt && \
+		.venv/bin/pytest test_agent.py -v
+	@echo "==> Eval-harness complete"
 
 # Run before push: lint, test, build, and secrets scan (same core gates as CI; no auto-format).
 # Coverage is CI-only (`make test-coverage` when you want the report). If fmt-check fails, run `make fmt`.

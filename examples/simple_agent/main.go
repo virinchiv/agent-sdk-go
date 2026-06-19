@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
 
@@ -45,14 +46,5 @@ func main() {
 		return
 	}
 	fmt.Printf("assistant: %s\n", result.Content)
-	if result.Usage != nil {
-		fmt.Printf("\nusage: prompt=%d completion=%d total=%d", result.Usage.PromptTokens, result.Usage.CompletionTokens, result.Usage.TotalTokens)
-		if result.Usage.CachedPromptTokens > 0 {
-			fmt.Printf(" cached_prompt=%d", result.Usage.CachedPromptTokens)
-		}
-		if result.Usage.ReasoningTokens > 0 {
-			fmt.Printf(" reasoning=%d", result.Usage.ReasoningTokens)
-		}
-		fmt.Println()
-	}
+	shared.PrintRunFooters(result)
 }

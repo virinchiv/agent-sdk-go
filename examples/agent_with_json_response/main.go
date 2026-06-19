@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
@@ -81,4 +82,5 @@ func main() {
 		return
 	}
 	fmt.Printf("assistant (JSON):\n%s\n", string(pretty))
+	shared.PrintRunFooters(result)
 }

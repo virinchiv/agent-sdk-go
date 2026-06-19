@@ -69,6 +69,12 @@ go run ./agent_with_retriever/weaviate "What is the return policy?"
 RETRIEVER_MODE=prefetch go run ./agent_with_retriever/weaviate "What is the return policy?"
 ```
 
+Add `SHOW_TELEMETRY=true` to see retriever search counts (total, failed, prefetch/agentic breakdown) printed after the run:
+
+```bash
+SHOW_TELEMETRY=true go run ./agent_with_retriever/weaviate "What is the return policy?"
+```
+
 ### Weaviate troubleshooting
 
 | Symptom | What to do |
@@ -120,6 +126,12 @@ With **Anthropic/Gemini** chat, `EMBEDDING_OPENAI_APIKEY` is still required for 
 ```bash
 go run ./agent_with_retriever/pgvector "What is the return policy?"
 RETRIEVER_MODE=prefetch go run ./agent_with_retriever/pgvector "What is the return policy?"
+```
+
+Add `SHOW_TELEMETRY=true` to see retriever search counts (total, failed, prefetch/agentic breakdown) printed after the run:
+
+```bash
+SHOW_TELEMETRY=true go run ./agent_with_retriever/pgvector "What is the return policy?"
 ```
 
 ### pgvector troubleshooting

@@ -234,8 +234,7 @@ func runResultFromFinishedEvent(ev agent.AgentEvent) *agent.AgentRunResult {
 	if !ok || fin == nil {
 		return nil
 	}
-	res, _ := fin.Result.(*agent.AgentRunResult)
-	return res
+	return fin.Result
 }
 
 func printEvent(ev agent.AgentEvent, streamedContent bool) {

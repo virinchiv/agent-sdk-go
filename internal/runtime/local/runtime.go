@@ -143,7 +143,8 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 		AgentName: strings.TrimSpace(agentName),
 		Model:     rt.AgentConfig.LLM.Client.GetModel(),
 		Metadata:  map[string]any{},
-		Usage:     loopResult.Usage,
+		LLMUsage:  loopResult.LLMUsage,
+		Telemetry: loopResult.Telemetry,
 	}, nil
 }
 
@@ -236,7 +237,8 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 			AgentName: strings.TrimSpace(agentName),
 			Model:     rt.AgentConfig.LLM.Client.GetModel(),
 			Metadata:  map[string]any{},
-			Usage:     result.Usage,
+			LLMUsage:  result.LLMUsage,
+			Telemetry: result.Telemetry,
 		}
 		rt.publishLifecycleEvent(channel, events.NewAgentRunFinishedEvent(threadID, runID, agentRunResult))
 	}()

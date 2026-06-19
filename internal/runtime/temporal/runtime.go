@@ -429,9 +429,9 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 			if !ok {
 				continue
 			}
-			apprReq, token, err := types.PrepareApprovalFromCustomEvent(approvalEv)
+			apprReq, token, err := prepareApprovalFromCustomEvent(approvalEv)
 			if err != nil {
-				if errors.Is(err, types.ErrNotApprovalCustomEvent) {
+				if errors.Is(err, ErrNotApprovalCustomEvent) {
 					continue
 				}
 				rt.logger.Error(runCtx, "runtime approval custom event decode failed", slog.String("scope", "runtime"), slog.Any("error", err))

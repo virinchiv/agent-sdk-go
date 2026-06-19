@@ -125,15 +125,13 @@ func getEnvInt(key string, def int) int {
 	return def
 }
 
-// ToolApprovalOptions applies AutoToolApprovalPolicy when EXAMPLES_AUTO_APPROVE
-// is set (task batch runs). Manual go run leaves it unset (default require-all + prompts).
+// ToolApprovalOptions applies AutoToolApprovalPolicy when EXAMPLES_AUTO_APPROVE=true
+// (task batch runs). Manual go run leaves it unset or false (default require-all + prompts).
 func ToolApprovalOptions() []agent.Option {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("EXAMPLES_AUTO_APPROVE"))) {
-	case "1", "true", "yes", "y":
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("EXAMPLES_AUTO_APPROVE")), "true") {
 		return []agent.Option{agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy())}
-	default:
-		return nil
 	}
+	return nil
 }
 
 func init() {
