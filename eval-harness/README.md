@@ -157,5 +157,5 @@ Two pytest tests in `test_agent.py`:
 - **Change agent behavior** — edit `eval-harness/runner/config.yaml` or `eval-harness/run_agent.sh`.
 - **Add tests** — extend `test_agent.py` with more telemetry asserts or DeepEval `LLMTestCase` fields.
 
-> **Note:** CI runs both PromptFoo and DeepEval on PRs — see `.github/workflows/ci.yml` (`eval-harness` job).
+> **Note:** CI runs both PromptFoo and DeepEval on PRs — see `.github/workflows/ci.yml` (`eval-harness` job). Locally: `make eval-harness` from the repo root.
 

@@ -1308,7 +1308,7 @@ A Temporal connection (`WithTemporalConfig` or `WithTemporalClient`) is **option
 Contributors: see **[CONTRIBUTING.md](CONTRIBUTING.md)** for prerequisites (Go, Temporal setup, workflow, and guidelines).
 Project policies: **[SECURITY.md](SECURITY.md)** for vulnerability reporting and **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** for community standards.
 
-Quick commands: `make test` | `make lint` | `make fmt` | `make spell` | `make tidy` | `make test-coverage` (`make lint` runs `gofmt -s`, `misspell`, then `go vet` + `golangci-lint`)
+Quick commands: `make test` | `make check` | `make eval-harness` | `make lint` | `make fmt` | `make spell` | `make tidy` | `make test-coverage` (`make lint` runs `gofmt -s`, `misspell`, then `go vet` + `golangci-lint`)
 
 ## Code Coverage
 
