@@ -1,6 +1,10 @@
 package events
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/agenticenv/agent-sdk-go/internal/types"
+)
 
 // RUN_STARTED
 type AgentRunStartedEvent struct {
@@ -27,12 +31,12 @@ func (e *AgentRunStartedEvent) ToJSON() ([]byte, error) { return json.Marshal(e)
 // RUN_FINISHED
 type AgentRunFinishedEvent struct {
 	*BaseEvent
-	ThreadID string `json:"threadId"`
-	RunID    string `json:"runId"`
-	Result   any    `json:"result,omitempty"` // ← any not json.RawMessage
+	ThreadID string                `json:"threadId"`
+	RunID    string                `json:"runId"`
+	Result   *types.AgentRunResult `json:"result,omitempty"`
 }
 
-func NewAgentRunFinishedEvent(threadID, runID string, result any) *AgentRunFinishedEvent {
+func NewAgentRunFinishedEvent(threadID, runID string, result *types.AgentRunResult) *AgentRunFinishedEvent {
 	return &AgentRunFinishedEvent{
 		BaseEvent: NewBaseEvent(AgentEventTypeRunFinished),
 		ThreadID:  threadID,

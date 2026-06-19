@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/agenticenv/agent-sdk-go/internal/types"
 )
 
 func TestConstructorsAndRoundTripForAllEventTypes(t *testing.T) {
@@ -26,7 +28,7 @@ func TestConstructorsAndRoundTripForAllEventTypes(t *testing.T) {
 		},
 		{
 			name:     "run_finished_with_result",
-			event:    NewAgentRunFinishedEvent("thread-2", "run-2", map[string]any{"ok": true}),
+			event:    NewAgentRunFinishedEvent("thread-2", "run-2", &types.AgentRunResult{Content: "ok"}),
 			wantType: AgentEventTypeRunFinished,
 			assertFields: func(t *testing.T, raw map[string]any) {
 				t.Helper()
@@ -260,6 +262,37 @@ func TestConstructorsAndRoundTripForAllEventTypes(t *testing.T) {
 				t.Fatalf("decoded wrong type: got %s want %s", decoded.Type(), tc.wantType)
 			}
 		})
+	}
+}
+
+func TestRunFinishedResultRoundTrip(t *testing.T) {
+	orig := NewAgentRunFinishedEvent("thread-1", "run-1", &types.AgentRunResult{
+		Content:   "hello",
+		AgentName: "agent-a",
+		Model:     "gpt-test",
+		LLMUsage:  &types.LLMUsage{TotalTokens: 42},
+	})
+	data, err := orig.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON error: %v", err)
+	}
+
+	decoded, err := EventFromJSON(data)
+	if err != nil {
+		t.Fatalf("EventFromJSON error: %v", err)
+	}
+	fin, ok := decoded.(*AgentRunFinishedEvent)
+	if !ok || fin == nil {
+		t.Fatalf("decoded type: %T", decoded)
+	}
+	if fin.Result == nil {
+		t.Fatal("decoded Result is nil")
+	}
+	if fin.Result.Content != "hello" || fin.Result.AgentName != "agent-a" || fin.Result.Model != "gpt-test" {
+		t.Fatalf("unexpected result: %#v", fin.Result)
+	}
+	if fin.Result.LLMUsage == nil || fin.Result.LLMUsage.TotalTokens != 42 {
+		t.Fatalf("unexpected llm usage: %#v", fin.Result.LLMUsage)
 	}
 }
 

@@ -31,6 +31,17 @@ type Runtime struct {
 	ToolExecutionMode types.AgentToolExecutionMode
 }
 
+type ExecuteLLMInput struct {
+	Logger           logger.Logger
+	AgentName        string
+	MessageID        string
+	Messages         []interfaces.Message
+	SkipTools        bool
+	RetrieverContext string
+	Tools            []interfaces.Tool
+	Emit             func(events.AgentEvent)
+}
+
 // BuildLLMRequest constructs an LLMRequest from the given messages and options.
 // When retrieverContext is non-empty it is appended to the system prompt (prefetch/hybrid mode).
 // tools is the per-run resolved tool list from [runtime.ExecuteRequest] or activity resolve.
@@ -116,6 +127,7 @@ func (rt *Runtime) llmResponseToResult(resp *interfaces.LLMResponse, tools []int
 			ToolCallID:      tc.ToolCallID,
 			ToolName:        tc.ToolName,
 			ToolDisplayName: displayName,
+			ToolKind:        types.KindOf(tool),
 			Args:            tc.Args,
 			NeedsApproval:   rt.RequiresApproval(tool),
 		})
@@ -133,17 +145,8 @@ func emitEvent(fn func(events.AgentEvent), ev events.AgentEvent) {
 // ExecuteLLM calls the LLM in non-streaming mode, records metrics and traces, emits
 // TEXT_MESSAGE_START / TEXT_MESSAGE_CONTENT / TEXT_MESSAGE_END events, and returns LLMResult.
 // messageID and agentName are used only for event construction; emit may be nil.
-func (rt *Runtime) ExecuteLLM(
-	ctx context.Context,
-	log logger.Logger,
-	agentName, messageID string,
-	messages []interfaces.Message,
-	skipTools bool,
-	retrieverContext string,
-	tools []interfaces.Tool,
-	emit func(events.AgentEvent),
-) (*LLMResult, error) {
-	req := rt.BuildLLMRequest(messages, skipTools, retrieverContext, tools)
+func (rt *Runtime) ExecuteLLM(ctx context.Context, input ExecuteLLMInput) (*LLMResult, error) {
+	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.RetrieverContext, input.Tools)
 
 	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
@@ -151,14 +154,14 @@ func (rt *Runtime) ExecuteLLM(
 	modelAttr := interfaces.Attribute{Key: types.MetricAttrModel, Value: model}
 	providerAttr := interfaces.Attribute{Key: types.MetricAttrProvider, Value: provider}
 
-	log.Debug(ctx, "runtime: LLM generate started", slog.String("scope", "runtime"), slog.Int("messageCount", len(messages)))
+	input.Logger.Debug(ctx, "runtime: LLM generate started", slog.String("scope", "runtime"), slog.Int("messageCount", len(input.Messages)))
 
 	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallStarted, modelAttr, providerAttr)
 	llmStart := time.Now()
 
 	ctx, sp := rt.Tracer.StartSpan(ctx, "llm.generate",
-		interfaces.Attribute{Key: "agent.name", Value: strings.TrimSpace(agentName)},
-		interfaces.Attribute{Key: "message.count", Value: len(messages)},
+		interfaces.Attribute{Key: "agent.name", Value: strings.TrimSpace(input.AgentName)},
+		interfaces.Attribute{Key: "message.count", Value: len(input.Messages)},
 		modelAttr,
 		providerAttr,
 	)
@@ -180,16 +183,16 @@ func (rt *Runtime) ExecuteLLM(
 		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
 	}
 
-	log.Debug(ctx, "runtime: LLM generate completed", slog.String("scope", "runtime"), slog.Int("messageCount", len(messages)))
+	input.Logger.Debug(ctx, "runtime: LLM generate completed", slog.String("scope", "runtime"), slog.Int("messageCount", len(input.Messages)))
 
-	result, err := rt.llmResponseToResult(resp, tools)
+	result, err := rt.llmResponseToResult(resp, input.Tools)
 	if err != nil {
 		return nil, err
 	}
 
-	emitEvent(emit, events.NewAgentTextMessageStartEvent(messageID, string(interfaces.MessageRoleAssistant)))
-	emitEvent(emit, events.NewAgentTextMessageContentEvent(messageID, result.Content))
-	emitEvent(emit, events.NewAgentTextMessageEndEvent(messageID))
+	emitEvent(input.Emit, events.NewAgentTextMessageStartEvent(input.MessageID, string(interfaces.MessageRoleAssistant)))
+	emitEvent(input.Emit, events.NewAgentTextMessageContentEvent(input.MessageID, result.Content))
+	emitEvent(input.Emit, events.NewAgentTextMessageEndEvent(input.MessageID))
 	return result, nil
 }
 
@@ -197,17 +200,8 @@ func (rt *Runtime) ExecuteLLM(
 // it falls back to Generate automatically. Delta events (text content, reasoning) are emitted via
 // emit as chunks arrive; a final TEXT_MESSAGE_START/CONTENT/END triple is emitted for non-streaming
 // fallback. emit may be nil.
-func (rt *Runtime) ExecuteLLMStream(
-	ctx context.Context,
-	log logger.Logger,
-	agentName, messageID string,
-	messages []interfaces.Message,
-	skipTools bool,
-	retrieverContext string,
-	tools []interfaces.Tool,
-	emit func(events.AgentEvent),
-) (*LLMResult, error) {
-	req := rt.BuildLLMRequest(messages, skipTools, retrieverContext, tools)
+func (rt *Runtime) ExecuteLLMStream(ctx context.Context, input ExecuteLLMInput) (*LLMResult, error) {
+	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.RetrieverContext, input.Tools)
 
 	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
@@ -220,8 +214,8 @@ func (rt *Runtime) ExecuteLLMStream(
 	llmStart := time.Now()
 
 	ctx, sp := rt.Tracer.StartSpan(ctx, "llm.stream",
-		interfaces.Attribute{Key: "agent.name", Value: strings.TrimSpace(agentName)},
-		interfaces.Attribute{Key: "message.count", Value: len(messages)},
+		interfaces.Attribute{Key: "agent.name", Value: strings.TrimSpace(input.AgentName)},
+		interfaces.Attribute{Key: "message.count", Value: len(input.Messages)},
 		interfaces.Attribute{Key: "streaming", Value: isStreamSupported},
 		modelAttr,
 		providerAttr,
@@ -234,14 +228,14 @@ func (rt *Runtime) ExecuteLLMStream(
 		if textMsgOpen {
 			return
 		}
-		emitEvent(emit, events.NewAgentTextMessageStartEvent(messageID, string(interfaces.MessageRoleAssistant)))
+		emitEvent(input.Emit, events.NewAgentTextMessageStartEvent(input.MessageID, string(interfaces.MessageRoleAssistant)))
 		textMsgOpen = true
 	}
 	closeTextMsg := func() {
 		if !textMsgOpen {
 			return
 		}
-		emitEvent(emit, events.NewAgentTextMessageEndEvent(messageID))
+		emitEvent(input.Emit, events.NewAgentTextMessageEndEvent(input.MessageID))
 		textMsgOpen = false
 	}
 	// If the model never sent text chunks still emit one assistant turn (empty for tool-only).
@@ -251,13 +245,13 @@ func (rt *Runtime) ExecuteLLMStream(
 			return
 		}
 		openTextMsg()
-		emitEvent(emit, events.NewAgentTextMessageContentEvent(messageID, result.Content))
+		emitEvent(input.Emit, events.NewAgentTextMessageContentEvent(input.MessageID, result.Content))
 		closeTextMsg()
 	}
 
 	// Non-streaming fallback: use Generate and emit a complete text message.
 	if !isStreamSupported {
-		log.Debug(ctx, "runtime: LLM stream unsupported, using generate", slog.String("scope", "runtime"))
+		input.Logger.Debug(ctx, "runtime: LLM stream unsupported, using generate", slog.String("scope", "runtime"))
 		resp, err := llmClient.Generate(ctx, req)
 		llmLatency := float64(time.Since(llmStart).Milliseconds())
 		if err != nil {
@@ -266,7 +260,7 @@ func (rt *Runtime) ExecuteLLMStream(
 			rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
 			return nil, err
 		}
-		result, err := rt.llmResponseToResult(resp, tools)
+		result, err := rt.llmResponseToResult(resp, input.Tools)
 		if err != nil {
 			sp.RecordError(err)
 			rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
@@ -298,11 +292,11 @@ func (rt *Runtime) ExecuteLLMStream(
 	reasoningMsgOpen := false
 	flushReasoning := func() {
 		if reasoningMsgOpen {
-			emitEvent(emit, events.NewAgentReasoningMessageEndEvent(reasoningMID))
+			emitEvent(input.Emit, events.NewAgentReasoningMessageEndEvent(reasoningMID))
 			reasoningMsgOpen = false
 		}
 		if reasoningPhaseOpen {
-			emitEvent(emit, events.NewAgentReasoningEndEvent(reasoningMID))
+			emitEvent(input.Emit, events.NewAgentReasoningEndEvent(reasoningMID))
 			reasoningPhaseOpen = false
 		}
 	}
@@ -311,9 +305,9 @@ func (rt *Runtime) ExecuteLLMStream(
 			return
 		}
 		reasoningMID = uuid.New().String()
-		emitEvent(emit, events.NewAgentReasoningStartEvent(reasoningMID))
+		emitEvent(input.Emit, events.NewAgentReasoningStartEvent(reasoningMID))
 		reasoningPhaseOpen = true
-		emitEvent(emit, events.NewAgentReasoningMessageStartEvent(reasoningMID, string(interfaces.MessageRoleReasoning)))
+		emitEvent(input.Emit, events.NewAgentReasoningMessageStartEvent(reasoningMID, string(interfaces.MessageRoleReasoning)))
 		reasoningMsgOpen = true
 	}
 
@@ -325,11 +319,11 @@ func (rt *Runtime) ExecuteLLMStream(
 		if chunk.ContentDelta != "" {
 			flushReasoning()
 			openTextMsg()
-			emitEvent(emit, events.NewAgentTextMessageContentEvent(messageID, chunk.ContentDelta))
+			emitEvent(input.Emit, events.NewAgentTextMessageContentEvent(input.MessageID, chunk.ContentDelta))
 		}
 		if chunk.ThinkingDelta != "" {
 			openReasoning()
-			emitEvent(emit, events.NewAgentReasoningMessageContentEvent(reasoningMID, chunk.ThinkingDelta))
+			emitEvent(input.Emit, events.NewAgentReasoningMessageContentEvent(reasoningMID, chunk.ThinkingDelta))
 		}
 	}
 	flushReasoning()
@@ -351,7 +345,7 @@ func (rt *Runtime) ExecuteLLMStream(
 		return nil, err
 	}
 
-	result, err := rt.llmResponseToResult(resp, tools)
+	result, err := rt.llmResponseToResult(resp, input.Tools)
 	if err != nil {
 		sp.RecordError(err)
 		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
@@ -366,7 +360,7 @@ func (rt *Runtime) ExecuteLLMStream(
 		rt.Metrics.RecordHistogram(ctx, types.MetricLLMTokensOutput, float64(resp.Usage.CompletionTokens), modelAttr, providerAttr)
 	}
 
-	log.Debug(ctx, "runtime: LLM stream completed", slog.String("scope", "runtime"))
+	input.Logger.Debug(ctx, "runtime: LLM stream completed", slog.String("scope", "runtime"))
 	finalizeAssistantText(result)
 	return result, nil
 }
@@ -453,10 +447,10 @@ func (rt *Runtime) AuthorizeTool(ctx context.Context, log logger.Logger, tools [
 // ExecuteRetrievers runs all configured retrievers in parallel for the given query and
 // returns a combined document context string for injection into the LLM system prompt.
 // Partial failures are logged and skipped; all retrievers failing returns an error.
-func (rt *Runtime) ExecuteRetrievers(ctx context.Context, log logger.Logger, query string) (string, error) {
+func (rt *Runtime) ExecuteRetrievers(ctx context.Context, log logger.Logger, query string) (*RetrieverResult, error) {
 	retrievers := rt.AgentConfig.Retrievers.Retrievers
 	if len(retrievers) == 0 {
-		return "", nil
+		return &RetrieverResult{}, nil
 	}
 
 	log.Debug(ctx, "runtime: retriever prefetch started", slog.String("scope", "runtime"), slog.Int("retrieverCount", len(retrievers)), slog.String("query", query))
@@ -517,14 +511,15 @@ func (rt *Runtime) ExecuteRetrievers(ctx context.Context, log logger.Logger, que
 		sb.WriteString(FormatRetrieverDocs(res.docs))
 	}
 
-	if failedCount == len(retrievers) {
-		return "", fmt.Errorf("retriever prefetch: all %d retriever(s) failed", len(retrievers))
-	}
 	if failedCount > 0 {
 		log.Warn(ctx, "runtime: some retrievers failed, continuing with partial context", slog.String("scope", "runtime"), slog.Int("failed", failedCount), slog.Int("total", len(retrievers)))
 	}
 
 	retrieverContext := strings.TrimSpace(sb.String())
 	log.Debug(ctx, "runtime: retriever prefetch completed", slog.String("scope", "runtime"), slog.Int("retrieverCount", len(retrievers)), slog.Bool("hasContext", retrieverContext != ""))
-	return retrieverContext, nil
+	return &RetrieverResult{
+		Context:        retrieverContext,
+		TotalSearches:  int64(len(retrievers)),
+		FailedSearches: int64(failedCount),
+	}, nil
 }

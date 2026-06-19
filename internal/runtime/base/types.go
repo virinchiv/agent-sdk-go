@@ -1,6 +1,9 @@
 package base
 
-import "github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+import (
+	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+)
 
 // LLMResult is the result of a successful LLM call.
 // Content holds the assistant text; ToolCalls holds any tool invocations resolved against
@@ -18,6 +21,7 @@ type ToolCallRequest struct {
 	ToolCallID      string
 	ToolName        string
 	ToolDisplayName string
+	ToolKind        types.ToolKind
 	Args            map[string]any
 	NeedsApproval   bool
 }
@@ -27,4 +31,11 @@ type ToolCallRequest struct {
 type AuthorizeResult struct {
 	Allowed bool
 	Reason  string
+}
+
+// RetrieverResult is the outcome of ExecuteRetrievers (prefetch / hybrid pre-loop).
+type RetrieverResult struct {
+	Context        string
+	TotalSearches  int64
+	FailedSearches int64
 }

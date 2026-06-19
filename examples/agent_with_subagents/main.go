@@ -182,6 +182,7 @@ func main() {
 				who = "agent"
 			}
 			fmt.Printf("\n[%s] [%s complete] %s\n", eventType, who, res.Content)
+			shared.PrintRunFooters(res)
 		}
 	}
 }

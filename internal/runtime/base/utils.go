@@ -3,6 +3,7 @@ package base
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
@@ -97,4 +98,17 @@ func GetConversationID(req *runtime.ExecuteRequest) string {
 		return req.RunOptions.ConversationOptions.ID
 	}
 	return ""
+}
+
+func NewAgentTelemetry(startedAt time.Time) *types.AgentTelemetry {
+	return &types.AgentTelemetry{
+		Run: types.RunTelemetry{
+			StartedAt:    startedAt,
+			FinishReason: types.FinishReasonComplete,
+		},
+		Tools: types.ToolTelemetry{
+			Breakdown:       make(map[string]int64),
+			FailedBreakdown: make(map[string]int64),
+		},
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/mock"
@@ -46,6 +47,19 @@ func wireTestToolsResolver(rt *TemporalRuntime, tools []interfaces.Tool) {
 	}
 	rt.resolveToolsFn = func(ctx context.Context) ([]interfaces.Tool, error) {
 		return tools, nil
+	}
+}
+
+func testWorkflowToolCall(toolCallID, toolName string, kind types.ToolKind, args map[string]any) ToolCallRequest {
+	if kind == "" {
+		kind = types.ToolKindNative
+	}
+	return ToolCallRequest{
+		ToolCallID:      toolCallID,
+		ToolName:        toolName,
+		ToolDisplayName: toolName,
+		ToolKind:        kind,
+		Args:            args,
 	}
 }
 
@@ -120,13 +134,8 @@ func TestAgentWorkflow_OneToolThenFinal(t *testing.T) {
 		llmCalls++
 		if llmCalls == 1 {
 			return &AgentLLMResult{
-				Content: "using tool",
-				ToolCalls: []ToolCallRequest{{
-					ToolCallID:      "tc1",
-					ToolName:        "echo",
-					ToolDisplayName: "Echo",
-					Args:            map[string]any{"x": 1},
-				}},
+				Content:   "using tool",
+				ToolCalls: []ToolCallRequest{testWorkflowToolCall("tc1", "echo", types.ToolKindNative, map[string]any{"x": 1})},
 			}, nil
 		}
 		return &AgentLLMResult{Content: "after tool", ToolCalls: nil}, nil
@@ -150,6 +159,111 @@ func TestAgentWorkflow_OneToolThenFinal(t *testing.T) {
 	require.NoError(t, env.GetWorkflowResult(&result))
 	require.Equal(t, "after tool", result.Content)
 	require.Equal(t, 2, llmCalls)
+	require.NotNil(t, result.Telemetry)
+	require.Equal(t, int64(1), result.Telemetry.Tools.TotalCalls)
+	require.Equal(t, int64(0), result.Telemetry.Tools.FailedCalls)
+}
+
+func TestAgentWorkflow_ToolTelemetry_ExecError(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	var llmCalls int
+	env.RegisterWorkflow(rt.AgentWorkflow)
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
+		llmCalls++
+		if llmCalls == 1 {
+			return &AgentLLMResult{
+				Content:   "using tool",
+				ToolCalls: []ToolCallRequest{testWorkflowToolCall("tc1", "bad", types.ToolKindNative, nil)},
+			}, nil
+		}
+		return &AgentLLMResult{Content: "after tool", ToolCalls: nil}, nil
+	})
+	env.OnActivity(rt.AgentToolExecuteActivity, mock.Anything, mock.Anything).Return("", fmt.Errorf("boom"))
+	env.OnActivity(rt.AgentToolAuthorizeActivity, mock.Anything, mock.Anything).Return(AgentToolAuthorizeResult{Allowed: true}, nil)
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{UserPrompt: "run"})
+
+	require.True(t, env.IsWorkflowCompleted())
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, int64(1), result.Telemetry.Tools.TotalCalls)
+	require.Equal(t, int64(1), result.Telemetry.Tools.FailedCalls)
+}
+
+func TestAgentWorkflow_ToolTelemetry_SkipsNonCountableKind(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	var llmCalls int
+	env.RegisterWorkflow(rt.AgentWorkflow)
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
+		llmCalls++
+		if llmCalls == 1 {
+			return &AgentLLMResult{
+				Content:   "using tool",
+				ToolCalls: []ToolCallRequest{testWorkflowToolCall("tc1", "delegate", types.ToolKindSubAgent, nil)},
+			}, nil
+		}
+		return &AgentLLMResult{Content: "done", ToolCalls: nil}, nil
+	})
+	env.OnActivity(rt.AgentToolExecuteActivity, mock.Anything, mock.Anything).Return("should not run", nil)
+	env.OnActivity(rt.AgentToolAuthorizeActivity, mock.Anything, mock.Anything).Return(AgentToolAuthorizeResult{Allowed: true}, nil)
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{UserPrompt: "run"})
+
+	require.True(t, env.IsWorkflowCompleted())
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, int64(0), result.Telemetry.Tools.TotalCalls)
+}
+
+func TestAgentWorkflow_SequentialMode_ContinuesOnToolError(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+	rt.ToolExecutionMode = types.AgentToolExecutionModeSequential
+
+	var llmCalls int
+	env.RegisterWorkflow(rt.AgentWorkflow)
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
+		llmCalls++
+		if llmCalls == 1 {
+			return &AgentLLMResult{
+				Content: "using tools",
+				ToolCalls: []ToolCallRequest{
+					testWorkflowToolCall("tc1", "bad", types.ToolKindNative, nil),
+					testWorkflowToolCall("tc2", "ok", types.ToolKindNative, nil),
+				},
+			}, nil
+		}
+		return &AgentLLMResult{Content: "after tools", ToolCalls: nil}, nil
+	})
+	env.OnActivity(rt.AgentToolAuthorizeActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentToolAuthorizeInput) (AgentToolAuthorizeResult, error) {
+		if in.ToolName == "bad" {
+			return AgentToolAuthorizeResult{}, fmt.Errorf("auth backend down")
+		}
+		return AgentToolAuthorizeResult{Allowed: true}, nil
+	})
+	env.OnActivity(rt.AgentToolExecuteActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentToolExecuteInput) (string, error) {
+		if in.ToolName != "ok" {
+			t.Errorf("unexpected execute for %q", in.ToolName)
+		}
+		return "ok result", nil
+	})
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{UserPrompt: "run"})
+
+	require.True(t, env.IsWorkflowCompleted())
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, "after tools", result.Content)
+	require.Equal(t, 2, llmCalls)
+	require.Equal(t, int64(2), result.Telemetry.Tools.TotalCalls)
+	require.Equal(t, int64(1), result.Telemetry.Tools.FailedCalls)
 }
 
 func TestAgentWorkflow_ToolAuthorizationDenied_SkipsExecute(t *testing.T) {
@@ -163,13 +277,8 @@ func TestAgentWorkflow_ToolAuthorizationDenied_SkipsExecute(t *testing.T) {
 		llmCalls++
 		if llmCalls == 1 {
 			return &AgentLLMResult{
-				Content: "using tool",
-				ToolCalls: []ToolCallRequest{{
-					ToolCallID:      "tc-auth-deny",
-					ToolName:        "echo",
-					ToolDisplayName: "Echo",
-					Args:            map[string]any{"x": 1},
-				}},
+				Content:   "using tool",
+				ToolCalls: []ToolCallRequest{testWorkflowToolCall("tc-auth-deny", "echo", types.ToolKindNative, map[string]any{"x": 1})},
 			}, nil
 		}
 		return &AgentLLMResult{Content: "after deny", ToolCalls: nil}, nil
@@ -277,6 +386,7 @@ func TestAgentLLMActivity_MockLLM_ToolCalls(t *testing.T) {
 	require.Len(t, got.ToolCalls, 1)
 	require.Equal(t, "echo", got.ToolCalls[0].ToolName)
 	require.Equal(t, "tc1", got.ToolCalls[0].ToolCallID)
+	require.Equal(t, types.ToolKindNative, got.ToolCalls[0].ToolKind)
 	require.False(t, got.ToolCalls[0].NeedsApproval)
 }
 
@@ -443,13 +553,8 @@ func TestAgentWorkflow_ContinueAsNewOnHistoryLengthAfterTools(t *testing.T) {
 	env.RegisterWorkflow(rt.AgentWorkflow)
 	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
 		return &AgentLLMResult{
-			Content: "using tool",
-			ToolCalls: []ToolCallRequest{{
-				ToolCallID:      "tc-can",
-				ToolName:        "echo",
-				ToolDisplayName: "Echo",
-				Args:            map[string]any{"x": 1},
-			}},
+			Content:   "using tool",
+			ToolCalls: []ToolCallRequest{testWorkflowToolCall("tc-can", "echo", types.ToolKindNative, map[string]any{"x": 1})},
 		}, nil
 	})
 	env.OnActivity(rt.AgentToolExecuteActivity, mock.Anything, mock.Anything).Return("echo ok", nil)
@@ -467,6 +572,57 @@ func TestAgentWorkflow_ContinueAsNewOnHistoryLengthAfterTools(t *testing.T) {
 	require.True(t, workflow.IsContinueAsNewError(wfErr), "expected continue-as-new, got: %v", wfErr)
 }
 
+func TestAgentWorkflow_ResumesTelemetryFromState(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	rt := testRuntimeForWorkflow(t)
+
+	priorStarted := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	env.RegisterWorkflow(rt.AgentWorkflow)
+	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(
+		&AgentLLMResult{
+			Content: "done",
+			Usage:   &interfaces.LLMUsage{TotalTokens: 50, PromptTokens: 30, CompletionTokens: 20},
+		}, nil)
+
+	env.ExecuteWorkflow(rt.AgentWorkflow, AgentWorkflowInput{
+		UserPrompt: "run",
+		State: &AgentWorkflowState{
+			Iteration: 0,
+			Messages: []interfaces.Message{
+				{Role: interfaces.MessageRoleUser, Content: "run"},
+			},
+			LLMUsage: &types.LLMUsage{TotalTokens: 100},
+			Telemetry: &types.AgentTelemetry{
+				Run: types.RunTelemetry{
+					StartedAt:     priorStarted,
+					TotalLLMCalls: 2,
+					FinishReason:  types.FinishReasonComplete,
+				},
+				Tools: types.ToolTelemetry{
+					TotalCalls:  4,
+					FailedCalls: 1,
+					Breakdown:   map[string]int64{"prior": 4},
+				},
+			},
+		},
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	var result types.AgentRunResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.NotNil(t, result.Telemetry)
+	require.NotNil(t, result.Telemetry.Run)
+	require.Equal(t, priorStarted, result.Telemetry.Run.StartedAt)
+	require.Equal(t, int64(3), result.Telemetry.Run.TotalLLMCalls)
+	require.Equal(t, int64(4), result.Telemetry.Tools.TotalCalls)
+	require.Equal(t, int64(1), result.Telemetry.Tools.FailedCalls)
+	require.NotNil(t, result.LLMUsage)
+	require.Equal(t, int64(150), result.LLMUsage.TotalTokens)
+	require.False(t, result.Telemetry.Run.CompletedAt.IsZero())
+}
+
 func TestAgentWorkflow_ContinueAsNewOnHistorySizeAfterTools(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -478,13 +634,8 @@ func TestAgentWorkflow_ContinueAsNewOnHistorySizeAfterTools(t *testing.T) {
 	env.RegisterWorkflow(rt.AgentWorkflow)
 	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(func(ctx context.Context, in AgentLLMInput) (*AgentLLMResult, error) {
 		return &AgentLLMResult{
-			Content: "using tool",
-			ToolCalls: []ToolCallRequest{{
-				ToolCallID:      "tc-can-size",
-				ToolName:        "echo",
-				ToolDisplayName: "Echo",
-				Args:            map[string]any{"x": 1},
-			}},
+			Content:   "using tool",
+			ToolCalls: []ToolCallRequest{testWorkflowToolCall("tc-can-size", "echo", types.ToolKindNative, map[string]any{"x": 1})},
 		}, nil
 	})
 	env.OnActivity(rt.AgentToolExecuteActivity, mock.Anything, mock.Anything).Return("echo ok", nil)
@@ -565,6 +716,8 @@ func TestAgentRetrieverActivity_SingleRetriever(t *testing.T) {
 	require.Contains(t, got.RetrieverContext, "Go is a language")
 	require.Contains(t, got.RetrieverContext, "docs.go.dev")
 	require.Contains(t, got.RetrieverContext, "0.95")
+	require.Equal(t, int64(1), got.TotalSearches)
+	require.Equal(t, int64(0), got.FailedSearches)
 	// Single retriever: no section header
 	require.NotContains(t, got.RetrieverContext, "## kb")
 }
@@ -598,6 +751,8 @@ func TestAgentRetrieverActivity_MultipleRetrievers_SectionHeaders(t *testing.T) 
 	require.Contains(t, got.RetrieverContext, "doc from r1")
 	require.Contains(t, got.RetrieverContext, "## r2")
 	require.Contains(t, got.RetrieverContext, "doc from r2")
+	require.Equal(t, int64(2), got.TotalSearches)
+	require.Equal(t, int64(0), got.FailedSearches)
 }
 
 func TestAgentRetrieverActivity_PartialFailure_ContinuesWithPartialContext(t *testing.T) {
@@ -625,9 +780,11 @@ func TestAgentRetrieverActivity_PartialFailure_ContinuesWithPartialContext(t *te
 	require.NoError(t, val.Get(&got))
 	require.Contains(t, got.RetrieverContext, "good doc")
 	require.NotContains(t, got.RetrieverContext, "bad")
+	require.Equal(t, int64(2), got.TotalSearches)
+	require.Equal(t, int64(1), got.FailedSearches)
 }
 
-func TestAgentRetrieverActivity_AllFail_ReturnsError(t *testing.T) {
+func TestAgentRetrieverActivity_AllFail_ContinuesWithEmptyContext(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -639,9 +796,13 @@ func TestAgentRetrieverActivity_AllFail_ReturnsError(t *testing.T) {
 	actEnv := newActivityTestEnv(t)
 	actEnv.RegisterActivity(rt.AgentRetrieverActivity)
 
-	_, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "q"})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "all")
+	val, err := actEnv.ExecuteActivity(rt.AgentRetrieverActivity, AgentRetrieverInput{UserPrompt: "q"})
+	require.NoError(t, err)
+	var got AgentRetrieverResult
+	require.NoError(t, val.Get(&got))
+	require.Equal(t, "", got.RetrieverContext)
+	require.Equal(t, int64(1), got.TotalSearches)
+	require.Equal(t, int64(1), got.FailedSearches)
 }
 
 func TestAgentRetrieverActivity_EmptyDocs_EmptyContext(t *testing.T) {
@@ -706,7 +867,7 @@ func TestAgentWorkflow_PrefetchMode_CallsRetrieverActivityFirst(t *testing.T) {
 		func(ctx context.Context, in AgentRetrieverInput) (*AgentRetrieverResult, error) {
 			retrieverCalled = true
 			require.Equal(t, "user query", in.UserPrompt)
-			return &AgentRetrieverResult{RetrieverContext: "[1] prefetched doc"}, nil
+			return &AgentRetrieverResult{RetrieverContext: "[1] prefetched doc", TotalSearches: 1, FailedSearches: 0}, nil
 		})
 
 	env.OnActivity(rt.AgentLLMActivity, mock.Anything, mock.Anything).Return(
@@ -724,6 +885,11 @@ func TestAgentWorkflow_PrefetchMode_CallsRetrieverActivityFirst(t *testing.T) {
 	var result types.AgentRunResult
 	require.NoError(t, env.GetWorkflowResult(&result))
 	require.Equal(t, "answer", result.Content)
+	require.NotNil(t, result.Telemetry)
+	require.Equal(t, int64(1), result.Telemetry.Storage.TotalRetrieverSearches)
+	require.Equal(t, int64(0), result.Telemetry.Storage.FailedRetrieverSearches)
+	require.Equal(t, int64(1), result.Telemetry.Storage.PrefetchSearches)
+	require.Equal(t, int64(0), result.Telemetry.Storage.AgenticSearches)
 }
 
 func TestAgentWorkflow_AgenticMode_SkipsRetrieverActivity(t *testing.T) {

@@ -114,6 +114,7 @@ func printEvent(ev agent.AgentEvent, streamedSoFar bool) {
 		if res != nil && res.Content != "" && !streamedSoFar {
 			fmt.Printf("\n[complete] %s\n", res.Content)
 		}
+		shared.PrintRunFooters(res)
 	default:
 		// Ignore tool events (none registered).
 	}

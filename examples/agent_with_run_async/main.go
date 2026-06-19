@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
@@ -82,6 +83,7 @@ func main() {
 		return
 	}
 	fmt.Println("agent:", res.Result.Content)
+	shared.PrintRunFooters(res.Result)
 }
 
 func makeApprovalHandler(lineCh <-chan string) agent.ApprovalHandler {

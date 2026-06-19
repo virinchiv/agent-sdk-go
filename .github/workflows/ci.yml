@@ -46,6 +46,38 @@ jobs:
       - name: Build
         run: make build
 
+  eval-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: PromptFoo
+        working-directory: eval-harness/promptfoo
+        run: npx --yes promptfoo@latest eval -c config.yaml
+
+      - name: DeepEval
+        working-directory: eval-harness/deepeval
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          .venv/bin/pytest test_agent.py -v
+
   # examples:local — off until if: true and EXAMPLES_* repo secrets (examples/.env.defaults).
   examples:
     if: false

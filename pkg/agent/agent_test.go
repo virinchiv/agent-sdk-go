@@ -111,9 +111,9 @@ func TestAgent_Stream_SetsStreamingEnabled(t *testing.T) {
 	if !ok || fin == nil {
 		t.Fatalf("event not *AgentRunFinishedEvent: %+v", ev)
 	}
-	result, ok := fin.Result.(*types.AgentRunResult)
-	if !ok || result == nil {
-		t.Fatalf("Result not *AgentRunResult: %+v", fin.Result)
+	result := fin.Result
+	if result == nil {
+		t.Fatalf("Result is nil")
 	}
 	if result.Content != "done" {
 		t.Fatalf("result.Content = %q", result.Content)

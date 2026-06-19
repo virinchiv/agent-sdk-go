@@ -1140,11 +1140,11 @@ func validateToolNames(tools []interfaces.Tool) error {
 			return fmt.Errorf("tool must not be nil")
 		}
 		name := tool.Name()
-		kind := interfaces.KindOf(tool)
+		kind := types.KindOf(tool)
 		if prev, ok := seen[name]; ok {
 			return fmt.Errorf("duplicate tool name %q: %s tool conflicts with an existing %s tool", name, kind, prev)
 		}
-		seen[name] = kind
+		seen[name] = string(kind)
 	}
 	return nil
 }

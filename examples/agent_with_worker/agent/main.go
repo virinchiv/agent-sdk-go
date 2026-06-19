@@ -153,9 +153,7 @@ func runStream(ctx context.Context, a *agent.Agent, scanner *bufio.Scanner, prom
 			} else {
 				fmt.Println("[complete]")
 			}
-			if u := shared.UsageFooter(res); u != "" {
-				fmt.Println(u)
-			}
+			shared.PrintRunFooters(res)
 
 		default:
 			//fmt.Printf("[%s] %+v\n", ev.Type(), ev)

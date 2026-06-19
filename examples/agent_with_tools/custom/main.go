@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
 
@@ -50,4 +51,5 @@ func main() {
 		return
 	}
 	fmt.Println("agent:", result.Content)
+	shared.PrintRunFooters(result)
 }

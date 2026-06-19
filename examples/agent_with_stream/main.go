@@ -141,10 +141,7 @@ func printEvent(ev agent.AgentEvent, streamedSoFar bool) {
 		} else if res != nil && res.Content != "" {
 			fmt.Printf("[%s]", eventType)
 		}
-		if u := shared.UsageFooter(res); u != "" {
-			fmt.Println()
-			fmt.Println(u)
-		}
+		shared.PrintRunFooters(res)
 	default:
 		//fmt.Printf("[%s] %+v\n", ev.Type(), ev)
 		return

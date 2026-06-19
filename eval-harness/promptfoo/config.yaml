@@ -1,0 +1,46 @@
+# Run from this directory:
+#   npx promptfoo eval -c config.yaml
+
+description: eval-harness agent run assertions
+
+prompts:
+  - "run eval check"
+
+providers:
+  - id: exec:../run_agent.sh
+    label: eval-agent
+
+tests:
+  - description: all mock tools were called
+    assert:
+      - type: javascript
+        value: |
+          const res = JSON.parse(output);
+          const breakdown = res.telemetry.tools.breakdown;
+          const tools = Object.keys(breakdown);
+          return tools.length === 3
+            && breakdown.eval_tool_1 === 1
+            && breakdown.eval_tool_2 === 1
+            && breakdown.eval_tool_3 === 1;
+
+  - description: agent completed successfully
+    assert:
+      - type: javascript
+        value: |
+          const res = JSON.parse(output);
+          return res.telemetry.run.finish_reason === "complete"
+            && res.content === "eval complete";
+
+  - description: no failed tool calls
+    assert:
+      - type: javascript
+        value: |
+          const res = JSON.parse(output);
+          return res.telemetry.tools.failed_calls === 0;
+
+  - description: llm usage reported
+    assert:
+      - type: javascript
+        value: |
+          const res = JSON.parse(output);
+          return res.llm_usage.total_tokens > 0;

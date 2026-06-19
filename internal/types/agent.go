@@ -24,7 +24,11 @@ type AgentRunResult struct {
 	Model     string         `json:"model"`
 	Metadata  map[string]any `json:"metadata"`
 	// Usage is the sum of token usage across all LLM calls in this run (when reported by the provider).
-	Usage *LLMUsage `json:"usage,omitempty"`
+	// Usage acts as the historical root for aggregated token counters.
+	LLMUsage *LLMUsage `json:"llm_usage,omitempty"`
+
+	// Telemetry contains the strongly typed nested metrics domain payload.
+	Telemetry *AgentTelemetry `json:"telemetry,omitempty"`
 }
 
 // AgentRunAsyncResult is the single outcome from AgentRunAsync. After the channel closes, Err is non-nil

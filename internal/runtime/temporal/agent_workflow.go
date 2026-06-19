@@ -134,8 +134,10 @@ type AgentWorkflowInput struct {
 // AgentWorkflowState is the state of the agent workflow.
 // It is used to store the state of the agent workflow on continue-as-new.
 type AgentWorkflowState struct {
-	Iteration int                  `json:"iteration"`
-	Messages  []interfaces.Message `json:"messages"`
+	Iteration int                   `json:"iteration"`
+	Messages  []interfaces.Message  `json:"messages"`
+	LLMUsage  *interfaces.LLMUsage  `json:"llm_usage,omitempty"`
+	Telemetry *types.AgentTelemetry `json:"telemetry,omitempty"`
 }
 
 // AgentRetrieverInput is the input to AgentRetrieverActivity.
@@ -149,6 +151,8 @@ type AgentRetrieverInput struct {
 // documents were found. It is injected into the system prompt by AgentLLMActivity and AgentLLMStreamActivity.
 type AgentRetrieverResult struct {
 	RetrieverContext string `json:"retriever_context,omitempty"`
+	TotalSearches    int64  `json:"total_searches,omitempty"`
+	FailedSearches   int64  `json:"failed_searches,omitempty"`
 }
 
 // AgentLLMInput is the input to AgentLLMActivity and AgentLLMStreamActivity.
@@ -188,6 +192,7 @@ func baseLLMResultToActivity(r *base.LLMResult) *AgentLLMResult {
 			ToolCallID:      tc.ToolCallID,
 			ToolName:        tc.ToolName,
 			ToolDisplayName: tc.ToolDisplayName,
+			ToolKind:        tc.ToolKind,
 			Args:            tc.Args,
 			NeedsApproval:   tc.NeedsApproval,
 		})
@@ -200,6 +205,7 @@ type ToolCallRequest struct {
 	ToolCallID      string         `json:"tool_call_id"` // from LLM; used to match tool results
 	ToolName        string         `json:"tool_name"`
 	ToolDisplayName string         `json:"tool_display_name,omitempty"`
+	ToolKind        types.ToolKind `json:"tool_kind"`
 	Args            map[string]any `json:"args"`
 	NeedsApproval   bool           `json:"needs_approval"`
 }
@@ -219,7 +225,14 @@ type agentToolCallInput struct {
 // agentToolCallOutput is the output of executeAgentToolCall.
 type agentToolCallOutput struct {
 	msg                  interfaces.Message
+	failed               bool // true: hard err or ExecuteTool err
 	streamingUnavailable bool
+}
+
+// agentToolResult is one tool outcome collected for the conversation and telemetry.
+type agentToolResult struct {
+	message interfaces.Message
+	failed  bool
 }
 
 // AgentToolExecuteInput is the input to AgentToolExecuteActivity.
@@ -381,13 +394,19 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 	useStreaming := input.StreamingEnabled && rt.AgentConfig.LLM.Client.IsStreamSupported()
 
-	// State restored after ContinueAsNew (iteration + conversation messages).
+	// State restored after ContinueAsNew (iteration, messages, run telemetry).
 	if input.State == nil {
 		input.State = &AgentWorkflowState{
 			Iteration: 0,
 			Messages:  []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: input.UserPrompt}},
 		}
 	}
+	if input.State.Telemetry == nil {
+		input.State.Telemetry = base.NewAgentTelemetry(workflow.Now(ctx))
+	}
+	telemetry := input.State.Telemetry
+
+	llmUsage := input.State.LLMUsage
 
 	messages := input.State.Messages
 
@@ -411,11 +430,13 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			return nil, err
 		}
 		retrieverContext = retrieverResult.RetrieverContext
+		telemetry.Storage.TotalRetrieverSearches += retrieverResult.TotalSearches
+		telemetry.Storage.FailedRetrieverSearches += retrieverResult.FailedSearches
+		telemetry.Storage.PrefetchSearches += retrieverResult.TotalSearches
 		logger.Debug("workflow: retriever prefetch done", "scope", "workflow", "hasContext", retrieverContext != "")
 	}
 
 	lastContent := ""
-	var runUsage *interfaces.LLMUsage
 	var llmResult AgentLLMResult
 	for iter := input.State.Iteration; iter < maxIter; iter++ {
 
@@ -445,7 +466,8 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			return nil, err
 		}
 
-		runUsage = base.MergeLLMUsage(runUsage, llmResult.Usage)
+		telemetry.Run.TotalLLMCalls++
+		llmUsage = base.MergeLLMUsage(llmUsage, llmResult.Usage)
 
 		if len(llmResult.ToolCalls) == 0 {
 			// Final response: accumulate assistant message for conversation
@@ -469,9 +491,11 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 				}
 				return nil, err
 			}
-			runUsage = base.MergeLLMUsage(runUsage, llmResult.Usage)
+			llmUsage = base.MergeLLMUsage(llmUsage, llmResult.Usage)
 			messages = append(messages, interfaces.Message{Role: interfaces.MessageRoleAssistant, Content: llmResult.Content})
 			lastContent = llmResult.Content
+			telemetry.Run.TotalLLMCalls++
+			telemetry.Run.FinishReason = types.FinishReasonMaxIterations
 			break
 		}
 
@@ -490,7 +514,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		}
 		messages = append(messages, assistantMsg)
 
-		var toolResults []interfaces.Message
+		var toolResults []agentToolResult
 
 		toolExecMode := rt.ToolExecutionMode
 		if toolExecMode == "" {
@@ -546,7 +570,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 					})
 				}
 
-				toolResults = make([]interfaces.Message, len(futures))
+				toolResults = make([]agentToolResult, len(futures))
 				for i, fut := range futures {
 					tc := llmResult.ToolCalls[i]
 					var v *agentToolCallOutput
@@ -559,22 +583,26 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 							"toolName", tc.ToolName,
 							"toolCallID", tc.ToolCallID,
 							"error", err)
-						// Tool failed — send error as tool result so LLM can handle it
-						toolResults[i] = interfaces.Message{
-							Role:       interfaces.MessageRoleTool,
-							Content:    "Tool execution failed: " + err.Error(),
-							ToolName:   tc.ToolName,
-							ToolCallID: tc.ToolCallID,
+						toolResults[i] = agentToolResult{
+							message: interfaces.Message{
+								Role:       interfaces.MessageRoleTool,
+								Content:    "Tool execution failed: " + err.Error(),
+								ToolName:   tc.ToolName,
+								ToolCallID: tc.ToolCallID,
+							},
+							failed: true,
 						}
 					} else {
-						// Success: branch always Set(non-nil *agentToolCallOutput, nil).
 						logger.Debug("workflow: parallel tool future collected (ok)",
 							"scope", "workflow",
 							"toolIndex", i,
 							"toolName", tc.ToolName,
 							"toolCallID", tc.ToolCallID,
 							"streamingUnavailable", v.streamingUnavailable)
-						toolResults[i] = v.msg
+						toolResults[i] = agentToolResult{
+							message: v.msg,
+							failed:  v.failed,
+						}
 						if v.streamingUnavailable {
 							streamingUnavailable = true
 						}
@@ -588,7 +616,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 					"executionMode", string(types.AgentToolExecutionModeSequential),
 					"toolCount", len(llmResult.ToolCalls))
 				toolInput := rt.newAgentToolCallInput(ctx, input, activityIDSuffix, messageID, emitAgentEvent, "")
-				// authorize / approve / execute, then TOOL_CALL_END + TOOL_CALL_RESULT.
+				toolResults = make([]agentToolResult, len(llmResult.ToolCalls))
 				for i, tc := range llmResult.ToolCalls {
 					logger.Debug("workflow: sequential tool executing",
 						"scope", "workflow",
@@ -604,7 +632,16 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 							"toolName", tc.ToolName,
 							"toolCallID", tc.ToolCallID,
 							"error", runErr)
-						return nil, runErr
+						toolResults[i] = agentToolResult{
+							message: interfaces.Message{
+								Role:       interfaces.MessageRoleTool,
+								Content:    "Tool execution failed: " + runErr.Error(),
+								ToolName:   tc.ToolName,
+								ToolCallID: tc.ToolCallID,
+							},
+							failed: true,
+						}
+						continue
 					}
 					if toolOutput.streamingUnavailable {
 						streamingUnavailable = true
@@ -615,14 +652,30 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 						"toolName", tc.ToolName,
 						"toolCallID", tc.ToolCallID,
 						"streamingUnavailable", toolOutput.streamingUnavailable)
-					toolResults = append(toolResults, toolOutput.msg)
+					toolResults[i] = agentToolResult{
+						message: toolOutput.msg,
+						failed:  toolOutput.failed,
+					}
 				}
 			}
 		default:
 			return nil, fmt.Errorf("invalid tool execution mode %q: use %q or %q", toolExecMode, types.AgentToolExecutionModeParallel, types.AgentToolExecutionModeSequential)
 		}
 
-		messages = append(messages, toolResults...)
+		for i, result := range toolResults {
+			tc := llmResult.ToolCalls[i]
+			if tc.ToolKind.CountsTowardToolTelemetry() {
+				telemetry.Tools.Record(tc.ToolName, result.failed)
+			}
+			if tc.ToolKind == types.ToolKindRetriever {
+				telemetry.Storage.TotalRetrieverSearches++
+				telemetry.Storage.AgenticSearches++
+				if result.failed {
+					telemetry.Storage.FailedRetrieverSearches++
+				}
+			}
+			messages = append(messages, result.message)
+		}
 
 		if rt.conversationMemoryEnabled(input.ConversationID) && rt.AgentConfig.Session.ConversationSaveOnIteration && len(messages) > 0 {
 			if err := workflow.ExecuteActivity(convCtx, rt.AddConversationMessagesActivity, AddConversationMessagesInput{
@@ -648,9 +701,12 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 				"historySizeBytes", info.GetCurrentHistorySize(),
 				"historySizeBytesLimit", agentWorkflowHistorySizeBytes,
 			)
+
 			input.State = &AgentWorkflowState{
 				Iteration: iter + 1,
 				Messages:  messages,
+				LLMUsage:  llmUsage,
+				Telemetry: telemetry,
 			}
 			return nil, workflow.NewContinueAsNewError(ctx, rt.AgentWorkflow, input)
 		}
@@ -672,9 +728,19 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 	// Log summary only; avoid full content to prevent leaking sensitive data
 	logger.Info("workflow: agent run completed", "scope", "workflow", "contentLen", len(lastContent))
-	return &types.AgentRunResult{
-		Content: lastContent, AgentName: agentName, Model: model, Metadata: map[string]any{}, Usage: runUsage,
-	}, nil
+
+	telemetry.Run.CompletedAt = workflow.Now(ctx)
+
+	runResult := &types.AgentRunResult{
+		Content:   lastContent,
+		AgentName: agentName,
+		Model:     model,
+		Metadata:  map[string]any{},
+		LLMUsage:  llmUsage,
+		Telemetry: telemetry,
+	}
+
+	return runResult, nil
 }
 
 func (rt *TemporalRuntime) conversationMemoryEnabled(conversationID string) bool {
@@ -781,6 +847,7 @@ func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc Too
 				ToolName:   tc.ToolName,
 				ToolCallID: tc.ToolCallID,
 			},
+			failed:               false,
 			streamingUnavailable: false,
 		}, nil
 	}
@@ -818,6 +885,7 @@ func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc Too
 	}
 
 	var content string
+	failed := false
 	switch approvalStatus {
 	case types.ApprovalStatusApproved:
 		if route, ok := input.input.SubAgentRoutes[tc.ToolName]; ok {
@@ -848,6 +916,7 @@ func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc Too
 			errExec := workflow.ExecuteActivity(input.execCtx, rt.AgentToolExecuteActivity, execInput).Get(input.execCtx, &result)
 			if errExec != nil {
 				content = "Tool execution failed: " + errExec.Error()
+				failed = true
 			} else {
 				content = result
 			}
@@ -869,6 +938,7 @@ func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc Too
 			ToolName:   tc.ToolName,
 			ToolCallID: tc.ToolCallID,
 		},
+		failed:               failed,
 		streamingUnavailable: markStreamingUnavailable,
 	}, nil
 }
@@ -947,7 +1017,18 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
 	}
 
-	result, err := rt.ExecuteLLMStream(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, tools, emit)
+	executeLLMInput := base.ExecuteLLMInput{
+		Logger:           actLog,
+		AgentName:        agentName,
+		MessageID:        input.MessageID,
+		Messages:         messages,
+		SkipTools:        input.SkipTools,
+		RetrieverContext: input.RetrieverContext,
+		Tools:            tools,
+		Emit:             emit,
+	}
+
+	result, err := rt.ExecuteLLMStream(ctx, executeLLMInput)
 	if err != nil {
 		return nil, err
 	}
@@ -964,11 +1045,15 @@ func (rt *TemporalRuntime) AgentRetrieverActivity(ctx context.Context, input Age
 		return nil, err
 	}
 	actLog := newActivityLogger(activity.GetLogger(ctx))
-	retrieverContext, err := rt.ExecuteRetrievers(ctx, actLog, input.UserPrompt)
+	res, err := rt.ExecuteRetrievers(ctx, actLog, input.UserPrompt)
 	if err != nil {
 		return nil, err
 	}
-	return &AgentRetrieverResult{RetrieverContext: retrieverContext}, nil
+	return &AgentRetrieverResult{
+		RetrieverContext: res.Context,
+		TotalSearches:    res.TotalSearches,
+		FailedSearches:   res.FailedSearches,
+	}, nil
 }
 
 // AgentLLMActivity calls the LLM and returns content plus any tool calls.
@@ -997,7 +1082,18 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 		rt.publishAgentEventToStream(ctx, agentName, input.LocalChannelName, input.EventWorkflowID, input.EventTaskQueue, ev)
 	}
 
-	result, err := rt.ExecuteLLM(ctx, actLog, agentName, input.MessageID, messages, input.SkipTools, input.RetrieverContext, tools, emit)
+	executeLLMInput := base.ExecuteLLMInput{
+		Logger:           actLog,
+		AgentName:        agentName,
+		MessageID:        input.MessageID,
+		Messages:         messages,
+		SkipTools:        input.SkipTools,
+		RetrieverContext: input.RetrieverContext,
+		Tools:            tools,
+		Emit:             emit,
+	}
+
+	result, err := rt.ExecuteLLM(ctx, executeLLMInput)
 	if err != nil {
 		return nil, err
 	}

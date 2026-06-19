@@ -114,6 +114,7 @@ func printEvent(ev agent.AgentEvent, streamedContent bool) {
 			}
 			fmt.Printf("\n[%s complete] %s\n", who, res.Content)
 		}
+		shared.PrintRunFooters(res)
 	default:
 		//fmt.Printf("[%s] %+v\n", ev.Type(), ev)
 		return

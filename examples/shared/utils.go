@@ -2,7 +2,10 @@ package shared
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
@@ -16,8 +19,7 @@ func RunResultFromFinishedEvent(ev agent.AgentEvent) *agent.AgentRunResult {
 	if !ok || fin == nil {
 		return nil
 	}
-	res, _ := fin.Result.(*agent.AgentRunResult)
-	return res
+	return fin.Result
 }
 
 // ToolApprovalValueFromEvent returns the CUSTOM tool-approval payload when ev is that stream event.
@@ -59,19 +61,111 @@ func MarksStreamDelta(ev agent.AgentEvent) bool {
 	}
 }
 
-// UsageFooter returns a non-empty line describing token usage from a finished run, or "".
-func UsageFooter(res *agent.AgentRunResult) string {
-	if res == nil || res.Usage == nil {
+// ShowLLMUsage reports whether examples should print token usage (SHOW_LLM_USAGE; default false).
+func ShowLLMUsage() bool {
+	return envBool("SHOW_LLM_USAGE")
+}
+
+// ShowTelemetry reports whether examples should print run telemetry (SHOW_TELEMETRY; default false).
+func ShowTelemetry() bool {
+	return envBool("SHOW_TELEMETRY")
+}
+
+// PrintRunFooters prints usage and telemetry when SHOW_LLM_USAGE / SHOW_TELEMETRY are enabled.
+func PrintRunFooters(result *agent.AgentRunResult) {
+	if result == nil {
+		return
+	}
+	if ShowLLMUsage() {
+		if footer := LLMUsageFooter(result.LLMUsage); footer != "" {
+			fmt.Println(footer)
+		}
+	}
+	if ShowTelemetry() {
+		if footer := TelemetryFooter(result.Telemetry); footer != "" {
+			fmt.Println(footer)
+		}
+	}
+}
+
+func envBool(key string) bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "true")
+}
+
+// LLMUsageFooter returns a multi-line block describing token usage, or "".
+func LLMUsageFooter(llmUsage *agent.LLMUsage) string {
+	if llmUsage == nil {
 		return ""
 	}
-	u := res.Usage
-	b := strings.Builder{}
-	fmt.Fprintf(&b, "[USAGE] prompt=%d completion=%d total=%d", u.PromptTokens, u.CompletionTokens, u.TotalTokens)
-	if u.CachedPromptTokens > 0 {
-		fmt.Fprintf(&b, " cached_prompt=%d", u.CachedPromptTokens)
+	lines := []string{
+		"\n[USAGE]",
+		fmt.Sprintf("  prompt_tokens:     %d", llmUsage.PromptTokens),
+		fmt.Sprintf("  completion_tokens: %d", llmUsage.CompletionTokens),
+		fmt.Sprintf("  total_tokens:      %d", llmUsage.TotalTokens),
 	}
-	if u.ReasoningTokens > 0 {
-		fmt.Fprintf(&b, " reasoning=%d", u.ReasoningTokens)
+	if llmUsage.CachedPromptTokens > 0 {
+		lines = append(lines, fmt.Sprintf("  cached_prompt:     %d", llmUsage.CachedPromptTokens))
 	}
-	return b.String()
+	if llmUsage.ReasoningTokens > 0 {
+		lines = append(lines, fmt.Sprintf("  reasoning_tokens:  %d", llmUsage.ReasoningTokens))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// TelemetryFooter returns a multi-line block describing run telemetry, or "".
+func TelemetryFooter(telemetry *agent.AgentTelemetry) string {
+	if telemetry == nil {
+		return ""
+	}
+	lines := []string{
+		"[TELEMETRY RUN]",
+		fmt.Sprintf("  total_llm_calls: %d", telemetry.Run.TotalLLMCalls),
+		fmt.Sprintf("  started_at:      %s", formatTelemetryTime(telemetry.Run.StartedAt)),
+		fmt.Sprintf("  completed_at:    %s", formatTelemetryTime(telemetry.Run.CompletedAt)),
+	}
+	if telemetry.Run.FinishReason != "" {
+		lines = append(lines, fmt.Sprintf("  finish_reason:   %s", telemetry.Run.FinishReason))
+	}
+
+	lines = append(lines,
+		"[TELEMETRY TOOLS]",
+		fmt.Sprintf("  total_calls:  %d", telemetry.Tools.TotalCalls),
+		fmt.Sprintf("  failed_calls: %d", telemetry.Tools.FailedCalls),
+	)
+	if len(telemetry.Tools.Breakdown) > 0 {
+		lines = append(lines, "  breakdown:")
+		for _, name := range sortedKeys(telemetry.Tools.Breakdown) {
+			lines = append(lines, fmt.Sprintf("    %s: %d", name, telemetry.Tools.Breakdown[name]))
+		}
+	}
+	if len(telemetry.Tools.FailedBreakdown) > 0 {
+		lines = append(lines, "  failed_breakdown:")
+		for _, name := range sortedKeys(telemetry.Tools.FailedBreakdown) {
+			lines = append(lines, fmt.Sprintf("    %s: %d", name, telemetry.Tools.FailedBreakdown[name]))
+		}
+	}
+	lines = append(lines,
+		"[TELEMETRY STORAGE]",
+		fmt.Sprintf("  total_retriever_searches: %d", telemetry.Storage.TotalRetrieverSearches),
+		fmt.Sprintf("  failed_retriever_searches: %d", telemetry.Storage.FailedRetrieverSearches),
+		fmt.Sprintf("  prefetch_searches: %d", telemetry.Storage.PrefetchSearches),
+		fmt.Sprintf("  agentic_searches: %d", telemetry.Storage.AgenticSearches),
+	)
+	return strings.Join(lines, "\n")
+}
+
+func formatTelemetryTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+func sortedKeys(m map[string]int64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

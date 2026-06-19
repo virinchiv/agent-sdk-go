@@ -68,37 +68,44 @@ func TestAgentNameFromRuntime(t *testing.T) {
 
 func TestSyntheticStreamCompleteEvent(t *testing.T) {
 	ev := syntheticStreamCompleteEvent(nil, "threadID", "runID", "root")
-	if ev == nil || ev.Type() != events.AgentEventTypeRunFinished || ev.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult).AgentName != "root" {
+	fin, _ := ev.(*events.AgentRunFinishedEvent)
+	if ev == nil || ev.Type() != events.AgentEventTypeRunFinished || fin.Result == nil || fin.Result.AgentName != "root" {
 		t.Fatalf("nil resp: %+v", ev)
 	}
 
 	ev2 := syntheticStreamCompleteEvent(&types.AgentRunResult{
 		Content:   "body",
 		AgentName: "from-result",
-		Usage:     &types.LLMUsage{TotalTokens: 9},
+		LLMUsage:  &types.LLMUsage{TotalTokens: 9},
 	}, "threadID", "runID", "root")
 
-	result, ok := ev2.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult)
-	if !ok {
-		t.Fatalf("expected AgentRunResult, got %T", ev2.(*events.AgentRunFinishedEvent).Result)
+	fin2, _ := ev2.(*events.AgentRunFinishedEvent)
+	result := fin2.Result
+	if result == nil {
+		t.Fatalf("expected AgentRunResult, got nil")
 	}
-	if result.Content != "body" || result.AgentName != "from-result" || result.Usage.TotalTokens != 9 {
+	if result.LLMUsage == nil {
+		t.Fatal("llm usage should be set")
+	}
+	if result.Content != "body" || result.AgentName != "from-result" || result.LLMUsage.TotalTokens != 9 {
 		t.Fatalf("with AgentName: %+v", ev2)
 	}
 
 	ev3 := syntheticStreamCompleteEvent(&types.AgentRunResult{Content: "c", AgentName: ""}, "threadID", "runID", "fallback")
-	result, ok = ev3.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult)
-	if !ok {
-		t.Fatalf("expected AgentRunResult, got %T", ev3.(*events.AgentRunFinishedEvent).Result)
+	fin3, _ := ev3.(*events.AgentRunFinishedEvent)
+	result = fin3.Result
+	if result == nil {
+		t.Fatalf("expected AgentRunResult, got nil")
 	}
 	if result.AgentName != "fallback" {
 		t.Fatalf("fallback name: got %q", result.AgentName)
 	}
 
 	ev4 := syntheticStreamCompleteEvent(&types.AgentRunResult{Content: "only"}, "threadID", "runID", "")
-	result, ok = ev4.(*events.AgentRunFinishedEvent).Result.(*types.AgentRunResult)
-	if !ok {
-		t.Fatalf("expected AgentRunResult, got %T", ev4.(*events.AgentRunFinishedEvent).Result)
+	fin4, _ := ev4.(*events.AgentRunFinishedEvent)
+	result = fin4.Result
+	if result == nil {
+		t.Fatalf("expected AgentRunResult, got nil")
 	}
 	if result.AgentName != "" {
 		t.Fatalf("empty rootName with empty resp.AgentName: got %q", result.AgentName)

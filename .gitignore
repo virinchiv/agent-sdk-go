@@ -25,3 +25,9 @@ pnpm-debug.log*
 .env*.local
 
 .DS_Store
+
+# Python / DeepEval (eval-harness/deepeval)
+eval-harness/deepeval/.venv/
+eval-harness/deepeval/.pytest_cache/
+eval-harness/deepeval/.deepeval/
+eval-harness/deepeval/__pycache__/

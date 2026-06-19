@@ -41,6 +41,23 @@ type AgentRunResult = types.AgentRunResult
 // on failure; otherwise Result is non-nil.
 type AgentRunAsyncResult = types.AgentRunAsyncResult
 
+// AgentTelemetry is the unified container for operational insights across
+// a single agent run, covering run lifecycle, tool calls, and storage operations.
+// Token usage is reported separately on AgentRunResult.LLMUsage.
+type AgentTelemetry = types.AgentTelemetry
+
+// LLMUsage is the token usage for a single LLM call.
+type LLMUsage = types.LLMUsage
+
+// RunTelemetry captures the orchestration lifecycle metrics for a single agent run.
+type RunTelemetry = types.RunTelemetry
+
+// ToolTelemetry tracks tool invocation counts and per-tool breakdowns across a single agent run.
+type ToolTelemetry = types.ToolTelemetry
+
+// StorageTelemetry tracks RAG retrieval operations (prefetch, agentic, and hybrid searches).
+type StorageTelemetry = types.StorageTelemetry
+
 // buildAgent builds an Agent from options. Validates approval handler when tools require approval.
 func buildAgent(opts []Option) (*Agent, error) {
 	cfg, err := buildAgentConfig(opts)

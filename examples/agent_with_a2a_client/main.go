@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	config "github.com/agenticenv/agent-sdk-go/examples"
+	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	a2aclient "github.com/agenticenv/agent-sdk-go/pkg/a2a/client"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
@@ -79,4 +80,5 @@ func main() {
 		return
 	}
 	fmt.Println("assistant:", result.Content)
+	shared.PrintRunFooters(result)
 }
