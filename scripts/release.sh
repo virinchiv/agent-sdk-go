@@ -67,6 +67,18 @@ if git rev-parse "$VERSION" &>/dev/null; then
   exit 1
 fi
 
+echo ""
+echo "==> Release version: $VERSION"
+echo "    Branch: $(git branch --show-current)"
+echo "    Commit: $(git rev-parse --short HEAD) $(git log -1 --format='%s')"
+echo ""
+
+read -r -p "Proceed with tag $VERSION? [y/N] " confirm
+if [[ ! "$confirm" =~ ^[yY]$ ]]; then
+  echo "Aborted."
+  exit 1
+fi
+
 # Create tag
 git tag "$VERSION"
 echo "Created tag: $VERSION"
