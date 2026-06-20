@@ -109,6 +109,7 @@ func (rt *TemporalRuntime) sendAgentEventWorkflowUpdate(ctx context.Context, eve
 // ConversationID is set when conversation is used; workflow fetches messages and writes assistant/tool via activities.
 // SubAgentDepth is 0 for a top-level user run; each child workflow increments it (runtime cap vs maxSubAgentDepth).
 // SubAgentRoutes maps sub-agent tool name -> route; built from WithSubAgents when the run starts.
+// MemoryScope is resolved before the workflow starts and passed through for recall/store activities.
 // LocalChannelName is the in-process pub/sub channel name used for in-memory event fan-in across the
 // delegation tree. Set once at the top level (agent_event_<main-workflow-id>) and propagated unchanged
 // to all sub-agents. Contrast with EventWorkflowID which is used for out-of-process (remote) routing.
@@ -124,6 +125,7 @@ type AgentWorkflowInput struct {
 	StreamingEnabled bool                     `json:"streaming_enabled,omitempty"`
 	ConversationID   string                   `json:"conversation_id,omitempty"`
 	AgentFingerprint string                   `json:"agent_fingerprint,omitempty"`
+	MemoryScope      interfaces.MemoryScope   `json:"memory_scope,omitempty"`
 	EventTypes       []events.AgentEventType  `json:"event_types,omitempty"`
 	SubAgentDepth    int                      `json:"sub_agent_depth,omitempty"`
 	SubAgentRoutes   map[string]SubAgentRoute `json:"sub_agent_routes,omitempty"`
@@ -155,10 +157,32 @@ type AgentRetrieverResult struct {
 	FailedSearches   int64  `json:"failed_searches,omitempty"`
 }
 
+// AgentMemoryRecallInput is the input to AgentMemoryRecallActivity.
+type AgentMemoryRecallInput struct {
+	AgentFingerprint string                 `json:"agent_fingerprint,omitempty"`
+	UserPrompt       string                 `json:"user_prompt"`
+	MemoryScope      interfaces.MemoryScope `json:"memory_scope,omitempty"`
+}
+
+// AgentMemoryRecallResult is the return value of AgentMemoryRecallActivity.
+type AgentMemoryRecallResult struct {
+	MemoryContext string `json:"memory_context,omitempty"`
+	TotalRecalls  int64  `json:"total_recalls,omitempty"`
+	FailedRecalls int64  `json:"failed_recalls,omitempty"`
+}
+
+// AgentMemoryStoreInput is the input to AgentMemoryStoreActivity.
+type AgentMemoryStoreInput struct {
+	AgentFingerprint string                 `json:"agent_fingerprint,omitempty"`
+	MemoryScope      interfaces.MemoryScope `json:"memory_scope,omitempty"`
+	Messages         []interfaces.Message   `json:"messages,omitempty"`
+}
+
 // AgentLLMInput is the input to AgentLLMActivity and AgentLLMStreamActivity.
 // When ConversationID is set, the activity loads history from the store. MessageID is the assistant text id
 // for TEXT_MESSAGE_* (and stream ordering with REASONING_*); the workflow sets it each turn.
 // RetrieverContext is the pre-fetched RAG context from AgentRetrieverActivity (prefetch / hybrid modes).
+// MemoryContext is the pre-fetched long-term memory context from AgentMemoryRecallActivity.
 type AgentLLMInput struct {
 	AgentName        string               `json:"agent_name,omitempty"`
 	ConversationID   string               `json:"conversation_id,omitempty"`
@@ -169,6 +193,7 @@ type AgentLLMInput struct {
 	EventWorkflowID  string               `json:"event_workflow_id,omitempty"`
 	EventTaskQueue   string               `json:"event_task_queue,omitempty"`
 	LocalChannelName string               `json:"local_channel_name,omitempty"`
+	MemoryContext    string               `json:"memory_context,omitempty"`
 	RetrieverContext string               `json:"retriever_context,omitempty"`
 }
 
@@ -237,12 +262,13 @@ type agentToolResult struct {
 
 // AgentToolExecuteInput is the input to AgentToolExecuteActivity.
 type AgentToolExecuteInput struct {
-	ToolName         string               `json:"tool_name"`
-	Args             map[string]any       `json:"args"`
-	ConversationID   string               `json:"conversation_id,omitempty"`
-	Messages         []interfaces.Message `json:"messages,omitempty"`
-	ToolCallID       string               `json:"tool_call_id,omitempty"`
-	AgentFingerprint string               `json:"agent_fingerprint,omitempty"`
+	ToolName         string                 `json:"tool_name"`
+	Args             map[string]any         `json:"args"`
+	ConversationID   string                 `json:"conversation_id,omitempty"`
+	Messages         []interfaces.Message   `json:"messages,omitempty"`
+	ToolCallID       string                 `json:"tool_call_id,omitempty"`
+	AgentFingerprint string                 `json:"agent_fingerprint,omitempty"`
+	MemoryScope      interfaces.MemoryScope `json:"memory_scope,omitempty"`
 }
 
 type AgentToolApprovalInput struct {
@@ -341,6 +367,11 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		StartToCloseTimeout: agentRetrieverActivityTaskTimeout,
 		RetryPolicy:         retryPolicy(agentRetrieverActivityMaxAttempts),
 	})
+	memoryActCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		ActivityID:          "AgentMemoryActivity_" + activityIDSuffix,
+		StartToCloseTimeout: agentRetrieverActivityTaskTimeout,
+		RetryPolicy:         retryPolicy(agentRetrieverActivityMaxAttempts),
+	})
 
 	var streamingUnavailable bool
 	// emitAgentEvent must use wfCtx (the coroutine that calls Get) for ExecuteActivity().Get — not the root
@@ -410,6 +441,26 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 
 	messages := input.State.Messages
 
+	memoryContext := ""
+	if rt.MemoryConfigured() && rt.RecallEnabled() {
+		logger.Debug("workflow: memory recall started", "scope", "workflow")
+		var memoryResult AgentMemoryRecallResult
+		if err := workflow.ExecuteActivity(memoryActCtx, rt.AgentMemoryRecallActivity, AgentMemoryRecallInput{
+			AgentFingerprint: input.AgentFingerprint,
+			UserPrompt:       input.UserPrompt,
+			MemoryScope:      input.MemoryScope,
+		}).Get(memoryActCtx, &memoryResult); err != nil {
+			if temporal.IsCanceledError(err) {
+				return nil, err
+			}
+			return nil, err
+		}
+		memoryContext = memoryResult.MemoryContext
+		telemetry.Storage.TotalMemoryRecalls += memoryResult.TotalRecalls
+		telemetry.Storage.FailedMemoryRecalls += memoryResult.FailedRecalls
+		logger.Debug("workflow: memory recall done", "scope", "workflow", "hasContext", memoryContext != "")
+	}
+
 	// Pre-fetch retrieval context once before the first LLM call (prefetch and hybrid modes).
 	// The resulting retrieverContext is forwarded to every AgentLLMInput in the run so the LLM always
 	// sees the retrieved documents in its system prompt, regardless of the number of iterations.
@@ -451,6 +502,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			EventWorkflowID:  eventWorkflowID,
 			EventTaskQueue:   eventTaskQueue,
 			LocalChannelName: input.LocalChannelName,
+			MemoryContext:    memoryContext,
 			RetrieverContext: retrieverContext,
 		}
 
@@ -674,6 +726,13 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 					telemetry.Storage.FailedRetrieverSearches++
 				}
 			}
+			if tc.ToolName == types.SaveMemoryToolName {
+				if result.failed {
+					telemetry.Storage.FailedMemoryStores++
+				} else {
+					telemetry.Storage.TotalMemoryStores++
+				}
+			}
 			messages = append(messages, result.message)
 		}
 
@@ -723,6 +782,22 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 			if !rt.AgentConfig.Session.ConversationSaveOnIteration {
 				return nil, err
 			}
+		}
+	}
+
+	if rt.RunEndMemoryStoreEnabled() {
+		if err := workflow.ExecuteActivity(memoryActCtx, rt.AgentMemoryStoreActivity, AgentMemoryStoreInput{
+			AgentFingerprint: input.AgentFingerprint,
+			MemoryScope:      input.MemoryScope,
+			Messages:         messages,
+		}).Get(memoryActCtx, nil); err != nil {
+			if temporal.IsCanceledError(err) {
+				return nil, err
+			}
+			logger.Warn("workflow: memory store failed", "scope", "workflow", "error", err)
+			telemetry.Storage.FailedMemoryStores++
+		} else {
+			telemetry.Storage.TotalMemoryStores++
 		}
 	}
 
@@ -912,6 +987,7 @@ func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc Too
 				ConversationID:   input.input.ConversationID,
 				ToolCallID:       tc.ToolCallID,
 				AgentFingerprint: input.input.AgentFingerprint,
+				MemoryScope:      input.input.MemoryScope,
 			}
 			errExec := workflow.ExecuteActivity(input.execCtx, rt.AgentToolExecuteActivity, execInput).Get(input.execCtx, &result)
 			if errExec != nil {
@@ -1024,6 +1100,7 @@ func (rt *TemporalRuntime) AgentLLMStreamActivity(ctx context.Context, input Age
 		Messages:         messages,
 		SkipTools:        input.SkipTools,
 		RetrieverContext: input.RetrieverContext,
+		MemoryContext:    input.MemoryContext,
 		Tools:            tools,
 		Emit:             emit,
 	}
@@ -1054,6 +1131,32 @@ func (rt *TemporalRuntime) AgentRetrieverActivity(ctx context.Context, input Age
 		TotalSearches:    res.TotalSearches,
 		FailedSearches:   res.FailedSearches,
 	}, nil
+}
+
+// AgentMemoryRecallActivity loads scoped long-term memories and returns formatted prompt context.
+func (rt *TemporalRuntime) AgentMemoryRecallActivity(ctx context.Context, input AgentMemoryRecallInput) (*AgentMemoryRecallResult, error) {
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, nil); err != nil {
+		return nil, err
+	}
+	actLog := newActivityLogger(activity.GetLogger(ctx))
+	res, err := rt.ExecuteMemoryRecall(ctx, actLog, input.MemoryScope, input.UserPrompt)
+	if err != nil {
+		return nil, err
+	}
+	return &AgentMemoryRecallResult{
+		MemoryContext: res.Context,
+		TotalRecalls:  res.TotalRecalls,
+		FailedRecalls: res.FailedRecalls,
+	}, nil
+}
+
+// AgentMemoryStoreActivity extracts and persists long-term memories from the run.
+func (rt *TemporalRuntime) AgentMemoryStoreActivity(ctx context.Context, input AgentMemoryStoreInput) error {
+	if err := rt.verifyAgentFingerprint(ctx, input.AgentFingerprint, nil); err != nil {
+		return err
+	}
+	actLog := newActivityLogger(activity.GetLogger(ctx))
+	return rt.ExecuteMemoryStore(ctx, actLog, input.MemoryScope, input.Messages)
 }
 
 // AgentLLMActivity calls the LLM and returns content plus any tool calls.
@@ -1089,6 +1192,7 @@ func (rt *TemporalRuntime) AgentLLMActivity(ctx context.Context, input AgentLLMI
 		Messages:         messages,
 		SkipTools:        input.SkipTools,
 		RetrieverContext: input.RetrieverContext,
+		MemoryContext:    input.MemoryContext,
 		Tools:            tools,
 		Emit:             emit,
 	}
@@ -1263,7 +1367,7 @@ func (rt *TemporalRuntime) AgentToolExecuteActivity(ctx context.Context, input A
 	stopHB := startLongActivityHeartbeats(ctx)
 	defer stopHB()
 	actLog := newActivityLogger(activity.GetLogger(ctx))
-	return rt.ExecuteTool(ctx, actLog, tools, input.ToolName, input.Args)
+	return rt.ExecuteToolWithMemoryScope(ctx, actLog, tools, input.ToolName, input.Args, input.MemoryScope)
 }
 
 // AgentToolAuthorizeActivity checks optional programmatic authorization before approval/execute.
@@ -1304,6 +1408,10 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 	}
 
 	query := base.SubAgentQuery(tc.Args)
+	subAgentID := strings.TrimSpace(route.Name)
+	if subAgentID == "" {
+		subAgentID = tc.ToolName
+	}
 	childInput := AgentWorkflowInput{
 		UserPrompt:       query,
 		EventWorkflowID:  input.EventWorkflowID,
@@ -1313,6 +1421,7 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 		ConversationID:   "",
 		AgentFingerprint: route.AgentFingerprint,
 		EventTypes:       input.EventTypes,
+		MemoryScope:      base.SubAgentScope(input.MemoryScope, subAgentID),
 		SubAgentDepth:    input.SubAgentDepth + 1,
 		SubAgentRoutes:   route.ChildRoutes,
 	}

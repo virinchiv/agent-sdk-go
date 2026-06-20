@@ -12,11 +12,14 @@ import (
 	"github.com/agenticenv/agent-sdk-go/benchmarks/setup"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 )
 
 type runOutcome struct {
-	latencyMs float64
-	success   bool
+	latencyMs     float64
+	success       bool
+	memoryRecalls int64
+	memoryStores  int64
 }
 
 func runBenchmark(ctx context.Context, cfg *setup.Config, llm *setup.MockLLMClient, lgr logger.Logger, runRng *rand.Rand) (*BenchmarkMetrics, error) {
@@ -64,7 +67,7 @@ func runBenchmark(ctx context.Context, cfg *setup.Config, llm *setup.MockLLMClie
 			agentIdx := i % len(bundles)
 			go func(bundle *AgentBundle) {
 				defer wg.Done()
-				outcome := executeRun(ctx, bundle.Root, runRng)
+				outcome := executeRun(ctx, cfg, bundle.Root, runRng)
 				outcomesMu.Lock()
 				outcomes = append(outcomes, outcome)
 				outcomesMu.Unlock()
@@ -89,13 +92,22 @@ func runBenchmark(ctx context.Context, cfg *setup.Config, llm *setup.MockLLMClie
 	return aggregateMetrics(outcomes, memBefore, memAfter, cpuAfter-cpuBefore, inputTokens, outputTokens), nil
 }
 
-func executeRun(ctx context.Context, a *agent.Agent, rng *rand.Rand) runOutcome {
+func executeRun(ctx context.Context, cfg *setup.Config, a *agent.Agent, rng *rand.Rand) runOutcome {
+	runCtx := ctx
+	if cfg.MemoryEnabled() {
+		runCtx = memory.WithContextUserID(ctx, cfg.Memory.UserID)
+	}
 	start := time.Now()
-	_, err := a.Run(ctx, setup.RandomUserPrompt(rng), nil)
-	return runOutcome{
+	result, err := a.Run(runCtx, setup.RandomUserPrompt(rng), nil)
+	outcome := runOutcome{
 		latencyMs: float64(time.Since(start).Milliseconds()),
 		success:   err == nil,
 	}
+	if result != nil && result.Telemetry != nil {
+		outcome.memoryRecalls = result.Telemetry.Storage.TotalMemoryRecalls
+		outcome.memoryStores = result.Telemetry.Storage.TotalMemoryStores
+	}
+	return outcome
 }
 
 func processCPUTimeMs() (float64, error) {

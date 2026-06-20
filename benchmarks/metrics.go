@@ -9,11 +9,14 @@ import (
 func aggregateMetrics(outcomes []runOutcome, memBefore, memAfter runtime.MemStats, cpuMs float64, inputTokens, outputTokens int) *BenchmarkMetrics {
 	latencies := make([]float64, 0, len(outcomes))
 	successes := 0
+	var totalRecalls, totalStores int64
 	for _, o := range outcomes {
 		latencies = append(latencies, o.latencyMs)
 		if o.success {
 			successes++
 		}
+		totalRecalls += o.memoryRecalls
+		totalStores += o.memoryStores
 	}
 	sort.Float64s(latencies)
 
@@ -24,18 +27,20 @@ func aggregateMetrics(outcomes []runOutcome, memBefore, memAfter runtime.MemStat
 	}
 
 	return &BenchmarkMetrics{
-		P50Ms:             percentile(latencies, 50),
-		P95Ms:             percentile(latencies, 95),
-		P99Ms:             percentile(latencies, 99),
-		AvgMs:             average(latencies),
-		HeapAllocBytes:    deltaUint64(memAfter.Alloc, memBefore.Alloc),
-		TotalAllocBytes:   deltaUint64(memAfter.TotalAlloc, memBefore.TotalAlloc),
-		CPUTimeMs:         cpuMs,
-		TotalInputTokens:  inputTokens,
-		TotalOutputTokens: outputTokens,
-		EstCostUSD:        0, // pricing to be defined later
-		TotalRuns:         totalRuns,
-		SuccessRate:       successRate,
+		P50Ms:              percentile(latencies, 50),
+		P95Ms:              percentile(latencies, 95),
+		P99Ms:              percentile(latencies, 99),
+		AvgMs:              average(latencies),
+		HeapAllocBytes:     deltaUint64(memAfter.Alloc, memBefore.Alloc),
+		TotalAllocBytes:    deltaUint64(memAfter.TotalAlloc, memBefore.TotalAlloc),
+		CPUTimeMs:          cpuMs,
+		TotalInputTokens:   inputTokens,
+		TotalOutputTokens:  outputTokens,
+		EstCostUSD:         0, // pricing to be defined later
+		TotalRuns:          totalRuns,
+		SuccessRate:        successRate,
+		TotalMemoryRecalls: totalRecalls,
+		TotalMemoryStores:  totalStores,
 	}
 }
 

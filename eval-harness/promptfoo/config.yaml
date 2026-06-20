@@ -9,9 +9,14 @@ prompts:
 providers:
   - id: exec:../run_agent.sh
     label: eval-agent
+  - id: exec:../run_agent_memory.sh ondemand
+    label: eval-agent-memory-ondemand
+  - id: exec:../run_agent_memory.sh always
+    label: eval-agent-memory-always
 
 tests:
   - description: all mock tools were called
+    providers: [eval-agent]
     assert:
       - type: javascript
         value: |
@@ -24,6 +29,7 @@ tests:
             && breakdown.eval_tool_3 === 1;
 
   - description: agent completed successfully
+    providers: [eval-agent]
     assert:
       - type: javascript
         value: |
@@ -32,6 +38,7 @@ tests:
             && res.content === "eval complete";
 
   - description: no failed tool calls
+    providers: [eval-agent]
     assert:
       - type: javascript
         value: |
@@ -39,8 +46,35 @@ tests:
           return res.telemetry.tools.failed_calls === 0;
 
   - description: llm usage reported
+    providers: [eval-agent]
     assert:
       - type: javascript
         value: |
           const res = JSON.parse(output);
           return res.llm_usage.total_tokens > 0;
+
+  - description: memory ondemand stores then recalls
+    providers: [eval-agent-memory-ondemand]
+    assert:
+      - type: javascript
+        value: |
+          const res = JSON.parse(output);
+          const store = res.memory_scenario.store.telemetry.storage;
+          const recall = res.memory_scenario.recall.telemetry.storage;
+          return store.total_memory_stores >= 1
+            && (store.failed_memory_stores || 0) === 0
+            && recall.total_memory_recalls >= 1
+            && (recall.failed_memory_recalls || 0) === 0;
+
+  - description: memory always stores then recalls
+    providers: [eval-agent-memory-always]
+    assert:
+      - type: javascript
+        value: |
+          const res = JSON.parse(output);
+          const store = res.memory_scenario.store.telemetry.storage;
+          const recall = res.memory_scenario.recall.telemetry.storage;
+          return store.total_memory_stores >= 1
+            && (store.failed_memory_stores || 0) === 0
+            && recall.total_memory_recalls >= 1
+            && (recall.failed_memory_recalls || 0) === 0;

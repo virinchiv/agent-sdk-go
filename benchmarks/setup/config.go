@@ -6,10 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 
+	testutil "github.com/agenticenv/agent-sdk-go/internal/testing"
+	"github.com/agenticenv/agent-sdk-go/pkg/agent"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 	"github.com/spf13/viper"
 )
 
 const BenchmarkTreeSeed int64 = 42
+const defaultMemoryUserID = "benchmark-user"
 
 type Config struct {
 	Runtime  string         `mapstructure:"runtime"`
@@ -17,6 +21,7 @@ type Config struct {
 	LLM      LLMConfig      `mapstructure:"llm"`
 	Tool     ToolConfig     `mapstructure:"tool"`
 	Agent    AgentConfig    `mapstructure:"agent"`
+	Memory   MemoryConfig   `mapstructure:"memory"`
 	Logger   LoggerConfig   `mapstructure:"logger"`
 	Output   OutputConfig   `mapstructure:"output"`
 }
@@ -58,6 +63,13 @@ type SubagentsConfig struct {
 	Levels int `mapstructure:"levels"`
 }
 
+// MemoryConfig configures long-term memory for benchmark runs.
+type MemoryConfig struct {
+	Enabled   bool   `mapstructure:"enabled"`
+	StoreMode string `mapstructure:"store_mode"`
+	UserID    string `mapstructure:"user_id"`
+}
+
 type LoggerConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Dir     string `mapstructure:"dir"`
@@ -77,6 +89,50 @@ func (c *Config) UseTemporal() bool {
 
 func (c *Config) ExternalWorkersEnabled() bool {
 	return c.UseTemporal() && c.Temporal.WorkersCount > 0
+}
+
+// MemoryEnabled reports whether long-term memory is wired for benchmark runs.
+func (c *Config) MemoryEnabled() bool {
+	return c != nil && c.Memory.Enabled
+}
+
+func (m *MemoryConfig) applyDefaults() {
+	if m == nil {
+		return
+	}
+	if strings.TrimSpace(m.UserID) == "" {
+		m.UserID = defaultMemoryUserID
+	}
+	if strings.TrimSpace(m.StoreMode) == "" {
+		m.StoreMode = string(memory.StoreModeOnDemand)
+	}
+}
+
+func parseMemoryStoreMode(raw string) (memory.StoreMode, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", string(memory.StoreModeOnDemand), "on-demand", "on_demand":
+		return memory.StoreModeOnDemand, nil
+	case string(memory.StoreModeAlways):
+		return memory.StoreModeAlways, nil
+	default:
+		return "", fmt.Errorf("memory.store_mode must be %q or %q", memory.StoreModeOnDemand, memory.StoreModeAlways)
+	}
+}
+
+// MemoryAgentOption returns WithMemory when memory is enabled.
+func MemoryAgentOption(cfg *Config) (agent.Option, error) {
+	if cfg == nil || !cfg.MemoryEnabled() {
+		return nil, nil
+	}
+	cfg.Memory.applyDefaults()
+	mode, err := parseMemoryStoreMode(cfg.Memory.StoreMode)
+	if err != nil {
+		return nil, err
+	}
+	memCfg := memory.DefaultConfig(testutil.NewInmemMemory())
+	memCfg.Store.Mode = mode
+	memCfg.Recall.Enabled = true
+	return agent.WithMemory(memCfg), nil
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -106,8 +162,8 @@ func (c *Config) validate() error {
 	if c.Agent.Concurrent && c.Agent.ConcurrentCount <= 0 {
 		return fmt.Errorf("agent.concurrent_count must be > 0 when concurrent is true")
 	}
-	if c.Agent.Tools.Count <= 0 {
-		return fmt.Errorf("agent.tools.count must be > 0")
+	if c.Agent.Tools.Count <= 0 && !c.Memory.Enabled {
+		return fmt.Errorf("agent.tools.count must be > 0 when memory is disabled")
 	}
 	if c.Agent.Subagents.Levels < 0 {
 		return fmt.Errorf("agent.subagents.levels must be >= 0")
@@ -147,6 +203,12 @@ func (c *Config) validate() error {
 	}
 	if c.Temporal.Namespace == "" {
 		c.Temporal.Namespace = "default"
+	}
+	c.Memory.applyDefaults()
+	if c.Memory.Enabled {
+		if _, err := parseMemoryStoreMode(c.Memory.StoreMode); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -45,6 +45,7 @@ Mock components apply configurable latency and jitter so results reflect realist
 - Process CPU time
 - Total input/output tokens (from mock LLM stats; includes sub-agent LLM calls)
 - Success rate (`Run()` completed without error)
+- Long-term memory recalls/stores (when `memory.enabled: true`; from run telemetry)
 - `est_cost_usd` — placeholder `0` until pricing is configured
 
 Reports are written to `benchmarks/reports/` (JSON or text). SDK logs (optional) go to `benchmarks/logs/`.
@@ -204,6 +205,18 @@ All paths in config (`dir` fields) are relative to the **repository root** unles
 | `tools.execution` | `sequential` or `parallel` — SDK tool batch execution mode. |
 | `subagents.count` | Sub-agents per level (0 to disable). |
 | `subagents.levels` | Max sub-agent nesting depth (1–5). |
+
+### `memory`
+
+Long-term memory (`agent.WithMemory`) using an in-process inmem backend (no Docker). Disabled by default.
+
+| Field | Description |
+| :--- | :--- |
+| `enabled` | `true` wires recall before each run and store after (mode-dependent). |
+| `store_mode` | `ondemand` (LLM `save_memory` tool) or `always` (extract at run end). |
+| `user_id` | Scope user ID passed via `memory.WithContextUserID` (default `benchmark-user`). |
+
+When `memory.enabled: true`, `agent.tools.count` may be `0` (memory-only runs). The mock LLM handles `save_memory` tool args and memory-extract JSON like the eval harness.
 
 ### `logger`
 

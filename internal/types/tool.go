@@ -24,6 +24,7 @@ const (
 	ToolKindA2A       ToolKind = "a2a"
 	ToolKindSubAgent  ToolKind = "sub_agent"
 	ToolKindRetriever ToolKind = "retriever"
+	ToolKindMemory    ToolKind = "memory"
 )
 
 // ToolKindProvider is implemented by SDK tool wrappers (MCP, A2A, sub-agent, retriever).

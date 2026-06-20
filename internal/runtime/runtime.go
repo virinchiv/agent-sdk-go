@@ -12,6 +12,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 )
 
 //go:generate mockgen -destination=./mocks/mock_runtime.go -package=mocks github.com/agenticenv/agent-sdk-go/internal/runtime Runtime
@@ -97,7 +98,13 @@ type AgentConfig struct {
 	ToolApprovalPolicy interfaces.AgentToolApprovalPolicy
 	Retrievers         AgentRetrievers
 	Session            AgentSession
+	Memory             AgentMemory
 	Limits             AgentLimits
+}
+
+// AgentMemory holds long-term memory configuration for recall and store.
+type AgentMemory struct {
+	Config *memory.Config
 }
 
 // AgentRetrievers holds the retriever instances and mode for prefetch and hybrid RAG.

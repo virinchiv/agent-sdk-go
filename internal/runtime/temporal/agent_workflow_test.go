@@ -14,10 +14,12 @@ import (
 
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
+	testutil "github.com/agenticenv/agent-sdk-go/internal/testing"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces/mocks"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 )
 
@@ -912,3 +914,102 @@ func TestAgentWorkflow_AgenticMode_SkipsRetrieverActivity(t *testing.T) {
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
 }
+
+func TestAgentToolExecuteActivity_saveMemory(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := testRuntimeForWorkflow(t)
+	rt.AgentConfig.Memory = sdkruntime.AgentMemory{Config: &cfg}
+	wireTestToolsResolver(rt, nil)
+
+	env := newActivityTestEnv(t)
+	env.RegisterActivity(rt.AgentToolExecuteActivity)
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	val, err := env.ExecuteActivity(rt.AgentToolExecuteActivity, AgentToolExecuteInput{
+		ToolName:    types.SaveMemoryToolName,
+		Args:        map[string]any{types.MemoryToolParamText: "remember this"},
+		MemoryScope: scope,
+	})
+	require.NoError(t, err)
+	var got string
+	require.NoError(t, val.Get(&got))
+	require.Equal(t, "memory saved", got)
+
+	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "remember this", entries[0].Text)
+}
+
+func TestAgentMemoryStoreActivity_skipsOnDemand(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := testRuntimeForWorkflow(t)
+	rt.AgentConfig.Memory = sdkruntime.AgentMemory{Config: &cfg}
+
+	env := newActivityTestEnv(t)
+	env.RegisterActivity(rt.AgentMemoryStoreActivity)
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	_, err := env.ExecuteActivity(rt.AgentMemoryStoreActivity, AgentMemoryStoreInput{
+		MemoryScope: scope,
+		Messages: []interfaces.Message{
+			{Role: interfaces.MessageRoleUser, Content: "hi"},
+			{Role: interfaces.MessageRoleAssistant, Content: "there"},
+		},
+	})
+	require.NoError(t, err)
+
+	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestAgentMemoryStoreActivity_alwaysExtracts(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	cfg.Store.Mode = memory.StoreModeAlways
+	rt := testRuntimeForWorkflow(t)
+	llm := &stubMemoryExtractLLM{resp: &interfaces.LLMResponse{
+		Content: `{"memories":[{"text":"stored fact","kind":"fact"}]}`,
+	}}
+	rt.AgentConfig.LLM = sdkruntime.AgentLLM{Client: llm}
+	rt.AgentConfig.Memory = sdkruntime.AgentMemory{Config: &cfg}
+
+	env := newActivityTestEnv(t)
+	env.RegisterActivity(rt.AgentMemoryStoreActivity)
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	_, err := env.ExecuteActivity(rt.AgentMemoryStoreActivity, AgentMemoryStoreInput{
+		MemoryScope: scope,
+		Messages: []interfaces.Message{
+			{Role: interfaces.MessageRoleUser, Content: "remember this"},
+			{Role: interfaces.MessageRoleAssistant, Content: "ok"},
+		},
+	})
+	require.NoError(t, err)
+
+	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "stored fact", entries[0].Text)
+}
+
+type stubMemoryExtractLLM struct {
+	resp *interfaces.LLMResponse
+	err  error
+}
+
+func (s *stubMemoryExtractLLM) Generate(_ context.Context, _ *interfaces.LLMRequest) (*interfaces.LLMResponse, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.resp, nil
+}
+func (stubMemoryExtractLLM) GenerateStream(context.Context, *interfaces.LLMRequest) (interfaces.LLMStream, error) {
+	return nil, fmt.Errorf("not supported")
+}
+func (stubMemoryExtractLLM) GetModel() string                    { return "stub" }
+func (stubMemoryExtractLLM) GetProvider() interfaces.LLMProvider { return interfaces.LLMProviderOpenAI }
+func (stubMemoryExtractLLM) IsStreamSupported() bool             { return false }

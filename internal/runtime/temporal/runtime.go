@@ -193,6 +193,8 @@ func (rt *TemporalRuntime) Start(ctx context.Context) error {
 	w.RegisterActivityWithOptions(rt.AgentLLMActivity, activity.RegisterOptions{Name: "AgentLLMActivity"})
 	w.RegisterActivityWithOptions(rt.AgentLLMStreamActivity, activity.RegisterOptions{Name: "AgentLLMStreamActivity"})
 	w.RegisterActivityWithOptions(rt.AgentRetrieverActivity, activity.RegisterOptions{Name: "AgentRetrieverActivity"})
+	w.RegisterActivityWithOptions(rt.AgentMemoryRecallActivity, activity.RegisterOptions{Name: "AgentMemoryRecallActivity"})
+	w.RegisterActivityWithOptions(rt.AgentMemoryStoreActivity, activity.RegisterOptions{Name: "AgentMemoryStoreActivity"})
 	w.RegisterActivityWithOptions(rt.AgentToolAuthorizeActivity, activity.RegisterOptions{Name: "AgentToolAuthorizeActivity"})
 	w.RegisterActivityWithOptions(rt.AgentToolApprovalActivity, activity.RegisterOptions{Name: "AgentToolApprovalActivity"})
 	w.RegisterActivityWithOptions(rt.AgentToolExecuteActivity, activity.RegisterOptions{Name: "AgentToolExecuteActivity"})
@@ -299,6 +301,13 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 	}
 
 	conversationID := base.GetConversationID(req)
+	memoryScope, memErr := rt.ResolveMemoryScope(runCtx)
+	if memErr != nil {
+		rt.logger.Warn(runCtx, "runtime memory scope resolve failed, continuing with empty scope",
+			slog.String("scope", "runtime"),
+			slog.Any("error", memErr))
+		memoryScope = interfaces.MemoryScope{}
+	}
 	runID := uuid.New().String()
 
 	threadID := conversationID
@@ -324,6 +333,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 		EventWorkflowID:  "",
 		LocalChannelName: eventChannelName(workflowID),
 		ConversationID:   conversationID,
+		MemoryScope:      memoryScope,
 		AgentFingerprint: computeAgentFingerprintFromRuntime(rt, req.Tools),
 		EventTypes:       []events.AgentEventType{},
 		SubAgentDepth:    0,
@@ -460,6 +470,13 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 	rt.logger.Debug(ctx, "runtime stream run dispatch", slog.String("scope", "runtime"), slog.String("agent", agentNameFromRuntime(rt)), slog.Int("inputLen", len(req.UserPrompt)))
 
 	conversationID := base.GetConversationID(req)
+	memoryScope, memErr := rt.ResolveMemoryScope(ctx)
+	if memErr != nil {
+		rt.logger.Warn(ctx, "runtime memory scope resolve failed, continuing with empty scope",
+			slog.String("scope", "runtime"),
+			slog.Any("error", memErr))
+		memoryScope = interfaces.MemoryScope{}
+	}
 	runID := uuid.New().String()
 
 	threadID := conversationID
@@ -508,6 +525,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 		LocalChannelName: eventChannelName(workflowID),
 		StreamingEnabled: req.StreamingEnabled,
 		ConversationID:   conversationID,
+		MemoryScope:      memoryScope,
 		AgentFingerprint: computeAgentFingerprintFromRuntime(rt, req.Tools),
 		EventTypes:       streamEventTypes,
 		SubAgentDepth:    0,

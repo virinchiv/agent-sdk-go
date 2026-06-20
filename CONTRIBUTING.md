@@ -72,7 +72,7 @@ task examples:all
 
 Requires Task, Docker, and LLM credentials — see [examples/README.md](examples/README.md).
 
-If you change **agent behavior** (e.g. `pkg/agent`, telemetry, tools, runtime) or **`eval-harness/`**, run:
+If you change **agent behavior** (e.g. `pkg/agent`, `pkg/memory`, telemetry, tools, runtime) or **`eval-harness/`**, run:
 
 ```bash
 make eval-harness
@@ -136,7 +136,7 @@ Or run a single example:
 go run ./examples/simple_agent "Hello"
 ```
 
-See [examples/README.md](examples/README.md) for all examples, env vars, Task install, and infra commands (`task infra:*`, `task examples:local`).
+See [examples/README.md](examples/README.md) for all examples, env vars, Task install, and infra commands (`task infra:*`, `task examples:local`). Memory examples (`examples/agent_with_memory/`) need Weaviate or pgvector — see [examples/agent_with_memory/README.md](examples/agent_with_memory/README.md).
 
 ## Ways to Contribute
 
@@ -180,7 +180,7 @@ Using the SDK and ran into issues, unclear docs, or confusing behavior? **Raise 
 2. **Tests**
    - Add tests for new features and bug fixes.
    - Unit tests go in `*_test.go` files alongside the code.
-   - Agent behavior changes (`pkg/agent`, telemetry, tools, runtime) or **`eval-harness/`** edits — run `make eval-harness` before submitting a PR.
+   - Agent behavior changes (`pkg/agent`, `pkg/memory`, telemetry, tools, runtime) or **`eval-harness/`** edits — run `make eval-harness` before submitting a PR.
 
 3. **Commits**
    - Use [conventional commits](https://www.conventionalcommits.org) — these drive the release changelog:
@@ -201,18 +201,7 @@ Using the SDK and ran into issues, unclear docs, or confusing behavior? **Raise 
    - Keep changes focused. For larger work, consider splitting into multiple PRs.
    - For new LLM providers: implement `interfaces.LLMClient` (see `pkg/interfaces/llm.go` and existing providers in `pkg/llm/`).
    - For new tools: implement `interfaces.Tool` (see `pkg/interfaces/tools.go` and `pkg/tools/`).
-
-## Project Layout
-
-| Path | Purpose |
-|------|---------|
-| `pkg/agent/` | Agent core, workflow, config |
-| `pkg/llm/` | LLM providers (OpenAI, Anthropic, Gemini) |
-| `pkg/interfaces/` | Interfaces for LLM clients, tools, messages |
-| `pkg/tools/` | Built-in and custom tools |
-| `pkg/conversation/` | Message history (in-memory, Redis) |
-| `cmd/` | agentctl CLI |
-| `examples/` | Example programs |
+   - For new memory backends: implement `interfaces.Memory` (see `pkg/interfaces/memory.go` and `pkg/memory/weaviate` or `pkg/memory/pgvector`).
 
 ## Releasing (maintainers only)
 

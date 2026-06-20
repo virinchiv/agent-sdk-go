@@ -19,6 +19,27 @@ func SubAgentQuery(args map[string]any) string {
 	return q
 }
 
+// SubAgentScope derives memory scope for a delegated sub-agent from the parent run scope.
+func SubAgentScope(parent interfaces.MemoryScope, subAgentID string) interfaces.MemoryScope {
+	subAgentID = strings.TrimSpace(subAgentID)
+	scope := interfaces.MemoryScope{
+		TenantID: parent.TenantID,
+		UserID:   parent.UserID,
+		AgentID:  subAgentID,
+	}
+	if parent.AgentID != "" || len(parent.Tags) > 0 {
+		tags := make(map[string]string, len(parent.Tags)+1)
+		for key, value := range parent.Tags {
+			tags[key] = value
+		}
+		if parent.AgentID != "" {
+			tags[scopeKeyParentAgentID] = parent.AgentID
+		}
+		scope.Tags = tags
+	}
+	return scope
+}
+
 // FindToolByName returns the first tool whose Name() matches toolName.
 func FindToolByName(tools []interfaces.Tool, toolName string) (interfaces.Tool, bool) {
 	for _, t := range tools {

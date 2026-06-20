@@ -53,6 +53,18 @@ func RootOptions(
 	return opts
 }
 
+// AppendMemoryOptions adds WithMemory when memory is enabled in cfg.
+func AppendMemoryOptions(cfg *Config, opts []agent.Option) ([]agent.Option, error) {
+	memOpt, err := MemoryAgentOption(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if memOpt != nil {
+		opts = append(opts, memOpt)
+	}
+	return opts, nil
+}
+
 func mapToolExecutionMode(raw string) agent.AgentToolExecutionMode {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "sequential":

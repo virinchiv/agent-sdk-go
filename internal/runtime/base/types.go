@@ -5,6 +5,8 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
 
+const scopeKeyParentAgentID = "parent_agent_id"
+
 // LLMResult is the result of a successful LLM call.
 // Content holds the assistant text; ToolCalls holds any tool invocations resolved against
 // the registered tools list (NeedsApproval pre-computed from the approval policy).
@@ -38,4 +40,11 @@ type RetrieverResult struct {
 	Context        string
 	TotalSearches  int64
 	FailedSearches int64
+}
+
+// MemoryResult is the outcome of ExecuteMemoryRecall.
+type MemoryResult struct {
+	Context       string
+	TotalRecalls  int64
+	FailedRecalls int64
 }

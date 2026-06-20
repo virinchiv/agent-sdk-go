@@ -11,6 +11,7 @@ import (
 	config "github.com/agenticenv/agent-sdk-go/examples"
 	"github.com/agenticenv/agent-sdk-go/examples/shared"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
+	"github.com/agenticenv/agent-sdk-go/pkg/conversation"
 	"github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/echo"
@@ -43,8 +44,7 @@ func main() {
 		agent.WithStream(true),
 		agent.WithToolRegistry(reg),
 		agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
-		agent.WithConversation(conv),
-		agent.WithConversationSize(20),
+		agent.WithConversation(conversation.DefaultConfig(conv)),
 		agent.WithLogger(config.NewLoggerFromLogConfig(cfg)),
 	}
 	opts = append(opts, config.RuntimeOption(cfg)...)

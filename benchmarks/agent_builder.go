@@ -16,7 +16,10 @@ type AgentBundle struct {
 
 func buildAgentBundle(cfg *setup.Config, llm *setup.MockLLMClient, lgr logger.Logger, tree *setup.AgentTree) (*AgentBundle, error) {
 	enableRemote := cfg.ExternalWorkersEnabled()
-	opts := setup.RootOptions(cfg, llm, lgr, setup.RootAgentName, tree.RootPrompt, tree.SubAgents, cfg.Temporal.TaskQueue, enableRemote)
+	opts, err := setup.AppendMemoryOptions(cfg, setup.RootOptions(cfg, llm, lgr, setup.RootAgentName, tree.RootPrompt, tree.SubAgents, cfg.Temporal.TaskQueue, enableRemote))
+	if err != nil {
+		return nil, err
+	}
 
 	root, err := agent.NewAgent(opts...)
 	if err != nil {

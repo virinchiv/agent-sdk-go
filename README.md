@@ -29,9 +29,11 @@
   - [Stream events](#stream-events-stream)
   - [Token usage](#token-usage-llmusage)
   - [Tools](#tools)
+  - [Conversation](#conversation)
+  - [Memory](#memory)
+  - [Retrieval (RAG)](#retrieval-rag)
   - [MCP](#mcp-model-context-protocol)
   - [A2A](#a2a-agent-to-agent)
-  - [Retrieval (RAG)](#retrieval-rag)
   - [Sub-agents](#sub-agents)
   - [Managing Capabilities at Runtime](#managing-capabilities-at-runtime)
   - [Approvals](#approvals)
@@ -41,7 +43,6 @@
   - [Reasoning / extended thinking](#reasoning--extended-thinking)
   - [Multiple agents](#multiple-agents)
   - [Agent and worker in separate processes](#agent-and-worker-in-separate-processes)
-  - [Conversation](#conversation-message-history)
   - [AG-UI Protocol](#ag-ui-protocol)
 - [Telemetry](#telemetry)
 - [Observability](#observability)
@@ -74,10 +75,11 @@ The **in-process runtime** runs the agent loop directly in your process with no 
 - **LLM providers** — OpenAI, Anthropic, and Gemini out of the box; bring your own via `interfaces.LLMClient`.
 - **Tools** — Register built-in or custom tools via `interfaces.Tool`; optional **parallel vs sequential** execution for multiple tool calls in one LLM round (`WithAgentToolExecutionMode`).
 - **Human-in-the-loop** — Approval gates on tool calls and delegation across `Run`, `RunAsync`, and `Stream`.
-- **Conversation** — Persist multi-turn message history via `WithConversation`; in-memory store for in-process; in-memory and Redis for Temporal. Bring your own via `interfaces.Conversation`.
+- **Conversation** — Persist multi-turn message history via `WithConversation` and `conversation.Config`; in-memory store for in-process; Redis for remote workers. Bring your own backend via `interfaces.Conversation`.
 - **Sub-agents** — Delegate to specialist agents via `WithSubAgents`; recursive delegation with depth limiting; all sub-agent events fan in to the parent stream on both runtimes.
 - **MCP** — Extend agent capabilities by connecting any MCP server as a tool source via `WithMCPConfig` or `WithMCPClients`.
 - **A2A** — Connect remote [Agent-to-Agent](https://github.com/a2aproject/A2A) agents as tool providers via `WithA2AConfig` or `WithA2AClients`; or expose the agent itself as an A2A server via `WithA2ADefaultServer` / `WithA2AServer` and `RunA2A`.
+- **Memory** — Store and recall scoped facts and preferences across runs via `WithMemory` and `memory.Config`; built-in Weaviate and pgvector backends; same config on agent and worker for remote deployments.
 - **Retrieval (RAG)** — Ground agent responses in external knowledge bases via a pluggable `Retriever` interface with built-in Weaviate and pgvector support; extend with your own implementation.
 - **Streaming** — Partial tokens and events via `Stream` and `WithStream`.
 - **AG-UI** — Stream events conform to the [AG-UI protocol](https://docs.ag-ui.com); agents work out of the box with any AG-UI compatible frontend such as [CopilotKit](https://copilotkit.ai).
@@ -372,6 +374,282 @@ result, _ := a.Run(ctx, "What's the weather in Tokyo?", nil)
 
 [examples/agent_with_tools](examples/agent_with_tools)
 
+### Conversation
+
+Conversation lets agents **carry message history across turns in the same session** — user messages, assistant replies, and tool results — so multi-step chats stay coherent without resending the full thread yourself. Use it for chat UIs, support bots, or any agent where the user sends several prompts in one session. Pass `agent.WithConversation` on `NewAgent` and `NewAgentWorker` with a `conversation.Config`.
+
+**Backends** — in-memory (`pkg/conversation/inmem`) for single-process runs, Redis (`pkg/conversation/redis`) when the agent and worker run in separate processes, or your own implementation of `interfaces.Conversation` (see below). Example: [examples/agent_with_conversation](examples/agent_with_conversation).
+
+**Basic setup** — create a store, pass `conversation.Config`, and use the same conversation ID on every call:
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    "github.com/agenticenv/agent-sdk-go/pkg/conversation"
+    "github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
+)
+
+conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+a, _ := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(...),
+    agent.WithConversation(conversation.Config{
+        Conversation: conv,
+        Size:         20,
+    }),
+)
+defer a.Close()
+
+opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
+a.Run(ctx, "I'm Alice. Remember that.", opts)
+a.Run(ctx, "What's my name?", opts)
+```
+
+**Conversation ID** — when conversation is enabled, pass `AgentRunOptions.ConversationOptions.ID` on every `Run`, `RunAsync`, and `Stream` call with the same session ID so history is shared across turns.
+
+**Config** — `Size` limits how many past messages are loaded for the LLM (zero defaults to 20). `SaveOnIteration` persists messages after each tool round when external consumers need live updates during a multi-step run. Use `conversation.DefaultConfig(conv)` for SDK defaults with no overrides.
+
+**Deployment** — single process (agent and worker together): use in-memory. Remote workers (`DisableLocalWorker` or `EnableRemoteWorkers()`): use Redis or another distributed store; in-memory fails at build time with remote workers. Agent and worker must share the same store configuration.
+
+**Remote workers** — configure Redis on both processes; set `SaveOnIteration: true` on the worker when live updates are needed:
+
+```go
+convW, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
+w, _ := agent.NewAgentWorker(
+    agent.WithTemporalConfig(...),
+    agent.WithConversation(conversation.Config{Conversation: convW, Size: 20, SaveOnIteration: true}),
+)
+
+convA, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
+a, _ := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.DisableLocalWorker(),
+    agent.WithConversation(conversation.Config{Conversation: convA, Size: 20}),
+)
+opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
+a.Run(ctx, "Hello", opts)
+```
+
+**Lifecycle** — you own the conversation store. Call `Clear` when ending a session; the agent never clears history for you.
+
+**Implementing your own backend** — implement `interfaces.Conversation`:
+
+```go
+type Conversation interface {
+    AddMessage(ctx context.Context, id string, msg Message) error
+    ListMessages(ctx context.Context, id string, opts ...ListMessagesOption) ([]Message, error)
+    Clear(ctx context.Context, id string) error
+    IsDistributed() bool
+}
+```
+
+Set `IsDistributed() bool` to match your deployment. Pass the implementation in `conversation.Config.Conversation` and wire with `agent.WithConversation`.
+
+### Memory
+
+Memory lets agents **remember facts and preferences across separate runs** — scoped per user, tenant, or custom tags — without relying on conversation history alone. Use it when users return later, when preferences should persist beyond a single session, or when you need tenant- or project-scoped memory separate from chat history. Pass `agent.WithMemory` on `NewAgent` and `NewAgentWorker` with a `memory.Config`.
+
+**Backends** — Weaviate (`pkg/memory/weaviate`, vector search, Docker-friendly), pgvector (`pkg/memory/pgvector`, Postgres + pgvector, requires an embed function), or your own implementation of `interfaces.Memory` (see below). Examples: [examples/agent_with_memory/weaviate](examples/agent_with_memory/weaviate) · [examples/agent_with_memory/pgvector](examples/agent_with_memory/pgvector) — setup and env vars in [examples/agent_with_memory/README.md](examples/agent_with_memory/README.md).
+
+**Basic setup** — create a backend, wrap it in `memory.DefaultConfig`, and pass to the agent. Attach scope on the context for each run:
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    "github.com/agenticenv/agent-sdk-go/pkg/memory"
+    wmem "github.com/agenticenv/agent-sdk-go/pkg/memory/weaviate"
+)
+
+store, _ := wmem.NewMemory(
+    wmem.WithHost("localhost:8080"),
+    wmem.WithClassName("AgentMemory"),
+)
+
+a, _ := agent.NewAgent(
+    agent.WithMemory(memory.DefaultConfig(store)),
+    agent.WithLLMClient(llmClient),
+    // ...
+)
+defer a.Close()
+
+ctx := memory.WithContextUserID(context.Background(), "user-123")
+result, _ := a.Run(ctx, "Remember I prefer concise answers.", nil)
+```
+
+For **pgvector**, use `pgmem.NewMemory(embedFn, pgmem.WithDSN(...), pgmem.WithTable("agent_memories"))` with the same `WithMemory` pattern.
+
+**Deployment** — Weaviate and pgvector are external shared stores, so the same backend works for single-process runs and for remote workers. Use a store both processes can reach (same host, DSN, or cluster).
+
+**Remote workers** — pass the same `memory.Config` to `NewAgent` and `NewAgentWorker` (store, scope, store mode, recall, and TTL). Attach scope on the context in the agent process when calling `Run`, `RunAsync`, or `Stream`. With `StoreModeAlways` and no custom `Extract`, the worker also needs `WithLLMClient`:
+
+```go
+memCfg := memory.DefaultConfig(store)
+
+w, _ := agent.NewAgentWorker(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(llmClient),
+    agent.WithMemory(memCfg),
+)
+go w.Start()
+
+a, _ := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(llmClient),
+    agent.DisableLocalWorker(),
+    agent.WithMemory(memCfg),
+)
+ctx := memory.WithContextUserID(ctx, userID)
+a.Run(ctx, prompt, nil)
+```
+
+**Store modes** — set `memCfg.Store.Mode`. **On-demand** (default): the LLM saves via the `save_memory` tool during the run:
+
+```go
+memCfg := memory.DefaultConfig(store)
+memCfg.Store.Mode = memory.StoreModeOnDemand
+a, _ := agent.NewAgent(agent.WithMemory(memCfg), ...)
+```
+
+**Always**: memories are saved automatically when the run finishes:
+
+```go
+memCfg := memory.DefaultConfig(store)
+memCfg.Store.Mode = memory.StoreModeAlways
+a, _ := agent.NewAgent(agent.WithMemory(memCfg), ...)
+```
+
+Use **on-demand** when the model should decide what to persist. Use **always** when every run should be saved without relying on tool calls.
+
+**Recall config** — tune `memCfg.Recall`: `Enabled` (default `true`; set `false` for store-only), `Limit` (default `10`), `MinScore` (default `0.35`), `Kinds` (empty = all kinds):
+
+```go
+memCfg.Recall = memory.RecallConfig{
+    Enabled:  true,
+    Limit:    20,
+    MinScore: 0.4,
+    Kinds:    []interfaces.MemoryKind{memory.KindPreference, memory.KindFact},
+}
+```
+
+**Scope config** — memories are isolated by scope. Defaults read tenant, user, and agent from request context:
+
+```go
+ctx := memory.WithContextUserID(ctx, userID)
+ctx = memory.WithContextTenantID(ctx, tenantID) // optional
+a.Run(ctx, prompt, nil)
+```
+
+Use the **same scope values** on every run that should share memories. By default, memories are also isolated per agent name. Override resolvers or add custom tags on `memCfg.ScopeConfig`:
+
+```go
+memCfg.ScopeConfig = memory.ScopeConfig{
+    UserIDResolver: func(ctx context.Context) string { return myApp.UserID(ctx) },
+    ExtraKeys:      []string{"project_id"},
+    TagResolvers: map[string]memory.ScopeResolver{
+        "project_id": func(ctx context.Context) string { return myApp.ProjectID(ctx) },
+    },
+}
+```
+
+**TTL policy** — `memCfg.TTLPolicy` sets expiry per kind at store time. Defaults: `decision` 7 days, `note` 48 hours, `fact` / `preference` / `instruction` no expiry. Override:
+
+```go
+memCfg.TTLPolicy = memory.TTLPolicy{
+    memory.KindPreference: 0,
+    memory.KindNote:       7 * 24 * time.Hour,
+}
+```
+
+**Dedup** — `memCfg.Store.DedupMinScore` (default **0.85**) controls whether a similar memory is updated or appended. Lower to dedup more; raise to keep distinct entries.
+
+**Custom extraction** — with **always** mode, set `memCfg.Store.Extract` to control what is saved at run end (`nil` for on-demand):
+
+```go
+memCfg.Store.Mode = memory.StoreModeAlways
+memCfg.Store.Extract = func(ctx context.Context, messages []interfaces.Message) ([]interfaces.MemoryRecord, error) {
+    return []interfaces.MemoryRecord{{Text: "User prefers concise answers.", Kind: memory.KindPreference}}, nil
+}
+```
+
+Omit `Extract` to use the SDK default (requires an LLM client). Also on `Store`: `DefaultKind` (default `note`) and `AllowedKinds` (optional allowlist).
+
+**Implementing your own backend** — implement `interfaces.Memory`:
+
+```go
+type Memory interface {
+    Store(ctx context.Context, scope MemoryScope, record MemoryRecord, opts ...StoreMemoryOption) (string, error)
+    Load(ctx context.Context, scope MemoryScope, query string, opts ...LoadMemoryOption) ([]MemoryEntry, error)
+    Clear(ctx context.Context, scope MemoryScope) error
+}
+```
+
+`Store` persists in scope and returns an ID (support `WithMemoryID` for upserts). `Load` returns scoped results; honor load options. `Clear` deletes by scope (application use). Pass to `memory.DefaultConfig(yourStore)` and `agent.WithMemory`.
+
+### Retrieval (RAG)
+
+Retrieval-Augmented Generation (RAG) lets agents query external knowledge bases and ground responses in up-to-date or domain-specific content — without hardcoding it into the prompt.
+
+Built-in retriever implementations are in `pkg/retriever/weaviate` and `pkg/retriever/pgvector`. Bring your own by implementing `interfaces.Retriever` (`Name`, `Search`).
+
+**Retriever modes**
+
+- **Agentic** (default) — LLM decides when to call the retriever as a tool, the same way it calls any other tool. Best for multi-step agents where retrieval is not always needed.
+- **Prefetch** — Retrieval fires before every LLM call. Retrieved context is injected automatically. Best for always-grounded Q&A or enterprise knowledge-base scenarios.
+- **Hybrid** — Both: retriever context is pre-fetched and injected (prefetch), and the LLM can also call the retriever as a tool (agentic).
+
+Set mode with `agent.WithRetrieverMode`:
+
+```go
+agent.WithRetrieverMode(agent.RetrieverModeAgentic)   // default
+agent.WithRetrieverMode(agent.RetrieverModePrefetch)
+agent.WithRetrieverMode(agent.RetrieverModeHybrid)    // prefetch + agentic
+```
+
+**Weaviate** (local Docker, zero auth for dev):
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/retriever/weaviate"
+
+r, err := weaviate.NewRetriever("product_knowledge",
+    weaviate.WithHost("localhost:8080"),
+    weaviate.WithClassName("ProductDocs"),
+)
+
+a, _ := agent.NewAgent(
+    agent.WithRetrievers(r),
+    agent.WithRetrieverMode(agent.RetrieverModeAgentic),
+    ...
+)
+```
+
+**pgvector** (Postgres with pgvector extension; requires an embed function):
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/retriever/pgvector"
+
+r, err := pgvector.NewRetriever("support_knowledge", embedFn,
+    pgvector.WithDSN("postgres://user:pass@localhost:5432/mydb"),
+    pgvector.WithTable("documents"),
+)
+```
+
+**Custom retriever** — implement `interfaces.Retriever`:
+
+```go
+type Retriever interface {
+    Name() string
+    Search(ctx context.Context, query string) ([]interfaces.Document, error)
+}
+```
+
+**Multiple retrievers** — pass as many as needed; each must have a unique name:
+
+```go
+agent.WithRetrievers(productRetriever, supportRetriever)
+```
+
+[examples/agent_with_retriever/weaviate](examples/agent_with_retriever/weaviate) · [examples/agent_with_retriever/pgvector](examples/agent_with_retriever/pgvector)
+
 ### MCP (Model Context Protocol)
 
 MCP servers extend your agent with external tools that work identically to built-in tools across `Run`, `Stream`, `RunAsync`, and approval gates. Each server needs a **unique** name in config (the `WithMCPConfig` map key or the first argument to `mcpclient.NewClient`); tools are registered under stable names so they do not collide when several servers expose the same logical tool id.
@@ -596,71 +874,6 @@ defer a.Close()
 You may use **Option 1** for some remote agents and **Option 2** for others on the same agent; keep connection names unique across both.
 
 [examples/agent_with_a2a_config](examples/agent_with_a2a_config) and [examples/agent_with_a2a_client](examples/agent_with_a2a_client) show A2A from env (`A2A_URL`, optional bearer/headers/filter). Variables: [examples/.env.defaults](examples/.env.defaults). Running examples from `examples/`: [examples/README.md](examples/README.md). **Remote agent setup (e.g. `a2a-samples` helloworld), curl checks:** [examples/agent_with_a2a_config/README.md](examples/agent_with_a2a_config/README.md).
-
-### Retrieval (RAG)
-
-Retrieval-Augmented Generation (RAG) lets agents query external knowledge bases and ground responses in up-to-date or domain-specific content — without hardcoding it into the prompt.
-
-Built-in retriever implementations are in `pkg/retriever/weaviate` and `pkg/retriever/pgvector`. Bring your own by implementing `interfaces.Retriever` (`Name`, `Search`).
-
-**Retriever modes**
-
-- **Agentic** (default) — LLM decides when to call the retriever as a tool, the same way it calls any other tool. Best for multi-step agents where retrieval is not always needed.
-- **Prefetch** — Retrieval fires before every LLM call. Retrieved context is injected automatically. Best for always-grounded Q&A or enterprise knowledge-base scenarios.
-- **Hybrid** — Both: retriever context is pre-fetched and injected (prefetch), and the LLM can also call the retriever as a tool (agentic).
-
-Set mode with `agent.WithRetrieverMode`:
-
-```go
-agent.WithRetrieverMode(agent.RetrieverModeAgentic)   // default
-agent.WithRetrieverMode(agent.RetrieverModePrefetch)
-agent.WithRetrieverMode(agent.RetrieverModeHybrid)    // prefetch + agentic
-```
-
-**Weaviate** (local Docker, zero auth for dev):
-
-```go
-import "github.com/agenticenv/agent-sdk-go/pkg/retriever/weaviate"
-
-r, err := weaviate.NewRetriever("product_knowledge",
-    weaviate.WithHost("localhost:8080"),
-    weaviate.WithClassName("ProductDocs"),
-)
-
-a, _ := agent.NewAgent(
-    agent.WithRetrievers(r),
-    agent.WithRetrieverMode(agent.RetrieverModeAgentic),
-    ...
-)
-```
-
-**pgvector** (Postgres with pgvector extension; requires an embed function):
-
-```go
-import "github.com/agenticenv/agent-sdk-go/pkg/retriever/pgvector"
-
-r, err := pgvector.NewRetriever("support_knowledge", embedFn,
-    pgvector.WithDSN("postgres://user:pass@localhost:5432/mydb"),
-    pgvector.WithTable("documents"),
-)
-```
-
-**Custom retriever** — implement `interfaces.Retriever`:
-
-```go
-type Retriever interface {
-    Name() string
-    Search(ctx context.Context, query string) ([]interfaces.Document, error)
-}
-```
-
-**Multiple retrievers** — pass as many as needed; each must have a unique name:
-
-```go
-agent.WithRetrievers(productRetriever, supportRetriever)
-```
-
-[examples/agent_with_retriever/weaviate](examples/agent_with_retriever/weaviate) · [examples/agent_with_retriever/pgvector](examples/agent_with_retriever/pgvector)
 
 ### Sub-agents
 
@@ -1006,90 +1219,6 @@ result, _ := a.Run(ctx, "Hello", nil)
 > `agent.WithAgentMode(agent.AgentModeAutonomous)` to skip the worker check and use a
 > 60-minute default timeout. See `[WithAgentMode](#configuration)` for full detail.
 
-### Conversation (message history)
-
-Pass `agent.WithConversation(conv)` to persist message history for multi-turn context. Use `agent.WithConversationSize(n)` to limit how many messages are fetched for LLM context (default 20).
-
-By default, messages from the current run are saved once when the run finishes. Use `agent.EnableConversationSaveOnIteration()` when external consumers (e.g. a UI polling Redis) need live updates **during** a multi-step run—after each tool round, not only at the end. This adds extra store writes. For Temporal remote workers, set it on **`AgentWorker`** (where `WithConversation` and persistence run); the agent caller process does not need it.
-
-**Conversation ID:** When the agent is configured with a conversation, pass an `*agent.AgentRunOptions` with `ConversationOptions.ID` set to the same session ID on every call to `Run`, `RunAsync`, and `Stream`—so history is shared across turns.
-
-Choose implementation by deployment:
-
-
-| Deployment                                                           | Use                                                       |
-| -------------------------------------------------------------------- | --------------------------------------------------------- |
-| **Single process** (agent and worker in same process)                | `inmem.NewInMemoryConversation`                           |
-| **Remote workers** (`DisableLocalWorker` or `EnableRemoteWorkers()`) | `redis.NewRedisConversation` or another distributed store |
-
-
-To add a new conversation store (e.g., Postgres, MongoDB), implement the `interfaces.Conversation` interface in `[pkg/interfaces/conversation.go](pkg/interfaces/conversation.go)`. The interface requires `AddMessage`, `ListMessages`, `Clear`, and `IsDistributed`. See `pkg/conversation/inmem` and `pkg/conversation/redis` for reference.
-
-In-memory cannot be used with remote workers—the agent will return an error at build time.
-
-**Remote workers:** Agent and worker must use the same conversation store (same Redis config) so both processes access the same data. Only the process that calls `Run` or `Stream` passes the conversation ID; the worker does not.
-
-```go
-// Single process (default)
-conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
-a, _ := agent.NewAgent(
-    agent.WithTemporalConfig(...),
-    agent.WithLLMClient(...),
-    agent.WithConversation(conv),
-    agent.WithConversationSize(20), // optional; default 20
-)
-opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
-result, _ := a.Run(ctx, "Hello", opts)
-
-// Worker process
-convW, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
-defer convW.Close()
-w, _ := agent.NewAgentWorker(
-    agent.WithTemporalConfig(...),
-    agent.WithLLMClient(...),
-    agent.WithConversation(convW),
-)
-go w.Start()
-
-// Agent process
-convA, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
-defer convA.Close()
-a, _ := agent.NewAgent(
-    agent.WithTemporalConfig(...),
-    agent.WithLLMClient(...),
-    agent.DisableLocalWorker(),
-    agent.WithConversation(convA),
-)
-opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
-result, _ := a.Run(ctx, "Hello", opts)
-```
-
-**Lifecycle:** You own the conversation. Call `Clear` when ending a session or when you no longer need the history. The agent never calls `Clear`.
-
-**Example (in-memory, single process):**
-
-```go
-import (
-    "github.com/agenticenv/agent-sdk-go/pkg/agent"
-    "github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
-)
-
-conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
-a, _ := agent.NewAgent(
-    agent.WithTemporalConfig(...),
-    agent.WithLLMClient(...),
-    agent.WithConversation(conv),
-    agent.WithConversationSize(20),
-)
-defer a.Close()
-
-opts := &agent.AgentRunOptions{ConversationOptions: &agent.ConversationOptions{ID: "session-1"}}
-a.Run(ctx, "I'm Alice. Remember that.", opts)
-a.Run(ctx, "What's my name?", opts) // agent uses history: "Alice"
-```
-
-[examples/agent_with_conversation](examples/agent_with_conversation)
-
 ### AG-UI Protocol
 
 Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), making your agents natively compatible with any AG-UI frontend without extra integration work.
@@ -1125,7 +1254,7 @@ Every run populates `AgentTelemetry` inside `AgentRunResult` with behavioral met
 
 - **Run** — start/end time, total LLM calls, and finish reason (`complete` or `max_iterations`)
 - **Tools** — total calls, failed calls, and per-tool breakdown for registered tools and MCP tools
-- **Storage** — RAG retriever search counts split by mode (`prefetch_searches`, `agentic_searches`) and failure count; all fields are zero when no retriever is configured
+- **Storage** — RAG retriever search counts split by mode (`prefetch_searches`, `agentic_searches`) and failure count; memory recall/store counts when `WithMemory` is configured; all fields are zero when the corresponding feature is not configured
 
 ```go
 result, _ := ag.Run(ctx, "prompt")
@@ -1136,6 +1265,9 @@ fmt.Printf("retriever_searches=%d  prefetch=%d  agentic=%d\n",
     t.Storage.TotalRetrieverSearches,
     t.Storage.PrefetchSearches,
     t.Storage.AgenticSearches)
+fmt.Printf("memory_recalls=%d  memory_stores=%d\n",
+    t.Storage.TotalMemoryRecalls,
+    t.Storage.TotalMemoryStores)
 ```
 
 **Stream** — telemetry is on `Result.Telemetry` inside the `RUN_FINISHED` event:
@@ -1221,8 +1353,13 @@ a, _ := agent.NewAgent(
 | `tool.authorize` | `AgentToolAuthorizeActivity` |
 | `conversation.get_messages` | Fetch conversation history activity |
 | `conversation.add_messages` | Persist conversation activity |
+| `memory.recall` | Load scoped memories before a run (`WithMemory`) |
+| `memory.store` | Persist one memory record |
+| `memory.store.batch` | Persist multiple records in one store call |
+| `memory.dedup` | Semantic dedup lookup before store |
+| `memory.extract` | Run-end memory extraction (`StoreModeAlways`) |
 
-Common attributes: `agent.name`, `conversation.id`, `input.length`, `model`, `provider`, `tool`.
+Common attributes: `agent.name`, `conversation.id`, `input.length`, `model`, `provider`, `tool`, `memory.kind`, `memory.dedup`, `query` (recall).
 
 ### Metrics
 
@@ -1241,7 +1378,7 @@ All metric names are defined in `internal/types/metrics.go`.
 | `agent.stream.failed` | counter | Dispatch failed |
 | `agent.stream.duration_ms` | histogram | Dispatch wall-clock time in ms |
 
-**Runtime** (emitted by Temporal activities; attributes: `model`, `provider`, `tool`):
+**Runtime** (emitted per run on local and Temporal runtimes; attributes: `model`, `provider`, `tool`, `retriever`, `memory.kind`, `memory.dedup`):
 
 | Metric | Kind | Description |
 |---|---|---|
@@ -1255,6 +1392,22 @@ All metric names are defined in `internal/types/metrics.go`.
 | `agent.tool.call.completed` | counter | Tool execute succeeded |
 | `agent.tool.call.failed` | counter | Tool execute failed |
 | `agent.tool.latency_ms` | histogram | Tool wall-clock time in ms |
+| `agent.memory.recall.started` | counter | Memory recall started |
+| `agent.memory.recall.completed` | counter | Memory recall succeeded |
+| `agent.memory.recall.failed` | counter | Memory recall failed |
+| `agent.memory.recall.latency_ms` | histogram | Memory recall wall-clock time in ms |
+| `agent.memory.store.started` | counter | Memory store started |
+| `agent.memory.store.completed` | counter | Memory store succeeded |
+| `agent.memory.store.failed` | counter | Memory store failed |
+| `agent.memory.store.latency_ms` | histogram | Memory store wall-clock time in ms |
+| `agent.memory.dedup.started` | counter | Semantic dedup lookup started |
+| `agent.memory.dedup.completed` | counter | Semantic dedup lookup succeeded |
+| `agent.memory.dedup.failed` | counter | Semantic dedup lookup failed |
+| `agent.memory.dedup.latency_ms` | histogram | Semantic dedup wall-clock time in ms |
+| `agent.memory.extract.started` | counter | Run-end memory extract started |
+| `agent.memory.extract.completed` | counter | Run-end memory extract succeeded |
+| `agent.memory.extract.failed` | counter | Run-end memory extract failed |
+| `agent.memory.extract.latency_ms` | histogram | Run-end memory extract wall-clock time in ms |
 
 ### Logs
 
@@ -1276,9 +1429,8 @@ A Temporal connection (`WithTemporalConfig` or `WithTemporalClient`) is **option
 - **WithTemporalClient**: Pre-configured Temporal client. Use for TLS, API key auth, Temporal Cloud. Requires `WithTaskQueue`. Agent does not close the client.
 - **WithTaskQueue**: Task queue name. Required when using `WithTemporalClient`. Ignored when using `WithTemporalConfig`.
 - **WithResponseFormat**: LLM response format. Omit for text-only. Use `&interfaces.ResponseFormat{Type, Name, Schema}` for JSON with schema. See [Response format](#response-format).
-- **WithConversation**: Message history store. Use `inmem` for single process; `redis` for remote workers. Pass the conversation ID via `AgentRunOptions` to `Run`, `RunAsync`, and `Stream` to share history across turns. See [Conversation](#conversation-message-history).
-- **WithConversationSize**: Max messages to fetch for LLM context (default 20). Only applies when `WithConversation` is set.
-- **EnableConversationSaveOnIteration**: Persist conversation messages after each tool round instead of batching at run end. For live visibility (e.g. Redis UI) during long runs. Set on `AgentWorker` for Temporal remote workers.
+- **WithConversation**: Message history via `conversation.Config` — backend, `Size`, and `SaveOnIteration`. Pass the conversation ID via `AgentRunOptions` on each run. See [Conversation](#conversation).
+- **WithMemory**: Memory via `memory.Config` — backend, scope, store mode, recall, and TTL. See [Memory](#memory).
 - **EnableRemoteWorkers**: Pass `EnableRemoteWorkers()` when using `DisableLocalWorker` with approval or streaming (starts the event worker/workflow path).
 - **WithSubAgents**: Attach specialist agents the main agent can delegate to. Each needs its own task queue and worker. See [Sub-agents](#sub-agents).
 - **WithMaxSubAgentDepth**: Maximum delegation hops from this agent (default 2). See [Sub-agents](#sub-agents).

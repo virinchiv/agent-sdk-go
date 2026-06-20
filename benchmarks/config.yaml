@@ -29,6 +29,11 @@ agent:
     count: 2
     levels: 1             # 1 or 2
 
+memory:
+  enabled: false
+  store_mode: ondemand    # ondemand or always
+  user_id: benchmark-user
+
 logger:
   enabled: false          # true writes SDK logs under benchmarks/logs
   dir: benchmarks/logs

@@ -13,6 +13,7 @@ import (
 
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/agent"
+	"github.com/agenticenv/agent-sdk-go/pkg/conversation"
 	"github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/calculator"
 	"github.com/agenticenv/agent-sdk-go/pkg/tools/currenttime"
@@ -92,8 +93,7 @@ func main() {
 		agent.WithLLMClient(llmClient),
 		agent.WithStream(true),
 		agent.WithToolRegistry(reg),
-		agent.WithConversation(conv),
-		agent.WithConversationSize(20),
+		agent.WithConversation(conversation.DefaultConfig(conv)),
 		agent.WithLogger(lgr),
 	}
 	opts = append(opts, RuntimeOption(cfg)...)

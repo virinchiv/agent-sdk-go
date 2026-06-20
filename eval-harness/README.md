@@ -39,7 +39,21 @@ Default path: `eval-harness/runner/config.yaml`
 | `temporal.namespace` | `default` | Temporal namespace |
 | `temporal.task_queue` | `eval-harness` | Task queue |
 
-Temporal mode uses an embedded local worker. Start Temporal before running (e.g. `task infra:temporal:up` from `examples/`).
+**Memory** (same file; `enabled: false` for default tool tests):
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `memory.enabled` | `false` | Set true in YAML, or pass `-memory` on the runner |
+| `memory.store_mode` | `ondemand` | `ondemand` or `always` |
+| `memory.scenario` | `store_recall` | Two-run store then recall when enabled |
+| `memory.store_prompt` / `memory.recall_prompt` | — | Used when scenario is active |
+
+```bash
+./eval-harness/run_agent_memory.sh ondemand   # same config.yaml, -memory flag
+./eval-harness/run_agent_memory.sh always
+```
+
+Temporal mode uses an embedded local worker.
 
 ### Output
 
@@ -49,9 +63,15 @@ Stdout is always JSON:
 {
   "content": "eval complete",
   "llm_usage": { "prompt_tokens": 600, "completion_tokens": 400, "total_tokens": 1000 },
-  "telemetry": { "run": { ... }, "tools": { ... }, "storage": { ... } }
+  "telemetry": { "run": { ... }, "tools": { ... }, "storage": { ... } },
+  "memory_scenario": {
+    "store": { "content": "...", "telemetry": { ... } },
+    "recall": { "content": "...", "telemetry": { ... } }
+  }
 }
 ```
+
+`memory_scenario` is present only for `memory.scenario: store_recall`.
 
 ## PromptFoo
 
@@ -87,21 +107,23 @@ The runner accepts PromptFoo’s prompt as a positional argument when `-prompt` 
 
 ### Tests
 
-Four test cases in `config.yaml`, each with a JavaScript assertion on runner JSON:
+Six test cases in `config.yaml` (each scoped to one provider — Promptfoo reports **6 runs**, not test×provider duplicates):
 
-| Test | Checks |
-|------|--------|
-| all mock tools were called | `telemetry.tools.breakdown` — `eval_tool_1`, `eval_tool_2`, `eval_tool_3`, each called once |
-| agent completed successfully | `telemetry.run.finish_reason === "complete"` and `content === "eval complete"` |
-| no failed tool calls | `telemetry.tools.failed_calls === 0` |
-| llm usage reported | `llm_usage.total_tokens > 0` |
+| Test | Provider | Checks |
+|------|----------|--------|
+| all mock tools were called | `eval-agent` | `telemetry.tools.breakdown` — three eval tools, each once |
+| agent completed successfully | `eval-agent` | `finish_reason === "complete"` and `content === "eval complete"` |
+| no failed tool calls | `eval-agent` | `telemetry.tools.failed_calls === 0` |
+| llm usage reported | `eval-agent` | `llm_usage.total_tokens > 0` |
+| memory ondemand stores then recalls | `eval-agent-memory-ondemand` | `memory_scenario` store/recall telemetry |
+| memory always stores then recalls | `eval-agent-memory-always` | same for always store mode |
 
 ### Customizing
 
 - **Change the prompt** — edit `prompts` in `promptfoo/config.yaml`, or add `vars` and use `{{var}}` in the prompt string.
 - **Change agent behavior** — edit `eval-harness/runner/config.yaml` (tool count, runtime, system prompt), or adjust `eval-harness/run_agent.sh`.
 - **Add tests** — append cases under `tests:` with `type: javascript` and `value:` returning a boolean.
-- **Filter providers** — use `label: eval-agent` in test `options.providers` if you add more providers later.
+- **Filter providers** — set `providers: [label]` on each test so agent checks do not run on memory providers (and vice versa).
 
 ## DeepEval
 
@@ -144,12 +166,14 @@ finish_reason = agent_res["telemetry"]["run"]["finish_reason"]
 
 ### Tests
 
-Two pytest tests in `test_agent.py`:
+Four pytest tests in `test_agent.py`:
 
 | Test | Checks |
 |------|--------|
 | `test_agent_completes_with_telemetry` | `content`, `llm_usage`, `finish_reason`, `failed_calls`, `total_calls`, `breakdown` keys |
 | `test_agent_tool_correctness` | `ToolCorrectnessMetric` — `tools_called` from telemetry vs expected tools |
+| `test_memory_store_recall_ondemand` | `memory_scenario` store/recall telemetry (ondemand) |
+| `test_memory_store_recall_always` | `memory_scenario` store/recall telemetry (always) |
 
 ### Customizing
 

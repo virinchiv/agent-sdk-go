@@ -14,6 +14,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 )
 
 // Agent runs LLM-backed agent execution through the configured execution runtime.
@@ -142,6 +143,7 @@ func (a *Agent) Run(ctx context.Context, input string, opts *AgentRunOptions) (*
 }
 
 func (a *Agent) runInternal(ctx context.Context, input string, opts *AgentRunOptions, runAsync bool) (*AgentRunResult, error) {
+	ctx = a.attachMemoryScopeContext(ctx)
 	conversationID := conversationIDFromOpts(opts)
 
 	spanName := "agent.run"
@@ -244,6 +246,7 @@ func copyApprovalArgs(src map[string]any) map[string]any {
 func (a *Agent) Stream(ctx context.Context, input string, opts *AgentRunOptions) (<-chan events.AgentEvent, error) {
 	a.logger.Debug(ctx, "agent run stream started", slog.String("scope", "agent"), slog.String("name", a.Name), slog.Int("inputLen", len(input)))
 
+	ctx = a.attachMemoryScopeContext(ctx)
 	conversationID := conversationIDFromOpts(opts)
 
 	start := time.Now()
@@ -292,6 +295,13 @@ func (a *Agent) Stream(ctx context.Context, input string, opts *AgentRunOptions)
 	return streamCh, nil
 }
 
+func (a *Agent) attachMemoryScopeContext(ctx context.Context) context.Context {
+	if a.Name != "" {
+		ctx = memory.WithContextAgentID(ctx, a.Name)
+	}
+	return ctx
+}
+
 func conversationIDFromOpts(opts *AgentRunOptions) string {
 	if opts != nil && opts.ConversationOptions != nil {
 		return opts.ConversationOptions.ID
@@ -300,10 +310,10 @@ func conversationIDFromOpts(opts *AgentRunOptions) string {
 }
 
 func (a *Agent) validateConversationID(conversationID string) error {
-	if conversationID != "" && a.conversation == nil {
+	if conversationID != "" && a.conversationConfig == nil {
 		return fmt.Errorf("conversationID %s requires conversation configuration", conversationID)
 	}
-	if conversationID == "" && a.conversation != nil {
+	if conversationID == "" && a.conversationConfig != nil {
 		return fmt.Errorf("conversationID is required when using conversation")
 	}
 	return nil

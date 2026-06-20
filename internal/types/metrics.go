@@ -46,9 +46,40 @@ const (
 	// Runtime — retriever search wall-clock latency.
 	MetricRetrieverLatencyMs = "agent.retriever.latency_ms"
 
+	// Runtime — emitted per memory.Load (recall) call.
+	MetricMemoryRecallStarted   = "agent.memory.recall.started"
+	MetricMemoryRecallCompleted = "agent.memory.recall.completed"
+	MetricMemoryRecallFailed    = "agent.memory.recall.failed"
+
+	// Runtime — memory recall wall-clock latency.
+	MetricMemoryRecallLatencyMs = "agent.memory.recall.latency_ms"
+
+	// Runtime — emitted per memory.Store call.
+	MetricMemoryStoreStarted   = "agent.memory.store.started"
+	MetricMemoryStoreCompleted = "agent.memory.store.completed"
+	MetricMemoryStoreFailed    = "agent.memory.store.failed"
+
+	// Runtime — memory store wall-clock latency.
+	MetricMemoryStoreLatencyMs = "agent.memory.store.latency_ms"
+
+	// Runtime — semantic dedup lookup before memory.Store (Load for upsert decision).
+	MetricMemoryDedupStarted   = "agent.memory.dedup.started"
+	MetricMemoryDedupCompleted = "agent.memory.dedup.completed"
+	MetricMemoryDedupFailed    = "agent.memory.dedup.failed"
+	MetricMemoryDedupLatencyMs = "agent.memory.dedup.latency_ms"
+
+	// Runtime — run-end memory extraction (StoreMode always).
+	MetricMemoryExtractStarted   = "agent.memory.extract.started"
+	MetricMemoryExtractCompleted = "agent.memory.extract.completed"
+	MetricMemoryExtractFailed    = "agent.memory.extract.failed"
+	MetricMemoryExtractLatencyMs = "agent.memory.extract.latency_ms"
+
 	// Attribute keys used on both metrics and spans.
-	MetricAttrModel     = "model"
-	MetricAttrProvider  = "provider"
-	MetricAttrTool      = "tool"
-	MetricAttrRetriever = "retriever"
+	MetricAttrModel      = "model"
+	MetricAttrProvider   = "provider"
+	MetricAttrTool       = "tool"
+	MetricAttrRetriever  = "retriever"
+	MetricAttrMemoryKind = "memory.kind"
+	// MetricAttrMemoryDedup is "upsert" when an existing record is updated, else "append".
+	MetricAttrMemoryDedup = "memory.dedup"
 )

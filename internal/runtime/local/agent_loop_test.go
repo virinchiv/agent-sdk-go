@@ -10,10 +10,12 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
+	testutil "github.com/agenticenv/agent-sdk-go/internal/testing"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	ifmocks "github.com/agenticenv/agent-sdk-go/pkg/interfaces/mocks"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,6 +92,117 @@ func TestRunAgentLoop_SimpleTextResponse(t *testing.T) {
 	result, err := runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "hi"})
 	require.NoError(t, err)
 	require.Equal(t, "hello world", result.Content)
+}
+
+func TestRunAgentLoop_MemoryRecallAndStore(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	memCfg := memory.DefaultConfig(store)
+	client := &seqLLMClient{
+		responses: []*interfaces.LLMResponse{{Content: "I will be concise."}},
+	}
+
+	rt, err := NewLocalRuntime(
+		WithLogger(logger.NoopLogger()),
+		WithAgentSpec(sdkruntime.AgentSpec{Name: "mem-agent", SystemPrompt: "sys"}),
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM:    sdkruntime.AgentLLM{Client: client},
+			Memory: sdkruntime.AgentMemory{Config: &memCfg},
+			Limits: sdkruntime.AgentLimits{MaxIterations: 3, Timeout: 10 * time.Second},
+		}),
+	)
+	require.NoError(t, err)
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	_, err = store.Store(context.Background(), scope, interfaces.MemoryRecord{
+		Text: "User prefers concise answers",
+		Kind: memory.KindPreference,
+	})
+	require.NoError(t, err)
+
+	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{
+		UserPrompt:  "What style do I prefer?",
+		MemoryScope: scope,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "I will be concise.", result.Content)
+	require.Equal(t, int64(1), result.Telemetry.Storage.TotalMemoryRecalls)
+	require.Equal(t, int64(0), result.Telemetry.Storage.TotalMemoryStores)
+}
+
+func TestRunAgentLoop_MemoryAlwaysRunEndStore(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	memCfg := memory.DefaultConfig(store)
+	memCfg.Store.Mode = memory.StoreModeAlways
+	client := &seqLLMClient{
+		responses: []*interfaces.LLMResponse{
+			{Content: "done"},
+			{Content: `{"memories":[{"text":"greeting","kind":"note"}]}`},
+		},
+	}
+	rt, err := NewLocalRuntime(
+		WithLogger(logger.NoopLogger()),
+		WithAgentSpec(sdkruntime.AgentSpec{Name: "mem-agent", SystemPrompt: "sys"}),
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM:    sdkruntime.AgentLLM{Client: client},
+			Memory: sdkruntime.AgentMemory{Config: &memCfg},
+			Limits: sdkruntime.AgentLimits{MaxIterations: 3, Timeout: 10 * time.Second},
+		}),
+	)
+	require.NoError(t, err)
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{
+		UserPrompt:  "hello",
+		MemoryScope: scope,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), result.Telemetry.Storage.TotalMemoryStores)
+
+	entries, err := store.Load(context.Background(), scope, "", memCfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "greeting", entries[0].Text)
+}
+
+func TestRunAgentLoop_OnDemandSaveMemoryTool(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	memCfg := memory.DefaultConfig(store)
+	client := &seqLLMClient{
+		responses: []*interfaces.LLMResponse{
+			{ToolCalls: []*interfaces.ToolCall{{
+				ToolCallID: "c1",
+				ToolName:   types.SaveMemoryToolName,
+				Args:       map[string]any{types.MemoryToolParamText: "favorite color is blue"},
+			}}},
+			{Content: "saved"},
+		},
+	}
+	rt, err := NewLocalRuntime(
+		WithLogger(logger.NoopLogger()),
+		WithAgentSpec(sdkruntime.AgentSpec{Name: "mem-agent", SystemPrompt: "sys"}),
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM:    sdkruntime.AgentLLM{Client: client},
+			Memory: sdkruntime.AgentMemory{Config: &memCfg},
+			Limits: sdkruntime.AgentLimits{MaxIterations: 3, Timeout: 10 * time.Second},
+		}),
+	)
+	require.NoError(t, err)
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	tool := stubKindTool{
+		stubTool: stubTool{name: types.SaveMemoryToolName},
+		kind:     types.ToolKindMemory,
+	}
+	result, err := rt.RunAgentLoop(context.Background(), AgentLoopInput{
+		UserPrompt:  "remember my color",
+		MemoryScope: scope,
+		Tools:       []interfaces.Tool{tool},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "saved", result.Content)
+	require.Equal(t, int64(1), result.Telemetry.Storage.TotalMemoryStores)
+	entries, err := store.Load(context.Background(), scope, "", memCfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "favorite color is blue", entries[0].Text)
 }
 
 func TestRunAgentLoop_LLMError(t *testing.T) {

@@ -24,7 +24,7 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | Example | What it demonstrates | Infra (Task, from `examples/`) |
 |---------|---------------------|--------------------------------|
 | `simple_agent` | Minimal agent, no tools — system prompt, LLM client, single `Run()`; prints `AgentResponse.Usage` (token counts) when the provider reports them | — |
-| `agent_with_conversation` | Redis conversation with `WithConversation` — multi-turn context, same `conversationID` for `Run` | `infra:redis:up` (or `infra:deps:up`) |
+| `agent_with_conversation` | Redis conversation with `WithConversation(conversation.Config{...})` — multi-turn context, same `conversationID` for `Run` | `infra:redis:up` (or `infra:deps:up`) |
 | `agent_with_tools/basic` | Built-in tools (echo, calculator, weather, wikipedia, search) with auto-approval | — |
 | `agent_with_tools/approval` | Tools + `WithApprovalHandler` — user approves or rejects each tool run (`Run` only) | — |
 | `agent_with_tools/authorizer` | Custom tool authorization via `interfaces.ToolAuthorizer` — denied calls surface as `tool_result` with `denied` status | — |
@@ -45,6 +45,7 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | `agent_with_a2a_server` | **Inbound** A2A server — **`A2A_SERVER_*`**; **[README](agent_with_a2a_server/README.md)** | `go run` or `infra:a2a:up` |
 | `agent_with_observability` | OTLP — **`config/`** vs **`objects/`**; **[README](agent_with_observability/README.md)** | `infra:lgtm:up` (or manual collector) |
 | `agent_with_retriever` | **`weaviate/`** or **`pgvector/`**; **`RETRIEVER_MODE`** — **[README](agent_with_retriever/README.md)** | `infra:weaviate:up` or `infra:pgvector:up` |
+| `agent_with_memory` | **`weaviate/`** or **`pgvector/`** — **[README](agent_with_memory/README.md)**; `MEMORY_STORE_MODE=always\|ondemand` | `infra:weaviate:up` or `infra:pgvector:up` |
 
 ### Temporal only
 
@@ -221,6 +222,17 @@ RETRIEVER_MODE=prefetch go run ./agent_with_retriever/weaviate "What are the ret
 
 Setup guides: **[agent_with_retriever/README.md](agent_with_retriever/README.md)**.
 
+### Long-term memory (`agent_with_memory`)
+
+Same vector infra as retriever (`task infra:weaviate:up` or `task infra:pgvector:up`). **Weaviate** uses always store (run-end extract); **pgvector** uses on-demand store (`save_memory`). No CLI args runs a two-turn demo (store, then recall).
+
+```bash
+go run ./agent_with_memory/weaviate
+go run ./agent_with_memory/pgvector
+```
+
+Setup guide: **[agent_with_memory/README.md](agent_with_memory/README.md)**.
+
 ---
 
 ### Temporal-only examples
@@ -277,7 +289,7 @@ All examples call [`shared.PrintRunFooters`](shared/utils.go) after each run. Se
 | Env var | Default | When `true` |
 |---------|---------|-------------|
 | `SHOW_LLM_USAGE` | `false` | Prints token usage (`prompt_tokens`, `completion_tokens`, etc.) |
-| `SHOW_TELEMETRY` | `false` | Prints run telemetry (`total_llm_calls`, tool counts, retriever searches, etc.) |
+| `SHOW_TELEMETRY` | `false` | Prints run telemetry (`total_llm_calls`, tool counts, retriever searches, memory recalls/stores, etc.) |
 
 ```bash
 SHOW_LLM_USAGE=true go run ./simple_agent "Hello, what can you do?"
@@ -286,6 +298,8 @@ SHOW_LLM_USAGE=true SHOW_TELEMETRY=true go run ./agent_with_stream "What's 17 * 
 ```
 
 For retriever examples, `SHOW_TELEMETRY=true` also prints prefetch/agentic search breakdowns — see [agent_with_retriever/README.md](agent_with_retriever/README.md).
+
+For memory examples, `SHOW_TELEMETRY=true` also prints `total_memory_recalls` and `total_memory_stores` — see [agent_with_memory/README.md](agent_with_memory/README.md).
 
 ## Env vars
 
@@ -331,3 +345,5 @@ For retriever examples, `SHOW_TELEMETRY=true` also prints prefetch/agentic searc
 | `RETRIEVER_MODE` | For **`agent_with_retriever`**: **`agentic`** (default), **`prefetch`**, or **`hybrid`** |
 | `WEAVIATE_HOST`, `WEAVIATE_SCHEME`, `WEAVIATE_CLASS`, … | Weaviate backend — **`.env.defaults`** and **[agent_with_retriever/README.md#weaviate](agent_with_retriever/README.md#weaviate)** |
 | `PGVECTOR_DSN`, `PGVECTOR_TABLE`, `EMBEDDING_OPENAI_MODEL`, … | pgvector backend — **`PGVECTOR_DSN` required**; **[agent_with_retriever/README.md#pgvector](agent_with_retriever/README.md#pgvector)** |
+| `MEMORY_USER_ID`, `MEMORY_STORE_MODE`, `MEMORY_RECALL_ENABLED`, `MEMORY_RECALL_LIMIT`, `MEMORY_RECALL_MIN_SCORE` | For **`agent_with_memory`**: scope user, store mode (`always` / `ondemand`), recall settings — **[agent_with_memory/README.md](agent_with_memory/README.md)** |
+| `WEAVIATE_MEMORY_CLASS`, `PGVECTOR_MEMORY_TABLE` | Memory backend class/table names (defaults: `AgentMemory`, `agent_memories`) |

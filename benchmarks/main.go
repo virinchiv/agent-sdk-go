@@ -28,6 +28,9 @@ type BenchmarkMetrics struct {
 
 	TotalRuns   int     `json:"total_runs"`
 	SuccessRate float64 `json:"success_rate"`
+
+	TotalMemoryRecalls int64 `json:"total_memory_recalls"`
+	TotalMemoryStores  int64 `json:"total_memory_stores"`
 }
 
 func main() {
@@ -67,6 +70,9 @@ func main() {
 	fmt.Printf("Starting agent-sdk-go benchmark (%s runtime)\n", cfg.Runtime)
 	fmt.Printf("Runs: %d  Concurrent: %t  Tools: %d  Sub-agents: %d (levels %d)\n",
 		cfg.Agent.Runs, cfg.Agent.Concurrent, cfg.Agent.Tools.Count, cfg.Agent.Subagents.Count, cfg.Agent.Subagents.Levels)
+	if cfg.MemoryEnabled() {
+		fmt.Printf("Memory         : enabled (store_mode=%s, user_id=%s)\n", cfg.Memory.StoreMode, cfg.Memory.UserID)
+	}
 	if cfg.UseTemporal() {
 		fmt.Printf("External workers : %d\n", cfg.Temporal.WorkersCount)
 	}

@@ -122,17 +122,21 @@ tasks:
       NAME: '{{.NAME}}'
       PROMPT: '{{.PROMPT | default ""}}'
       SKIP_RUN: '{{.SKIP_RUN | default "false"}}'
+      MEMORY_STORE_MODE: '{{.MEMORY_STORE_MODE | default ""}}'
+      RUN_LABEL: '{{.NAME}}{{if .MEMORY_STORE_MODE}} store={{.MEMORY_STORE_MODE}}{{end}}'
     cmds:
       - |
         if [ "{{.SKIP_RUN}}" = "true" ]; then
           RESULT="○ PLAN"
           if [ -n "{{.PROMPT}}" ]; then
-            echo "○ Plan {{.NAME}} ({{.RUNTIME}}) — go run ./{{.NAME}} \"{{.PROMPT}}\""
+            echo "○ Plan {{.RUN_LABEL}} ({{.RUNTIME}}) — go run ./{{.NAME}} \"{{.PROMPT}}\""
+          elif [ -n "{{.MEMORY_STORE_MODE}}" ]; then
+            echo "○ Plan {{.RUN_LABEL}} ({{.RUNTIME}}) — MEMORY_STORE_MODE={{.MEMORY_STORE_MODE}} go run ./{{.NAME}}"
           else
-            echo "○ Plan {{.NAME}} ({{.RUNTIME}}) — go run ./{{.NAME}}"
+            echo "○ Plan {{.RUN_LABEL}} ({{.RUNTIME}}) — go run ./{{.NAME}}"
           fi
           if [ -n "{{.REPORT_FILE}}" ]; then
-            echo "$RESULT {{.NAME}}" >> {{.REPORT_FILE}}
+            echo "$RESULT {{.RUN_LABEL}}" >> {{.REPORT_FILE}}
           fi
           if [ -n "{{.COUNT_FILE}}" ]; then
             read -r PASS FAIL < "{{.COUNT_FILE}}" 2>/dev/null || PASS=0 FAIL=0
@@ -141,7 +145,7 @@ tasks:
           fi
           exit 0
         fi
-        echo "🚀 Running {{.NAME}} with {{.RUNTIME}} runtime..."
+        echo "🚀 Running {{.RUN_LABEL}} with {{.RUNTIME}} runtime..."
         set +e
         if [ -n "{{.LOG_FILE}}" ]; then
           if [ -n "{{.PROMPT}}" ]; then
@@ -163,9 +167,9 @@ tasks:
         else
           RESULT="❌ FAIL"
         fi
-        echo "$RESULT {{.NAME}} runtime={{.RUNTIME}}"
+        echo "$RESULT {{.RUN_LABEL}} runtime={{.RUNTIME}}"
         if [ -n "{{.REPORT_FILE}}" ]; then
-          echo "$RESULT {{.NAME}}" >> {{.REPORT_FILE}}
+          echo "$RESULT {{.RUN_LABEL}}" >> {{.REPORT_FILE}}
         fi
         if [ -n "{{.COUNT_FILE}}" ]; then
           read -r PASS FAIL < "{{.COUNT_FILE}}" 2>/dev/null || PASS=0 FAIL=0
@@ -180,6 +184,7 @@ tasks:
       AGENT_RUNTIME: '{{.RUNTIME}}'
       # Batch only — not in .env.defaults; manual go run leaves unset (interactive y/n).
       EXAMPLES_AUTO_APPROVE: '{{.EXAMPLES_AUTO_APPROVE | default "true"}}'
+      MEMORY_STORE_MODE: '{{.MEMORY_STORE_MODE}}'
 
   exec:examples:
     internal: true
@@ -210,6 +215,15 @@ tasks:
         - agent_with_subagents
         - agent_with_tools/approval
         - agent_with_run_async
+      EXAMPLES_MEMORY:
+        - NAME: agent_with_memory/weaviate
+          MEMORY_STORE_MODE: always
+        - NAME: agent_with_memory/weaviate
+          MEMORY_STORE_MODE: ondemand
+        - NAME: agent_with_memory/pgvector
+          MEMORY_STORE_MODE: always
+        - NAME: agent_with_memory/pgvector
+          MEMORY_STORE_MODE: ondemand
       EXAMPLES_WITH_PROMPTS:
         - agent_with_conversation
         - agent_with_stream_conversation
@@ -228,6 +242,18 @@ tasks:
         task: exec:example
         vars:
           NAME: '{{.ITEM}}'
+          RUNTIME: '{{.RUNTIME}}'
+          REPORT_FILE: '{{.REPORT_FILE}}'
+          LOG_FILE: '{{.LOG_FILE}}'
+          COUNT_FILE: '{{.COUNT_FILE}}'
+          SKIP_RUN: '{{.SKIP_RUN}}'
+      - for:
+          var: EXAMPLES_MEMORY
+        ignore_error: true
+        task: exec:example
+        vars:
+          NAME: '{{.ITEM.NAME}}'
+          MEMORY_STORE_MODE: '{{.ITEM.MEMORY_STORE_MODE}}'
           RUNTIME: '{{.RUNTIME}}'
           REPORT_FILE: '{{.REPORT_FILE}}'
           LOG_FILE: '{{.LOG_FILE}}'

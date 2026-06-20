@@ -14,6 +14,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	rtmocks "github.com/agenticenv/agent-sdk-go/internal/runtime/mocks"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/conversation"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
@@ -235,7 +236,7 @@ func TestAgent_Run_ForwardsRunOptions(t *testing.T) {
 	})
 
 	a := testAgentWithRuntime(mockRT)
-	a.conversation = &mockConversation{}
+	a.conversationConfig = &conversation.Config{Conversation: &mockConversation{}}
 	_, err := a.Run(context.Background(), "hello", opts)
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +245,7 @@ func TestAgent_Run_ForwardsRunOptions(t *testing.T) {
 
 func TestAgent_Stream_RejectsMissingConversationID(t *testing.T) {
 	a := testAgentWithRuntime(&stubRuntime{})
-	a.conversation = &mockConversation{}
+	a.conversationConfig = &conversation.Config{Conversation: &mockConversation{}}
 	_, err := a.Stream(context.Background(), "prompt", nil)
 	if err == nil {
 		t.Fatal("expected error when conversation configured but opts nil")
@@ -262,7 +263,7 @@ func TestAgent_ValidateConversationID(t *testing.T) {
 		t.Error("non-empty conversationID with no conversation should error")
 	}
 
-	a.conversation = &mockConversation{}
+	a.conversationConfig = &conversation.Config{Conversation: &mockConversation{}}
 	if err := a.validateConversationID(""); err == nil {
 		t.Error("empty conversationID with conversation should error")
 	}

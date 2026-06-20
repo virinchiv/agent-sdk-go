@@ -118,6 +118,13 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 	}
 
 	conversationID := base.GetConversationID(req)
+	memoryScope, memErr := rt.ResolveMemoryScope(runCtx)
+	if memErr != nil {
+		rt.logger.Warn(runCtx, "runtime memory scope resolve failed, continuing with empty scope",
+			slog.String("scope", "runtime"),
+			slog.Any("error", memErr))
+		memoryScope = interfaces.MemoryScope{}
+	}
 	runID := uuid.New().String()
 
 	tools := req.Tools
@@ -125,6 +132,7 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 	loopResult, err := rt.RunAgentLoop(runCtx, AgentLoopInput{
 		UserPrompt:       req.UserPrompt,
 		ConversationID:   conversationID,
+		MemoryScope:      memoryScope,
 		StreamingEnabled: false,
 		ChannelName:      "",
 		ApprovalHandler:  req.ApprovalHandler,
@@ -158,6 +166,13 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 		slog.Int("inputLen", len(req.UserPrompt)))
 
 	conversationID := base.GetConversationID(req)
+	memoryScope, memErr := rt.ResolveMemoryScope(ctx)
+	if memErr != nil {
+		rt.logger.Warn(ctx, "runtime memory scope resolve failed, continuing with empty scope",
+			slog.String("scope", "runtime"),
+			slog.Any("error", memErr))
+		memoryScope = interfaces.MemoryScope{}
+	}
 	runID := uuid.New().String()
 
 	threadID := conversationID
@@ -214,6 +229,7 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 		result, loopErr := rt.RunAgentLoop(runCtx, AgentLoopInput{
 			UserPrompt:       req.UserPrompt,
 			ConversationID:   conversationID,
+			MemoryScope:      memoryScope,
 			StreamingEnabled: req.StreamingEnabled,
 			ChannelName:      channel,
 			ApprovalHandler:  req.ApprovalHandler,

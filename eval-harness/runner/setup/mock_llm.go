@@ -6,10 +6,16 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
 
 const mockLLMModel = "eval-mock"
+
+const (
+	mockMemoryExtractText = "User prefers concise answers"
+	mockRecallContent     = "You prefer concise answers."
+)
 
 // MockLLMClient is a deterministic mock LLM for eval harness runs.
 type MockLLMClient struct {
@@ -33,9 +39,23 @@ func (m *MockLLMClient) Generate(ctx context.Context, request *interfaces.LLMReq
 		TotalTokens:      int64(promptTokens + completionTokens),
 	}
 
+	if isMemoryExtractRequest(request) {
+		return &interfaces.LLMResponse{
+			Content: fmt.Sprintf(`{"memories":[{"text":%q,"kind":"preference"}]}`, mockMemoryExtractText),
+			Usage:   usage,
+		}, nil
+	}
+
 	if hasToolResultMessages(request) {
 		return &interfaces.LLMResponse{
 			Content: "eval complete",
+			Usage:   usage,
+		}, nil
+	}
+
+	if len(request.Tools) == 0 {
+		return &interfaces.LLMResponse{
+			Content: mockRecallContent,
 			Usage:   usage,
 		}, nil
 	}
@@ -45,7 +65,7 @@ func (m *MockLLMClient) Generate(ctx context.Context, request *interfaces.LLMReq
 		toolCalls = append(toolCalls, &interfaces.ToolCall{
 			ToolCallID: fmt.Sprintf("tc-%d", i+1),
 			ToolName:   spec.Name,
-			Args:       map[string]any{"input": "eval"},
+			Args:       mockToolArgs(spec.Name),
 		})
 	}
 
@@ -54,6 +74,24 @@ func (m *MockLLMClient) Generate(ctx context.Context, request *interfaces.LLMReq
 		ToolCalls: toolCalls,
 		Usage:     usage,
 	}, nil
+}
+
+func mockToolArgs(toolName string) map[string]any {
+	if toolName == types.SaveMemoryToolName {
+		return map[string]any{
+			types.MemoryToolParamText: mockMemoryExtractText,
+			types.MemoryToolParamKind: "preference",
+		}
+	}
+	return map[string]any{"input": "eval"}
+}
+
+func isMemoryExtractRequest(request *interfaces.LLMRequest) bool {
+	if request == nil || request.ResponseFormat == nil {
+		return false
+	}
+	return request.ResponseFormat.Type == interfaces.ResponseFormatJSON &&
+		request.ResponseFormat.Name == "MemoryExtraction"
 }
 
 func (m *MockLLMClient) GenerateStream(ctx context.Context, request *interfaces.LLMRequest) (interfaces.LLMStream, error) {

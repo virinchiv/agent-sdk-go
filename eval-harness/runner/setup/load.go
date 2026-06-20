@@ -10,10 +10,21 @@ import (
 
 // FileConfig is the YAML configuration for eval-harness runs.
 type FileConfig struct {
-	Runtime    string          `mapstructure:"runtime"`
-	UserPrompt string          `mapstructure:"user_prompt"`
-	Agent      FileAgentConfig `mapstructure:"agent"`
-	Temporal   TemporalConfig  `mapstructure:"temporal"`
+	Runtime    string           `mapstructure:"runtime"`
+	UserPrompt string           `mapstructure:"user_prompt"`
+	Agent      FileAgentConfig  `mapstructure:"agent"`
+	Memory     FileMemoryConfig `mapstructure:"memory"`
+	Temporal   TemporalConfig   `mapstructure:"temporal"`
+}
+
+// FileMemoryConfig holds memory fields from YAML.
+type FileMemoryConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	StoreMode    string `mapstructure:"store_mode"`
+	UserID       string `mapstructure:"user_id"`
+	Scenario     string `mapstructure:"scenario"`
+	StorePrompt  string `mapstructure:"store_prompt"`
+	RecallPrompt string `mapstructure:"recall_prompt"`
 }
 
 // FileAgentConfig holds agent fields from YAML.
@@ -28,6 +39,7 @@ func (f *FileConfig) Config() Config {
 	if f == nil {
 		return Config{}
 	}
+	storeMode, _ := ParseMemoryStoreMode(f.Memory.StoreMode)
 	return Config{
 		UserPrompt:   f.UserPrompt,
 		Runtime:      Runtime(f.Runtime),
@@ -35,6 +47,14 @@ func (f *FileConfig) Config() Config {
 		AgentName:    f.Agent.Name,
 		SystemPrompt: f.Agent.SystemPrompt,
 		ToolCount:    f.Agent.ToolCount,
+		Memory: MemoryConfig{
+			Enabled:      f.Memory.Enabled,
+			StoreMode:    storeMode,
+			UserID:       f.Memory.UserID,
+			Scenario:     f.Memory.Scenario,
+			StorePrompt:  f.Memory.StorePrompt,
+			RecallPrompt: f.Memory.RecallPrompt,
+		},
 	}
 }
 
@@ -79,7 +99,7 @@ func (f *FileConfig) validate() error {
 	if f == nil {
 		return fmt.Errorf("config is required")
 	}
-	if strings.TrimSpace(f.UserPrompt) == "" {
+	if strings.TrimSpace(f.UserPrompt) == "" && !strings.EqualFold(strings.TrimSpace(f.Memory.Scenario), MemoryScenarioStoreRecall) {
 		return fmt.Errorf("user_prompt is required")
 	}
 	switch strings.ToLower(strings.TrimSpace(f.Runtime)) {
@@ -91,7 +111,7 @@ func (f *FileConfig) validate() error {
 	default:
 		return fmt.Errorf("runtime must be %q or %q", RuntimeLocal, RuntimeTemporal)
 	}
-	if f.Agent.ToolCount <= 0 {
+	if f.Agent.ToolCount <= 0 && !f.Memory.Enabled {
 		f.Agent.ToolCount = DefaultToolCount
 	}
 	if f.Agent.Name == "" {
@@ -111,6 +131,19 @@ func (f *FileConfig) validate() error {
 	}
 	if f.Temporal.Namespace == "" {
 		f.Temporal.Namespace = "default"
+	}
+	if f.Memory.Enabled {
+		if _, err := ParseMemoryStoreMode(f.Memory.StoreMode); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(f.Memory.Scenario), MemoryScenarioStoreRecall) {
+			if strings.TrimSpace(f.Memory.StorePrompt) == "" {
+				return fmt.Errorf("memory.store_prompt is required when memory.scenario is %q", MemoryScenarioStoreRecall)
+			}
+			if strings.TrimSpace(f.Memory.RecallPrompt) == "" {
+				return fmt.Errorf("memory.recall_prompt is required when memory.scenario is %q", MemoryScenarioStoreRecall)
+			}
+		}
 	}
 	return nil
 }

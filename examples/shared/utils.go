@@ -146,10 +146,14 @@ func TelemetryFooter(telemetry *agent.AgentTelemetry) string {
 	}
 	lines = append(lines,
 		"[TELEMETRY STORAGE]",
-		fmt.Sprintf("  total_retriever_searches: %d", telemetry.Storage.TotalRetrieverSearches),
+		fmt.Sprintf("  total_retriever_searches:  %d", telemetry.Storage.TotalRetrieverSearches),
 		fmt.Sprintf("  failed_retriever_searches: %d", telemetry.Storage.FailedRetrieverSearches),
-		fmt.Sprintf("  prefetch_searches: %d", telemetry.Storage.PrefetchSearches),
-		fmt.Sprintf("  agentic_searches: %d", telemetry.Storage.AgenticSearches),
+		fmt.Sprintf("  prefetch_searches:         %d", telemetry.Storage.PrefetchSearches),
+		fmt.Sprintf("  agentic_searches:          %d", telemetry.Storage.AgenticSearches),
+		fmt.Sprintf("  total_memory_recalls:      %d", telemetry.Storage.TotalMemoryRecalls),
+		fmt.Sprintf("  failed_memory_recalls:     %d", telemetry.Storage.FailedMemoryRecalls),
+		fmt.Sprintf("  total_memory_stores:       %d", telemetry.Storage.TotalMemoryStores),
+		fmt.Sprintf("  failed_memory_stores:      %d", telemetry.Storage.FailedMemoryStores),
 	)
 	return strings.Join(lines, "\n")
 }

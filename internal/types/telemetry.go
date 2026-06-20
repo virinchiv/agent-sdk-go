@@ -93,4 +93,10 @@ type StorageTelemetry struct {
 	// Breakdown by mode — zero if mode not used.
 	PrefetchSearches int64 `json:"prefetch_searches,omitempty"`
 	AgenticSearches  int64 `json:"agentic_searches,omitempty"`
+
+	// Memory — long-term recall/store operations, zero if not configured.
+	TotalMemoryRecalls  int64 `json:"total_memory_recalls,omitempty"`
+	FailedMemoryRecalls int64 `json:"failed_memory_recalls,omitempty"`
+	TotalMemoryStores   int64 `json:"total_memory_stores,omitempty"`
+	FailedMemoryStores  int64 `json:"failed_memory_stores,omitempty"`
 }

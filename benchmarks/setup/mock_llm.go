@@ -9,10 +9,13 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
+	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 )
 
 const MockLLMModel = "benchmark-mock"
+
+const mockMemoryExtractText = "User prefers concise answers"
 
 type LLMStats struct {
 	mu                sync.Mutex
@@ -63,6 +66,17 @@ func (m *MockLLMClient) Generate(ctx context.Context, request *interfaces.LLMReq
 
 	promptTokens, completionTokens := splitMockTokens(m.cfg.MockTokens)
 	m.stats.add(promptTokens, completionTokens)
+
+	if isMemoryExtractRequest(request) {
+		return &interfaces.LLMResponse{
+			Content: fmt.Sprintf(`{"memories":[{"text":%q,"kind":"preference"}]}`, mockMemoryExtractText),
+			Usage: &interfaces.LLMUsage{
+				PromptTokens:     int64(promptTokens),
+				CompletionTokens: int64(completionTokens),
+				TotalTokens:      int64(promptTokens + completionTokens),
+			},
+		}, nil
+	}
 
 	if hasToolResultMessages(request) {
 		return &interfaces.LLMResponse{
@@ -149,10 +163,24 @@ func hasToolResultMessages(request *interfaces.LLMRequest) bool {
 }
 
 func mockToolArgs(toolName string) map[string]any {
+	if toolName == types.SaveMemoryToolName {
+		return map[string]any{
+			types.MemoryToolParamText: mockMemoryExtractText,
+			types.MemoryToolParamKind: "preference",
+		}
+	}
 	if strings.HasPrefix(toolName, "subagent_") {
 		return map[string]any{runtime.SubAgentToolParamQuery: "benchmark subtask"}
 	}
 	return map[string]any{"input": "benchmark"}
+}
+
+func isMemoryExtractRequest(request *interfaces.LLMRequest) bool {
+	if request == nil || request.ResponseFormat == nil {
+		return false
+	}
+	return request.ResponseFormat.Type == interfaces.ResponseFormatJSON &&
+		request.ResponseFormat.Name == "MemoryExtraction"
 }
 
 func splitMockTokens(total int) (prompt, completion int) {

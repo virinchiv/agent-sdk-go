@@ -44,6 +44,8 @@ type AgentLoopInput struct {
 	SubAgentDepth int
 	// MaxSubAgentDepth caps recursive delegation. Mirrors AgentWorkflowInput.MaxSubAgentDepth.
 	MaxSubAgentDepth int
+	// MemoryScope is resolved before the run and used for recall/store.
+	MemoryScope interfaces.MemoryScope
 }
 
 // AgentLoopResult is the outcome of a completed local agent run.
@@ -132,6 +134,22 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		}
 	}
 
+	// Pre-fetch long-term memory context when recall is enabled.
+	memoryContext := ""
+	if rt.MemoryConfigured() && rt.RecallEnabled() {
+		log.Debug(ctx, "local: memory recall started", slog.String("scope", "loop"))
+		res, err := rt.ExecuteMemoryRecall(ctx, log, input.MemoryScope, input.UserPrompt)
+		if err != nil {
+			return nil, fmt.Errorf("memory recall: %w", err)
+		}
+		memoryContext = res.Context
+		telemetry.Storage.TotalMemoryRecalls += res.TotalRecalls
+		telemetry.Storage.FailedMemoryRecalls += res.FailedRecalls
+		log.Debug(ctx, "local: memory recall done",
+			slog.String("scope", "loop"),
+			slog.Bool("hasContext", memoryContext != ""))
+	}
+
 	// Pre-fetch retriever context for prefetch/hybrid modes.
 	retrieverContext := ""
 	retrieverMode := rt.AgentConfig.Retrievers.Mode
@@ -172,6 +190,7 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 			MessageID:        messageID,
 			Messages:         messages,
 			SkipTools:        false,
+			MemoryContext:    memoryContext,
 			RetrieverContext: retrieverContext,
 			Tools:            tools,
 			Emit:             emit,
@@ -210,6 +229,7 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 				MessageID:        finalMessageID,
 				Messages:         messages,
 				SkipTools:        true,
+				MemoryContext:    memoryContext,
 				RetrieverContext: retrieverContext,
 				Tools:            tools,
 				Emit:             emit,
@@ -278,6 +298,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 					telemetry.Storage.FailedRetrieverSearches++
 				}
 			}
+			if tc.ToolName == types.SaveMemoryToolName {
+				if result.failed {
+					telemetry.Storage.FailedMemoryStores++
+				} else {
+					telemetry.Storage.TotalMemoryStores++
+				}
+			}
 		}
 
 		if rt.conversationMemoryEnabled(input) && rt.AgentConfig.Session.ConversationSaveOnIteration && len(messages) > persistedMessageCount {
@@ -289,6 +316,15 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 	// Persist unsaved messages: full run when ConversationSaveOnIteration is false; final assistant only when true.
 	if rt.conversationMemoryEnabled(input) && len(messages) > persistedMessageCount {
 		rt.persistConversationMessages(ctx, input.ConversationID, messages[persistedMessageCount:])
+	}
+
+	if rt.RunEndMemoryStoreEnabled() {
+		if err := rt.ExecuteMemoryStore(ctx, log, input.MemoryScope, messages); err != nil {
+			log.Warn(ctx, "local: memory store failed", slog.String("scope", "loop"), slog.Any("error", err))
+			telemetry.Storage.FailedMemoryStores++
+		} else {
+			telemetry.Storage.TotalMemoryStores++
+		}
 	}
 
 	log.Info(ctx, "local: agent run completed",
@@ -555,6 +591,7 @@ func (rt *LocalRuntime) executeSingleTool(
 					StreamingEnabled: input.StreamingEnabled,
 					ChannelName:      input.ChannelName,
 					ApprovalHandler:  input.ApprovalHandler,
+					MemoryScope:      base.SubAgentScope(input.MemoryScope, stepName),
 					SubAgentRoutes:   subAgentRoute.children,
 					SubAgentDepth:    input.SubAgentDepth + 1,
 					MaxSubAgentDepth: input.MaxSubAgentDepth,
@@ -574,7 +611,7 @@ func (rt *LocalRuntime) executeSingleTool(
 				slog.String("scope", "loop"),
 				slog.String("tool", tc.ToolName),
 				slog.String("toolCallID", tc.ToolCallID))
-			result, execErr := rt.ExecuteTool(ctx, log, tools, tc.ToolName, tc.Args)
+			result, execErr := rt.ExecuteToolWithMemoryScope(ctx, log, tools, tc.ToolName, tc.Args, input.MemoryScope)
 			if execErr != nil {
 				content = "Tool execution failed: " + execErr.Error()
 				failed = true
