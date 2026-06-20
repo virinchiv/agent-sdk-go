@@ -16,6 +16,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 	"github.com/google/uuid"
 )
 
@@ -37,18 +38,22 @@ type ExecuteLLMInput struct {
 	MessageID        string
 	Messages         []interfaces.Message
 	SkipTools        bool
+	MemoryContext    string
 	RetrieverContext string
 	Tools            []interfaces.Tool
 	Emit             func(events.AgentEvent)
 }
 
 // BuildLLMRequest constructs an LLMRequest from the given messages and options.
-// When retrieverContext is non-empty it is appended to the system prompt (prefetch/hybrid mode).
+// When memoryContext or retrieverContext is non-empty each is appended to the system prompt.
 // tools is the per-run resolved tool list from [runtime.ExecuteRequest] or activity resolve.
-func (rt *Runtime) BuildLLMRequest(messages []interfaces.Message, skipTools bool, retrieverContext string, tools []interfaces.Tool) *interfaces.LLMRequest {
+func (rt *Runtime) BuildLLMRequest(messages []interfaces.Message, skipTools bool, memoryContext, retrieverContext string, tools []interfaces.Tool) *interfaces.LLMRequest {
 	systemMessage := rt.AgentSpec.SystemPrompt
+	if memoryContext != "" {
+		systemMessage = fmt.Sprintf("%s\n\nRelevant Memories:\n%s", systemMessage, memoryContext)
+	}
 	if retrieverContext != "" {
-		systemMessage = fmt.Sprintf("%s\n\nRelevant Context:\n%s", rt.AgentSpec.SystemPrompt, retrieverContext)
+		systemMessage = fmt.Sprintf("%s\n\nRelevant Context:\n%s", systemMessage, retrieverContext)
 	}
 	req := &interfaces.LLMRequest{
 		SystemMessage:  systemMessage,
@@ -146,7 +151,7 @@ func emitEvent(fn func(events.AgentEvent), ev events.AgentEvent) {
 // TEXT_MESSAGE_START / TEXT_MESSAGE_CONTENT / TEXT_MESSAGE_END events, and returns LLMResult.
 // messageID and agentName are used only for event construction; emit may be nil.
 func (rt *Runtime) ExecuteLLM(ctx context.Context, input ExecuteLLMInput) (*LLMResult, error) {
-	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.RetrieverContext, input.Tools)
+	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.MemoryContext, input.RetrieverContext, input.Tools)
 
 	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
@@ -201,7 +206,7 @@ func (rt *Runtime) ExecuteLLM(ctx context.Context, input ExecuteLLMInput) (*LLMR
 // emit as chunks arrive; a final TEXT_MESSAGE_START/CONTENT/END triple is emitted for non-streaming
 // fallback. emit may be nil.
 func (rt *Runtime) ExecuteLLMStream(ctx context.Context, input ExecuteLLMInput) (*LLMResult, error) {
-	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.RetrieverContext, input.Tools)
+	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.MemoryContext, input.RetrieverContext, input.Tools)
 
 	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
@@ -401,6 +406,48 @@ func (rt *Runtime) ExecuteTool(ctx context.Context, log logger.Logger, tools []i
 	return fmt.Sprintf("%v", result), nil
 }
 
+// ExecuteToolWithMemoryScope runs a tool; save_memory on on-demand store routes to [StoreMemoryRecords].
+func (rt *Runtime) ExecuteToolWithMemoryScope(ctx context.Context, log logger.Logger, tools []interfaces.Tool, toolName string, args map[string]any, memScope interfaces.MemoryScope) (string, error) {
+	if toolName == types.SaveMemoryToolName && rt.MemoryStoreOnDemand() {
+		return rt.executeSaveMemoryTool(ctx, log, memScope, args)
+	}
+	return rt.ExecuteTool(ctx, log, tools, toolName, args)
+}
+
+func (rt *Runtime) executeSaveMemoryTool(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, args map[string]any) (string, error) {
+	toolAttr := interfaces.Attribute{Key: types.MetricAttrTool, Value: types.SaveMemoryToolName}
+	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallStarted, toolAttr)
+	toolStart := time.Now()
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "tool.execute",
+		interfaces.Attribute{Key: "tool.name", Value: types.SaveMemoryToolName},
+		interfaces.Attribute{Key: "arg.count", Value: len(args)},
+	)
+	defer sp.End()
+
+	record, err := parseSaveMemoryToolArgs(args)
+	if err != nil {
+		toolLatency := float64(time.Since(toolStart).Milliseconds())
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricToolCallFailed, toolAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
+		return "", err
+	}
+
+	if err := rt.StoreMemoryRecords(ctx, log, scope, []interfaces.MemoryRecord{record}); err != nil {
+		toolLatency := float64(time.Since(toolStart).Milliseconds())
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricToolCallFailed, toolAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
+		return "", err
+	}
+
+	toolLatency := float64(time.Since(toolStart).Milliseconds())
+	rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
+	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallCompleted, toolAttr)
+	return "memory saved", nil
+}
+
 // AuthorizeTool checks programmatic authorization for a tool before approval/execution.
 // Tools that do not implement interfaces.ToolAuthorizer are allowed by default.
 func (rt *Runtime) AuthorizeTool(ctx context.Context, log logger.Logger, tools []interfaces.Tool, toolName string, args map[string]any) (AuthorizeResult, error) {
@@ -522,4 +569,141 @@ func (rt *Runtime) ExecuteRetrievers(ctx context.Context, log logger.Logger, que
 		TotalSearches:  int64(len(retrievers)),
 		FailedSearches: int64(failedCount),
 	}, nil
+}
+
+// MemoryConfigured reports whether long-term memory is wired on the runtime.
+func (rt *Runtime) MemoryConfigured() bool {
+	return rt.AgentConfig.Memory.Config != nil && rt.AgentConfig.Memory.Config.Memory != nil
+}
+
+// RecallEnabled reports whether the SDK should load memories before each run.
+func (rt *Runtime) RecallEnabled() bool {
+	if !rt.MemoryConfigured() {
+		return false
+	}
+	return rt.AgentConfig.Memory.Config.Recall.Enabled
+}
+
+// RunEndMemoryStoreEnabled reports whether run-end memory store runs ([memory.StoreModeAlways]).
+func (rt *Runtime) RunEndMemoryStoreEnabled() bool {
+	if !rt.MemoryConfigured() {
+		return false
+	}
+	return rt.AgentConfig.Memory.Config.Store.Mode == memory.StoreModeAlways
+}
+
+// MemoryStoreOnDemand reports whether save_memory tool store is active.
+func (rt *Runtime) MemoryStoreOnDemand() bool {
+	if !rt.MemoryConfigured() {
+		return false
+	}
+	return rt.AgentConfig.Memory.Config.Store.Mode == memory.StoreModeOnDemand
+}
+
+// ResolveMemoryScope builds scope from the request context using configured resolvers.
+func (rt *Runtime) ResolveMemoryScope(ctx context.Context) (interfaces.MemoryScope, error) {
+	if !rt.MemoryConfigured() {
+		return interfaces.MemoryScope{}, nil
+	}
+	return rt.AgentConfig.Memory.Config.ScopeConfig.Resolve(ctx)
+}
+
+// FormatMemoryEntries formats memories for injection into the LLM system prompt.
+func FormatMemoryEntries(entries []interfaces.MemoryEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, entry := range entries {
+		fmt.Fprintf(&sb, types.MemoryEntryFormat, i+1, entry.Text, entry.Kind, entry.Score)
+	}
+	return sb.String()
+}
+
+// ExecuteMemoryRecall loads scoped memories for query and returns formatted prompt context.
+func (rt *Runtime) ExecuteMemoryRecall(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, query string) (*MemoryResult, error) {
+	cfg := rt.AgentConfig.Memory.Config
+	if cfg == nil || cfg.Memory == nil {
+		return &MemoryResult{}, nil
+	}
+
+	log.Debug(ctx, "runtime: memory recall started",
+		slog.String("scope", "runtime"),
+		slog.String("query", query))
+
+	rt.Metrics.IncrementCounter(ctx, types.MetricMemoryRecallStarted)
+	start := time.Now()
+
+	ctx, sp := rt.Tracer.StartSpan(ctx, "memory.recall",
+		interfaces.Attribute{Key: "query", Value: query},
+	)
+	defer sp.End()
+
+	entries, err := cfg.Memory.Load(ctx, scope, query, cfg.Recall.LoadOptions()...)
+	if err != nil {
+		latency := float64(time.Since(start).Milliseconds())
+		sp.RecordError(err)
+		sp.SetAttribute("latency_ms", latency)
+		rt.Metrics.IncrementCounter(ctx, types.MetricMemoryRecallFailed)
+		rt.Metrics.RecordHistogram(ctx, types.MetricMemoryRecallLatencyMs, latency)
+		log.Error(ctx, "runtime: memory recall failed", slog.String("scope", "runtime"), slog.Any("error", err))
+		return nil, fmt.Errorf("memory recall: %w", err)
+	}
+
+	// Semantic recall often misses distilled memories; fall back to scoped recency list.
+	if len(entries) == 0 && strings.TrimSpace(query) != "" {
+		log.Debug(ctx, "runtime: memory recall semantic empty, trying recency fallback",
+			slog.String("scope", "runtime"))
+		fallback, fbErr := cfg.Memory.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+		if fbErr != nil {
+			latency := float64(time.Since(start).Milliseconds())
+			sp.RecordError(fbErr)
+			sp.SetAttribute("latency_ms", latency)
+			rt.Metrics.IncrementCounter(ctx, types.MetricMemoryRecallFailed)
+			rt.Metrics.RecordHistogram(ctx, types.MetricMemoryRecallLatencyMs, latency)
+			log.Error(ctx, "runtime: memory recall fallback failed", slog.String("scope", "runtime"), slog.Any("error", fbErr))
+			return nil, fmt.Errorf("memory recall: %w", fbErr)
+		}
+		entries = fallback
+	}
+
+	latency := float64(time.Since(start).Milliseconds())
+	memoryContext := strings.TrimSpace(FormatMemoryEntries(entries))
+	sp.SetAttribute("entry.count", len(entries))
+	sp.SetAttribute("has_context", memoryContext != "")
+	sp.SetAttribute("latency_ms", latency)
+	rt.Metrics.IncrementCounter(ctx, types.MetricMemoryRecallCompleted)
+	rt.Metrics.RecordHistogram(ctx, types.MetricMemoryRecallLatencyMs, latency)
+	log.Debug(ctx, "runtime: memory recall completed",
+		slog.String("scope", "runtime"),
+		slog.Int("entries", len(entries)),
+		slog.Bool("hasContext", memoryContext != ""))
+
+	return &MemoryResult{
+		Context:       memoryContext,
+		TotalRecalls:  1,
+		FailedRecalls: 0,
+	}, nil
+}
+
+// ExecuteMemoryStore extracts long-term memories from the run and persists them in scope.
+func (rt *Runtime) ExecuteMemoryStore(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, messages []interfaces.Message) error {
+	if !rt.RunEndMemoryStoreEnabled() {
+		return nil
+	}
+
+	extract := rt.resolveMemoryExtractFunc()
+	if extract == nil {
+		rt.recordMemoryExtractUnavailable(ctx, log)
+		return nil
+	}
+
+	records, err := rt.extractMemoryRecords(ctx, log, messages, extract)
+	if err != nil {
+		return err
+	}
+	if len(records) == 0 {
+		return nil
+	}
+	return rt.StoreMemoryRecords(ctx, log, scope, records)
 }

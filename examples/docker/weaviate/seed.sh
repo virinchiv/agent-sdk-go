@@ -92,3 +92,24 @@ while IFS= read -r row; do
 done < <(jq -c '.[]' "$DOCS_FILE")
 
 echo "Inserted ${count} documents from sample-documents.json"
+
+MEMORY_CLASS="${WEAVIATE_MEMORY_CLASS:-AgentMemory}"
+echo "Creating class ${MEMORY_CLASS} (long-term memory)..."
+curl -sf -X POST "${WEAVIATE_URL}/v1/schema" \
+  -H 'Content-Type: application/json' \
+  -d "{
+    \"class\": \"${MEMORY_CLASS}\",
+    \"vectorizer\": \"text2vec-openai\",
+    \"properties\": [
+      {\"name\": \"text\", \"dataType\": [\"text\"]},
+      {\"name\": \"kind\", \"dataType\": [\"text\"]},
+      {\"name\": \"user_id\", \"dataType\": [\"text\"]},
+      {\"name\": \"tenant_id\", \"dataType\": [\"text\"]},
+      {\"name\": \"agent_id\", \"dataType\": [\"text\"]},
+      {\"name\": \"scope_tags\", \"dataType\": [\"text[]\"]},
+      {\"name\": \"metadata\", \"dataType\": [\"text\"]},
+      {\"name\": \"expires_at\", \"dataType\": [\"date\"]},
+      {\"name\": \"created_at\", \"dataType\": [\"date\"]},
+      {\"name\": \"updated_at\", \"dataType\": [\"date\"]}
+    ]
+  }" >/dev/null || true

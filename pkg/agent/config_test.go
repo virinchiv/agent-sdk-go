@@ -17,6 +17,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 	mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -31,12 +32,16 @@ func agentConfigFingerprint(c *agentConfig) string {
 }
 
 func agentConfigFingerprintTools(c *agentConfig, tools []interfaces.Tool) string {
+	convSize := 0
+	if c.conversationConfig != nil {
+		convSize = c.conversationConfig.Size
+	}
 	return temporal.ComputeAgentFingerprint(temporal.BuildAgentFingerprintPayload(
 		c.runtimeAgentSpec(),
 		temporal.ToolNamesFromTools(tools),
 		toolPolicyFingerprint(c.toolApprovalPolicy),
 		llmSamplingRuntimeView(c.llmSampling),
-		c.conversationSize,
+		convSize,
 		runtime.AgentLimits{
 			MaxIterations:   c.maxIterations,
 			Timeout:         c.timeout,
@@ -682,6 +687,140 @@ func TestBuildRetrieverTools(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveMemoryTools(t *testing.T) {
+	stub := stubMemoryBackend{}
+	t.Run("ondemand", func(t *testing.T) {
+		cfg := memory.DefaultConfig(stub)
+		c := &agentConfig{memoryConfig: &cfg}
+		tools, err := c.resolveMemoryTools()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tools) != 1 || tools[0].Name() != types.SaveMemoryToolName {
+			t.Fatalf("tools = %v", tools)
+		}
+	})
+	t.Run("always", func(t *testing.T) {
+		cfg := memory.DefaultConfig(stub)
+		cfg.Store.Mode = memory.StoreModeAlways
+		c := &agentConfig{memoryConfig: &cfg}
+		tools, err := c.resolveMemoryTools()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tools) != 0 {
+			t.Fatalf("tools = %v", tools)
+		}
+	})
+	t.Run("no_memory", func(t *testing.T) {
+		c := &agentConfig{}
+		tools, err := c.resolveMemoryTools()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(tools) != 0 {
+			t.Fatalf("tools = %v", tools)
+		}
+	})
+}
+
+func TestBuildAgentConfig_WithMemory_registersSaveMemory(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithMemory(memory.DefaultConfig(stubMemoryBackend{})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, tool := range tools {
+		if tool.Name() == types.SaveMemoryToolName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("save_memory not in resolved tools")
+	}
+}
+
+func TestBuildAgentConfig_WithMemoryAlways_leavesExtractNil(t *testing.T) {
+	cfg := memory.DefaultConfig(stubMemoryBackend{})
+	cfg.Store.Mode = memory.StoreModeAlways
+	got, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithMemory(cfg),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := got.runtimeAgentMemory()
+	if mem.Config == nil || mem.Config.Store.Extract != nil {
+		t.Fatal("expected nil Extract on config; default resolves lazily at run-end")
+	}
+}
+
+func TestBuildAgentConfig_WithMemoryOnDemand_noExtract(t *testing.T) {
+	cfg := memory.DefaultConfig(stubMemoryBackend{})
+	got, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithMemory(cfg),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := got.runtimeAgentMemory()
+	if mem.Config == nil || mem.Config.Store.Extract != nil {
+		t.Fatal("expected nil Extract for ondemand")
+	}
+}
+
+func TestBuildAgentConfig_WithMemoryAlways_preservesCustomExtract(t *testing.T) {
+	custom := memory.ExtractFunc(func(context.Context, []interfaces.Message) ([]interfaces.MemoryRecord, error) {
+		return nil, nil
+	})
+	cfg := memory.DefaultConfig(stubMemoryBackend{})
+	cfg.Store.Mode = memory.StoreModeAlways
+	cfg.Store.Extract = custom
+	got, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithMemory(cfg),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := got.runtimeAgentMemory()
+	if mem.Config == nil || mem.Config.Store.Extract == nil {
+		t.Fatal("expected custom extract")
+	}
+	records, err := mem.Config.Store.Extract(context.Background(), nil)
+	if err != nil || records != nil {
+		t.Fatalf("custom extract: records=%v err=%v", records, err)
+	}
+}
+
+type stubMemoryBackend struct{}
+
+func (stubMemoryBackend) Store(context.Context, interfaces.MemoryScope, interfaces.MemoryRecord, ...interfaces.StoreMemoryOption) (string, error) {
+	return "", nil
+}
+func (stubMemoryBackend) Load(context.Context, interfaces.MemoryScope, string, ...interfaces.LoadMemoryOption) ([]interfaces.MemoryEntry, error) {
+	return nil, nil
+}
+func (stubMemoryBackend) Clear(context.Context, interfaces.MemoryScope) error { return nil }
 
 func TestBuildAgentConfig_WithRetrievers(t *testing.T) {
 	r1, r2 := namedStubRetriever("kb-a"), namedStubRetriever("kb-b")

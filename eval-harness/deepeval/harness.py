@@ -35,6 +35,13 @@ def run_agent(prompt: str = DEFAULT_PROMPT) -> dict:
     return json.loads(raw)
 
 
+def run_agent_memory(store_mode: str = "ondemand") -> dict:
+    """Execute the memory store_recall eval harness scenario."""
+    script = REPO_ROOT / "eval-harness" / "run_agent_memory.sh"
+    raw = subprocess.check_output([str(script), store_mode], cwd=REPO_ROOT, text=True)
+    return json.loads(raw)
+
+
 def tools_called(agent_res: dict) -> list[str]:
     """Return tool names from telemetry breakdown."""
     breakdown = agent_res["telemetry"]["tools"]["breakdown"]

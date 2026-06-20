@@ -89,5 +89,9 @@ func formatTextReport(cfg *setup.Config, metrics *BenchmarkMetrics) string {
 	fmt.Fprintf(&b, "Output tokens    : %d\n", metrics.TotalOutputTokens)
 	fmt.Fprintf(&b, "Est. cost (USD)  : %.4f  # pricing placeholder\n", metrics.EstCostUSD)
 	fmt.Fprintf(&b, "Success rate (%%) : %.2f\n", metrics.SuccessRate)
+	if cfg.MemoryEnabled() {
+		fmt.Fprintf(&b, "Memory recalls   : %d\n", metrics.TotalMemoryRecalls)
+		fmt.Fprintf(&b, "Memory stores    : %d\n", metrics.TotalMemoryStores)
+	}
 	return b.String()
 }

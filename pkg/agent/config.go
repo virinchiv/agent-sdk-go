@@ -16,8 +16,10 @@ import (
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/temporal"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/conversation"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
@@ -184,7 +186,7 @@ type ObservabilityConfig struct {
 //   - Both: WithName, WithDescription, WithSystemPrompt, WithTemporalConfig, WithTemporalClient,
 //     WithInstanceId, WithLLMClient, WithToolApprovalPolicy, WithTools, WithToolRegistry,
 //     WithMCPRegistry, WithA2ARegistry, WithSubAgentRegistry,
-//     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithConversationSize, EnableConversationSaveOnIteration,
+//     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithMemory,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
 //     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithRetrievers, WithRetrieverMode, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
 //     WithObservabilityConfig, WithTracer, WithMetrics, WithLogs
@@ -215,9 +217,9 @@ type agentConfig struct {
 	timeout            time.Duration
 	approvalTimeout    time.Duration // max wait per tool approval; must be < timeout when tools require approval
 
-	conversation                interfaces.Conversation
-	conversationSize            int  // max messages to fetch for LLM context (default 20)
-	conversationSaveOnIteration bool // save the conversation on each iteration, defaults to false
+	conversationConfig *conversation.Config
+
+	memoryConfig *memory.Config
 
 	// responseFormat: when set, LLM requests use it; otherwise use text-only (no JSON schema).
 	responseFormat *interfaces.ResponseFormat
@@ -442,34 +444,29 @@ func WithDisableFingerprintCheck(disable bool) Option {
 	return func(c *agentConfig) { c.disableFingerprintCheck = disable }
 }
 
-// WithConversation sets the conversation for message history. Applies to Agent and AgentWorker.
-// The user creates the conversation (inmem or redis) and passes it to the agent.
-// System messages are not stored; agent SystemPrompt is used for LLM calls.
+// WithConversation sets conversation history for the agent. Applies to Agent and AgentWorker.
+// Pass [conversation.DefaultConfig] for SDK defaults or a custom [conversation.Config].
 //
 // Choose implementation based on deployment:
 //   - Single process: use inmem.NewInMemoryConversation
 //   - Remote workers: use redis.NewRedisConversation (in-memory cannot be used across processes)
 //
-// The user owns the conversation lifecycle. Call Clear on the conversation when appropriate
-// (e.g., when ending a session). The agent never calls Clear.
-// Note: Agent and worker must use the same conversation and ID when using remote workers.
-func WithConversation(conv interfaces.Conversation) Option {
-	return func(c *agentConfig) { c.conversation = conv }
+// The application owns Clear on the conversation when required; the agent runtime does not call Clear.
+// Agent and worker must use the same conversation config and ID when using remote workers.
+func WithConversation(cfg conversation.Config) Option {
+	return func(c *agentConfig) {
+		c.conversationConfig = &cfg
+	}
 }
 
-// WithConversationSize sets the max messages to fetch for LLM context (default 20).
-func WithConversationSize(size int) Option {
-	return func(c *agentConfig) { c.conversationSize = size }
-}
-
-// EnableConversationSaveOnIteration persists conversation messages after each tool round instead of
-// batching the full run at the end. Use when external consumers need live updates from conversation
-// storage (e.g. Redis) between iterations. This degrades performance.
-//
-// For Temporal, set this on [AgentWorker] (worker process) where [WithConversation] is configured;
-// the agent caller process does not need it.
-func EnableConversationSaveOnIteration() Option {
-	return func(c *agentConfig) { c.conversationSaveOnIteration = true }
+// WithMemory enables long-term memory for the agent. Applies to Agent and AgentWorker.
+// Pass [memory.DefaultConfig] for SDK defaults or a custom [memory.Config].
+// Use a shipped backend (pkg/memory/weaviate or pkg/memory/pgvector) or your own [interfaces.Memory].
+// The application owns Clear on the store when required; the agent runtime does not call Clear.
+func WithMemory(cfg memory.Config) Option {
+	return func(c *agentConfig) {
+		c.memoryConfig = &cfg
+	}
 }
 
 // WithResponseFormat sets the LLM response format (e.g. JSON with schema). Applies to Agent and AgentWorker.
@@ -703,11 +700,27 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 	if c.LLMClient == nil {
 		return nil, errors.New("LLM client is required")
 	}
-	if c.conversation != nil && (c.enableRemoteWorkers || c.disableLocalWorker) && !c.conversation.IsDistributed() {
-		return nil, errors.New("in-memory conversation cannot be used with remote workers (DisableLocalWorker or EnableRemoteWorkers()): use distributed storage such as redis.NewRedisConversation")
+	if c.conversationConfig != nil {
+		cfg := c.conversationConfig.WithDefaults()
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
+		remoteWorkers := c.enableRemoteWorkers || c.disableLocalWorker
+		if err := conversation.ValidateDistributed(cfg.Conversation, remoteWorkers); err != nil {
+			return nil, err
+		}
+		c.conversationConfig = &cfg
 	}
-	if c.conversationSize <= 0 {
-		c.conversationSize = 20
+	if c.memoryConfig != nil {
+		cfg := c.memoryConfig.WithDefaults()
+		if err := cfg.Validate(); err != nil {
+			return nil, err
+		}
+		if cfg.Store.Mode == memory.StoreModeAlways && cfg.Store.Extract == nil && c.LLMClient == nil {
+			c.logger.Warn(context.Background(), "memory StoreMode always requires custom Extract or LLM client — run-end store will be skipped",
+				slog.String("scope", "agent"))
+		}
+		c.memoryConfig = &cfg
 	}
 	if c.agentMode == "" {
 		c.agentMode = AgentModeInteractive
@@ -856,7 +869,7 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 		slog.Int("subAgentRegistryCount", len(c.subAgentRegistry.List())),
 		slog.Int("retrieverCount", len(c.retrievers)),
 		slog.String("retrieverMode", string(c.retrieverMode)),
-		slog.Bool("hasConversation", c.conversation != nil),
+		slog.Bool("hasConversation", c.conversationConfig != nil),
 		slog.Bool("hasObservability", c.observabilityConfig != nil),
 		slog.Bool("enabledTracer", c.tracer != nil),
 		slog.Bool("enabledMetrics", c.metrics != nil),
@@ -1080,6 +1093,12 @@ func (c *agentConfig) resolveTools(ctx context.Context) ([]interfaces.Tool, erro
 	}
 	tools = append(tools, retrieverTools...)
 
+	memoryTools, err := c.resolveMemoryTools()
+	if err != nil {
+		return nil, err
+	}
+	tools = append(tools, memoryTools...)
+
 	if err := validateToolNames(tools); err != nil {
 		return nil, err
 	}
@@ -1089,6 +1108,18 @@ func (c *agentConfig) resolveTools(ctx context.Context) ([]interfaces.Tool, erro
 		}
 	}
 	return tools, nil
+}
+
+// resolveMemoryTools registers save_memory when long-term memory uses on-demand store.
+func (c *agentConfig) resolveMemoryTools() ([]interfaces.Tool, error) {
+	if c.memoryConfig == nil {
+		return nil, nil
+	}
+	cfg := c.memoryConfig.WithDefaults()
+	if cfg.Memory == nil || cfg.Store.Mode != memory.StoreModeOnDemand {
+		return nil, nil
+	}
+	return []interfaces.Tool{NewRegisteredMemoryTool()}, nil
 }
 
 // resolveSubAgentTools returns sub-agent delegation tools from [subAgentRegistry].
@@ -1169,6 +1200,27 @@ func (c *agentConfig) runtimeAgentSpec() runtime.AgentSpec {
 	}
 }
 
+// runtimeAgentMemory maps memory config onto the runtime memory view.
+func (c *agentConfig) runtimeAgentMemory() runtime.AgentMemory {
+	if c.memoryConfig == nil {
+		return runtime.AgentMemory{}
+	}
+	cfg := c.memoryConfig.WithDefaults()
+	return runtime.AgentMemory{Config: &cfg}
+}
+
+// runtimeAgentSession maps conversation config onto the runtime session view.
+func (c *agentConfig) runtimeAgentSession() runtime.AgentSession {
+	if c.conversationConfig == nil {
+		return runtime.AgentSession{}
+	}
+	return runtime.AgentSession{
+		Conversation:                c.conversationConfig.Conversation,
+		ConversationSize:            c.conversationConfig.Size,
+		ConversationSaveOnIteration: c.conversationConfig.SaveOnIteration,
+	}
+}
+
 // runtimeAgentConfig is static wiring copied onto the runtime at construction.
 func (c *agentConfig) runtimeAgentConfig() runtime.AgentConfig {
 	d := runtime.AgentConfig{
@@ -1180,11 +1232,8 @@ func (c *agentConfig) runtimeAgentConfig() runtime.AgentConfig {
 			Retrievers: c.retrievers,
 			Mode:       c.retrieverMode,
 		},
-		Session: runtime.AgentSession{
-			Conversation:                c.conversation,
-			ConversationSize:            c.conversationSize,
-			ConversationSaveOnIteration: c.conversationSaveOnIteration,
-		},
+		Session: c.runtimeAgentSession(),
+		Memory:  c.runtimeAgentMemory(),
 		Limits: runtime.AgentLimits{
 			MaxIterations:   c.maxIterations,
 			Timeout:         c.timeout,

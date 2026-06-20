@@ -42,6 +42,14 @@ func BuildAgent(cfg Config) (*agent.Agent, error) {
 		}))
 	}
 
+	memOpt, err := MemoryAgentOption(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("memory option: %w", err)
+	}
+	if memOpt != nil {
+		opts = append(opts, memOpt)
+	}
+
 	a, err := agent.NewAgent(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("new agent: %w", err)

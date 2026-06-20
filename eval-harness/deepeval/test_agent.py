@@ -4,7 +4,7 @@ from deepeval import assert_test
 from deepeval.metrics import ToolCorrectnessMetric
 from deepeval.test_case import LLMTestCase, ToolCall
 
-from harness import DEFAULT_PROMPT, StubJudge, run_agent, tools_called
+from harness import DEFAULT_PROMPT, StubJudge, run_agent, run_agent_memory, tools_called
 
 EXPECTED_TOOLS = [
     ToolCall(name="eval_tool_1"),
@@ -54,3 +54,27 @@ def test_agent_tool_correctness():
         async_mode=False,
     )
     assert_test(test_case, [metric])
+
+
+def test_memory_store_recall_ondemand():
+    """Memory ondemand: store run persists, recall run loads scoped memories."""
+    agent_res = run_agent_memory("ondemand")
+    store = agent_res["memory_scenario"]["store"]["telemetry"]["storage"]
+    recall = agent_res["memory_scenario"]["recall"]["telemetry"]["storage"]
+
+    assert store["total_memory_stores"] >= 1
+    assert store.get("failed_memory_stores", 0) == 0
+    assert recall["total_memory_recalls"] >= 1
+    assert recall.get("failed_memory_recalls", 0) == 0
+
+
+def test_memory_store_recall_always():
+    """Memory always: run-end extract stores, recall run loads scoped memories."""
+    agent_res = run_agent_memory("always")
+    store = agent_res["memory_scenario"]["store"]["telemetry"]["storage"]
+    recall = agent_res["memory_scenario"]["recall"]["telemetry"]["storage"]
+
+    assert store["total_memory_stores"] >= 1
+    assert store.get("failed_memory_stores", 0) == 0
+    assert recall["total_memory_recalls"] >= 1
+    assert recall.get("failed_memory_recalls", 0) == 0

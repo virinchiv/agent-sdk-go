@@ -15,6 +15,8 @@ func main() {
 	prompt := flag.String("prompt", "", "override user_prompt from config")
 	runtimeFlag := flag.String("runtime", "", "override runtime: local or temporal")
 	toolCount := flag.Int("tools", 0, "override agent.tool_count (0 = use config)")
+	memoryStoreMode := flag.String("memory-store-mode", "", "override memory.store_mode: ondemand or always")
+	memoryScenario := flag.Bool("memory", false, "enable memory store_recall scenario from config")
 	flag.Parse()
 
 	fileCfg, err := setup.LoadConfig(*configPath)
@@ -35,15 +37,26 @@ func main() {
 	if *toolCount > 0 {
 		runCfg.ToolCount = *toolCount
 	}
+	if *memoryStoreMode != "" {
+		mode, err := setup.ParseMemoryStoreMode(*memoryStoreMode)
+		if err != nil {
+			log.Fatalf("memory store mode: %v", err)
+		}
+		runCfg.Memory.StoreMode = mode
+	}
+	if *memoryScenario {
+		runCfg.Memory.Enabled = true
+		runCfg.ToolCount = 0
+	}
 
-	result, err := Run(context.Background(), runCfg)
+	outcome, err := Run(context.Background(), runCfg)
 	if err != nil {
 		log.Fatalf("eval run failed: %v", err)
 	}
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(OutputFromResult(result)); err != nil {
+	if err := enc.Encode(OutputFromResult(outcome)); err != nil {
 		log.Fatalf("encode result: %v", err)
 	}
 }

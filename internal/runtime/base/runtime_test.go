@@ -3,14 +3,18 @@ package base
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
+	testutil "github.com/agenticenv/agent-sdk-go/internal/testing"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	ifmocks "github.com/agenticenv/agent-sdk-go/pkg/interfaces/mocks"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
+	"github.com/agenticenv/agent-sdk-go/pkg/memory"
 	"github.com/agenticenv/agent-sdk-go/pkg/observability"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
@@ -54,7 +58,7 @@ func TestBuildLLMRequest_Basic(t *testing.T) {
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
 	msgs := []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "hello"}}
-	req := rt.BuildLLMRequest(msgs, false, "", nil)
+	req := rt.BuildLLMRequest(msgs, false, "", "", nil)
 
 	require.Equal(t, "you are helpful", req.SystemMessage)
 	require.Equal(t, msgs, req.Messages)
@@ -65,9 +69,20 @@ func TestBuildLLMRequest_WithRetrieverContext(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
-	req := rt.BuildLLMRequest(nil, false, "extra context", nil)
+	req := rt.BuildLLMRequest(nil, false, "", "extra context", nil)
 	require.Contains(t, req.SystemMessage, "you are helpful")
 	require.Contains(t, req.SystemMessage, "extra context")
+}
+
+func TestBuildLLMRequest_WithMemoryContext(t *testing.T) {
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
+	})
+	req := rt.BuildLLMRequest(nil, false, "memory fact", "retriever doc", nil)
+	require.Contains(t, req.SystemMessage, "Relevant Memories")
+	require.Contains(t, req.SystemMessage, "memory fact")
+	require.Contains(t, req.SystemMessage, "Relevant Context")
+	require.Contains(t, req.SystemMessage, "retriever doc")
 }
 
 func TestBuildLLMRequest_SkipTools(t *testing.T) {
@@ -80,7 +95,7 @@ func TestBuildLLMRequest_SkipTools(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
-	req := rt.BuildLLMRequest(nil, true, "", []interfaces.Tool{tool})
+	req := rt.BuildLLMRequest(nil, true, "", "", []interfaces.Tool{tool})
 	require.Empty(t, req.Tools)
 }
 
@@ -531,6 +546,645 @@ func TestExecuteRetrievers_PartialFailure(t *testing.T) {
 	require.Contains(t, got.Context, "useful")
 	require.Equal(t, int64(2), got.TotalSearches)
 	require.Equal(t, int64(1), got.FailedSearches)
+}
+
+// --- StoreMemoryRecords ---
+
+func TestStoreMemoryRecords_appliesTTL(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+	before := time.Now().UTC()
+
+	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+		{Text: "User prefers concise answers", Kind: memory.KindNote},
+	}))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.False(t, entries[0].ExpiresAt.IsZero())
+	want := before.Add(memory.TTLNote)
+	require.WithinDuration(t, want, entries[0].ExpiresAt, 2*time.Second)
+}
+
+func TestStoreMemoryRecords_allowlistRejectsKind(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	cfg.Store.AllowedKinds = []interfaces.MemoryKind{memory.KindFact}
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	err := rt.StoreMemoryRecords(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+		[]interfaces.MemoryRecord{{Text: "note text", Kind: memory.KindNote}})
+	require.Error(t, err)
+}
+
+func TestStoreMemoryRecords_dedupUpserts(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+	text := "favorite color is blue"
+
+	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+		{Text: text, Kind: memory.KindPreference},
+	}))
+	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+		{Text: text, Kind: memory.KindFact},
+	}))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, memory.KindFact, entries[0].Kind)
+}
+
+func TestStoreMemoryRecords_dedupAppendsDistinctText(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+		{Text: "favorite color is blue", Kind: memory.KindPreference},
+		{Text: "prefers concise answers", Kind: memory.KindPreference},
+	}))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+}
+
+func TestStoreMemoryRecords_appliesDefaultKind(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+		{Text: "remember this"},
+	}))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, memory.KindNote, entries[0].Kind)
+}
+
+func TestStoreMemoryRecords_notConfigured(t *testing.T) {
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	require.NoError(t, rt.StoreMemoryRecords(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+		[]interfaces.MemoryRecord{{Text: "x"}}))
+}
+
+func TestStoreMemoryRecords_skipsEmptyText(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+		{Text: "   "},
+	}))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestStoreMemoryRecords_emitsMetrics(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := ifmocks.NewMockMetrics(ctrl)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryStoreStarted, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryDedupStarted).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryDedupCompleted).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryDedupLatencyMs, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryStoreCompleted, gomock.Any(), gomock.Any()).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryStoreLatencyMs, gomock.Any(), gomock.Any()).Times(1)
+
+	mem := ifmocks.NewMockMemory(ctrl)
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	mem.EXPECT().Load(gomock.Any(), scope, "hello world", gomock.Any()).Return(nil, nil).Times(1)
+	mem.EXPECT().Store(gomock.Any(), scope, gomock.Any()).Return("id-1", nil).Times(1)
+
+	cfg := memory.DefaultConfig(mem)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	rt.Metrics = metrics
+
+	require.NoError(t, rt.StoreMemoryRecords(context.Background(), noopLog(), scope,
+		[]interfaces.MemoryRecord{{Text: "hello world", Kind: memory.KindNote}}))
+}
+
+func TestStoreMemoryRecords_kindRejectedEmitsFailedMetric(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := ifmocks.NewMockMetrics(ctrl)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryStoreFailed).Times(1)
+
+	mem := ifmocks.NewMockMemory(ctrl)
+	cfg := memory.DefaultConfig(mem)
+	cfg.Store.AllowedKinds = []interfaces.MemoryKind{memory.KindFact}
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	rt.Metrics = metrics
+
+	err := rt.StoreMemoryRecords(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+		[]interfaces.MemoryRecord{{Text: "x", Kind: memory.KindNote}})
+	require.Error(t, err)
+}
+
+// --- default memory extract (Always mode) ---
+
+type stubMemoryExtractLLM struct {
+	resp *interfaces.LLMResponse
+	err  error
+	req  *interfaces.LLMRequest
+}
+
+func (s *stubMemoryExtractLLM) Generate(_ context.Context, req *interfaces.LLMRequest) (*interfaces.LLMResponse, error) {
+	s.req = req
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.resp, nil
+}
+
+func (stubMemoryExtractLLM) GenerateStream(context.Context, *interfaces.LLMRequest) (interfaces.LLMStream, error) {
+	return nil, errors.New("not supported")
+}
+func (stubMemoryExtractLLM) GetModel() string                    { return "stub" }
+func (stubMemoryExtractLLM) GetProvider() interfaces.LLMProvider { return interfaces.LLMProviderOpenAI }
+func (stubMemoryExtractLLM) IsStreamSupported() bool             { return false }
+
+func TestResolveMemoryExtractFunc_defaultLLM(t *testing.T) {
+	llm := &stubMemoryExtractLLM{resp: &interfaces.LLMResponse{
+		Content: `{"memories":[{"text":"prefers concise answers","kind":"preference"}]}`,
+	}}
+	cfg := memory.DefaultConfig(testutil.NewInmemMemory())
+	cfg.Store.Mode = memory.StoreModeAlways
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM:    sdkruntime.AgentLLM{Client: llm},
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	extract := rt.resolveMemoryExtractFunc()
+	require.NotNil(t, extract)
+	require.Nil(t, cfg.Store.Extract)
+
+	records, err := extract(context.Background(), []interfaces.Message{
+		{Role: interfaces.MessageRoleUser, Content: "keep it short"},
+		{Role: interfaces.MessageRoleAssistant, Content: "will do"},
+	})
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, "prefers concise answers", records[0].Text)
+	require.Equal(t, memory.KindPreference, records[0].Kind)
+	require.Equal(t, "extract", records[0].Metadata["source"])
+	require.NotNil(t, llm.req.ResponseFormat)
+}
+
+func TestResolveMemoryExtractFunc_skipsOnDemand(t *testing.T) {
+	llm := &stubMemoryExtractLLM{}
+	cfg := memory.DefaultConfig(testutil.NewInmemMemory())
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM:    sdkruntime.AgentLLM{Client: llm},
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	require.Nil(t, rt.resolveMemoryExtractFunc())
+}
+
+func TestResolveMemoryExtractFunc_preservesCustom(t *testing.T) {
+	custom := memory.ExtractFunc(func(context.Context, []interfaces.Message) ([]interfaces.MemoryRecord, error) {
+		return []interfaces.MemoryRecord{{Text: "custom"}}, nil
+	})
+	cfg := memory.DefaultConfig(testutil.NewInmemMemory())
+	cfg.Store.Mode = memory.StoreModeAlways
+	cfg.Store.Extract = custom
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM:    sdkruntime.AgentLLM{Client: &stubMemoryExtractLLM{}},
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	records, err := rt.resolveMemoryExtractFunc()(context.Background(), nil)
+	require.NoError(t, err)
+	require.Equal(t, "custom", records[0].Text)
+}
+
+func TestResolveMemoryExtractFunc_skipsToolMessages(t *testing.T) {
+	llm := &stubMemoryExtractLLM{resp: &interfaces.LLMResponse{Content: `{"memories":[]}`}}
+	cfg := memory.DefaultConfig(testutil.NewInmemMemory())
+	cfg.Store.Mode = memory.StoreModeAlways
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM:    sdkruntime.AgentLLM{Client: llm},
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	records, err := rt.resolveMemoryExtractFunc()(context.Background(), []interfaces.Message{
+		{Role: interfaces.MessageRoleTool, Content: "tool output"},
+	})
+	require.NoError(t, err)
+	require.Nil(t, records)
+	require.Nil(t, llm.req)
+}
+
+func TestMessagesForMemoryExtraction_appendsUserTurnAfterAssistant(t *testing.T) {
+	msgs := messagesForMemoryExtraction([]interfaces.Message{
+		{Role: interfaces.MessageRoleUser, Content: "remember this"},
+		{Role: interfaces.MessageRoleAssistant, Content: "ok"},
+	})
+	require.Len(t, msgs, 3)
+	require.Equal(t, interfaces.MessageRoleUser, msgs[len(msgs)-1].Role)
+	require.Equal(t, memoryExtractTurnPrompt, msgs[len(msgs)-1].Content)
+}
+
+func TestMessagesForMemoryExtraction_keepsUserLast(t *testing.T) {
+	msgs := messagesForMemoryExtraction([]interfaces.Message{
+		{Role: interfaces.MessageRoleUser, Content: "only user"},
+	})
+	require.Len(t, msgs, 1)
+	require.Equal(t, interfaces.MessageRoleUser, msgs[0].Role)
+}
+
+func TestParseMemoryExtractResponse_invalidJSON(t *testing.T) {
+	_, err := parseMemoryExtractResponse("{")
+	require.Error(t, err)
+}
+
+// --- ExecuteMemory ---
+
+func memoryConfigAlways(store interfaces.Memory) memory.Config {
+	cfg := memory.DefaultConfig(store)
+	cfg.Store.Mode = memory.StoreModeAlways
+	return cfg
+}
+
+func testRunMessages(user, assistant string) []interfaces.Message {
+	var msgs []interfaces.Message
+	if user != "" {
+		msgs = append(msgs, interfaces.Message{Role: interfaces.MessageRoleUser, Content: user})
+	}
+	if assistant != "" {
+		msgs = append(msgs, interfaces.Message{Role: interfaces.MessageRoleAssistant, Content: assistant})
+	}
+	return msgs
+}
+
+func testAlwaysStoreExtract(_ context.Context, messages []interfaces.Message) ([]interfaces.MemoryRecord, error) {
+	var user, assistant string
+	for _, m := range messages {
+		switch m.Role {
+		case interfaces.MessageRoleUser:
+			user = strings.TrimSpace(m.Content)
+		case interfaces.MessageRoleAssistant:
+			assistant = strings.TrimSpace(m.Content)
+		}
+	}
+	if user == "" && assistant == "" {
+		return nil, nil
+	}
+	var text string
+	switch {
+	case user != "" && assistant != "":
+		text = "User: " + user + "\nAssistant: " + assistant
+	case assistant != "":
+		text = "Assistant: " + assistant
+	default:
+		text = "User: " + user
+	}
+	return []interfaces.MemoryRecord{{
+		Text:     text,
+		Metadata: map[string]string{"source": "extract"},
+	}}, nil
+}
+
+func TestExecuteMemoryStore_skipsOnDemand(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	require.NoError(t, rt.ExecuteMemoryStore(context.Background(), noopLog(), scope, testRunMessages("hello", "world")))
+	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestExecuteToolWithMemoryScope_saveMemory(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	out, err := rt.ExecuteToolWithMemoryScope(context.Background(), noopLog(), nil, types.SaveMemoryToolName,
+		map[string]any{types.MemoryToolParamText: "favorite color is blue"}, scope)
+	require.NoError(t, err)
+	require.Equal(t, "memory saved", out)
+	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+}
+
+func TestExecuteMemoryRecallAndStore(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hello", "world")))
+
+	res, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "hello")
+	require.NoError(t, err)
+	require.NotEmpty(t, res.Context)
+}
+
+func TestExecuteMemoryStore_AppliesTTLFromPolicy(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+	before := time.Now().UTC()
+
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hello", "world")))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.False(t, entries[0].ExpiresAt.IsZero())
+	want := before.Add(memory.TTLNote)
+	require.WithinDuration(t, want, entries[0].ExpiresAt, 2*time.Second)
+}
+
+func TestExecuteMemoryStore_skipsEmptyMessages(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, nil))
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, []interfaces.Message{
+		{Role: interfaces.MessageRoleTool, Content: "noise"},
+	}))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestExecuteMemoryStore_noExtractorEmitsFailedMetric(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := ifmocks.NewMockMetrics(ctrl)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryExtractFailed).Times(1)
+
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	rt.Metrics = metrics
+
+	require.NoError(t, rt.ExecuteMemoryStore(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+		testRunMessages("hi", "there")))
+}
+
+func TestExecuteMemoryExtract_EmitsMetrics(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := ifmocks.NewMockMetrics(ctrl)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryExtractStarted).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryExtractCompleted).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryExtractLatencyMs, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryDedupStarted).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryDedupCompleted).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryDedupLatencyMs, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryStoreStarted, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryStoreCompleted, gomock.Any(), gomock.Any()).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryStoreLatencyMs, gomock.Any(), gomock.Any()).Times(1)
+
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	rt.Metrics = metrics
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	require.NoError(t, rt.ExecuteMemoryStore(context.Background(), noopLog(), scope, testRunMessages("hello", "world")))
+}
+
+func TestExecuteMemoryExtract_EmitsFailedMetric(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := ifmocks.NewMockMetrics(ctrl)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryExtractStarted).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryExtractFailed).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryExtractLatencyMs, gomock.Any()).Times(1)
+
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = func(context.Context, []interfaces.Message) ([]interfaces.MemoryRecord, error) {
+		return nil, errors.New("extract failed")
+	}
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	rt.Metrics = metrics
+
+	err := rt.ExecuteMemoryStore(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"}, testRunMessages("hi", "there"))
+	require.Error(t, err)
+}
+
+func TestExecuteMemoryStore_extractsWithDefaultLLM(t *testing.T) {
+	llm := &stubMemoryExtractLLM{resp: &interfaces.LLMResponse{
+		Content: `{"memories":[{"text":"user likes tea","kind":"preference"}]}`,
+	}}
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM:    sdkruntime.AgentLLM{Client: llm},
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("I like tea", "noted")))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "user likes tea", entries[0].Text)
+	require.Equal(t, memory.KindPreference, entries[0].Kind)
+	require.Equal(t, "extract", entries[0].Metadata["source"])
+}
+
+func TestExecuteMemoryStore_setsExtractMetadata(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hi", "there")))
+
+	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "extract", entries[0].Metadata["source"])
+	require.Contains(t, entries[0].Text, "User: hi")
+}
+
+func TestExecuteMemoryRecall_OmitsExpired(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	_, err := store.Store(ctx, scope, interfaces.MemoryRecord{
+		Text:      "User prefers concise answers",
+		Kind:      memory.KindPreference,
+		ExpiresAt: time.Now().UTC().Add(-time.Hour),
+	})
+	require.NoError(t, err)
+
+	res, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "concise")
+	require.NoError(t, err)
+	require.Empty(t, res.Context)
+}
+
+func TestExecuteMemoryRecall_SemanticMissFallsBackToRecency(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages(
+		"Remember that I prefer concise answers.", "Got it.")))
+
+	res, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "What answer style do I prefer?")
+	require.NoError(t, err)
+	require.Contains(t, res.Context, "concise answers")
+}
+
+func TestSubAgentScope(t *testing.T) {
+	parent := interfaces.MemoryScope{
+		TenantID: "t1",
+		UserID:   "u1",
+		AgentID:  "main",
+	}
+	got := SubAgentScope(parent, "sub-researcher")
+	if got.TenantID != "t1" || got.UserID != "u1" {
+		t.Fatalf("tenant/user = %+v", got)
+	}
+	if got.AgentID != "sub-researcher" {
+		t.Fatalf("agentID = %q", got.AgentID)
+	}
+	if got.Tags[scopeKeyParentAgentID] != "main" {
+		t.Fatalf("tags = %+v", got.Tags)
+	}
+}
+
+func TestSubAgentScope_nestedDelegation(t *testing.T) {
+	parent := SubAgentScope(interfaces.MemoryScope{
+		UserID:  "u1",
+		AgentID: "main",
+	}, "sub-a")
+	got := SubAgentScope(parent, "sub-b")
+	if got.AgentID != "sub-b" {
+		t.Fatalf("agentID = %q", got.AgentID)
+	}
+	if got.Tags[scopeKeyParentAgentID] != "sub-a" {
+		t.Fatalf("tags = %+v", got.Tags)
+	}
+}
+
+func TestExecuteMemoryRecall_EmitsMetrics(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := ifmocks.NewMockMetrics(ctrl)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryRecallStarted).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryRecallCompleted).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryRecallLatencyMs, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryExtractStarted).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryExtractCompleted).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryExtractLatencyMs, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryDedupStarted).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryDedupCompleted).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryDedupLatencyMs, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryStoreStarted, gomock.Any()).Times(1)
+	metrics.EXPECT().IncrementCounter(gomock.Any(), types.MetricMemoryStoreCompleted, gomock.Any(), gomock.Any()).Times(1)
+	metrics.EXPECT().RecordHistogram(gomock.Any(), types.MetricMemoryStoreLatencyMs, gomock.Any(), gomock.Any()).Times(1)
+
+	mem := ifmocks.NewMockMemory(ctrl)
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	mem.EXPECT().Store(gomock.Any(), scope, gomock.Any()).Return("id-1", nil).Times(1)
+	mem.EXPECT().Load(gomock.Any(), scope, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ interfaces.MemoryScope, query string, _ ...interfaces.LoadMemoryOption) ([]interfaces.MemoryEntry, error) {
+			if query == "hello" {
+				return []interfaces.MemoryEntry{{Text: "User: hello\nAssistant: world"}}, nil
+			}
+			return nil, nil
+		}).AnyTimes()
+
+	cfg := memoryConfigAlways(mem)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+	})
+	rt.Metrics = metrics
+
+	ctx := context.Background()
+	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hello", "world")))
+	_, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "hello")
+	require.NoError(t, err)
 }
 
 // --- ExecuteLLMStream ---

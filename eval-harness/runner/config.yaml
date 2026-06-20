@@ -1,4 +1,4 @@
-runtime: local          # local or temporal
+runtime: local
 
 user_prompt: "run eval check"
 
@@ -6,6 +6,14 @@ agent:
   name: eval-agent
   system_prompt: "You are an evaluation agent. Use available tools when helpful, then answer concisely."
   tool_count: 3
+
+memory:
+  enabled: false
+  store_mode: ondemand
+  user_id: eval-user
+  scenario: store_recall
+  store_prompt: "Remember for future runs: I prefer concise answers."
+  recall_prompt: "What answer style do I prefer?"
 
 temporal:
   host: localhost
