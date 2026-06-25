@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
+	"github.com/agenticenv/agent-sdk-go/internal/hooks"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
@@ -36,6 +37,8 @@ type ExecuteLLMInput struct {
 	Logger           logger.Logger
 	AgentName        string
 	MessageID        string
+	RunID            string
+	Iteration        int
 	Messages         []interfaces.Message
 	SkipTools        bool
 	MemoryContext    string
@@ -152,6 +155,9 @@ func emitEvent(fn func(events.AgentEvent), ev events.AgentEvent) {
 // messageID and agentName are used only for event construction; emit may be nil.
 func (rt *Runtime) ExecuteLLM(ctx context.Context, input ExecuteLLMInput) (*LLMResult, error) {
 	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.MemoryContext, input.RetrieverContext, input.Tools)
+	if err := rt.runBeforeLLMRequest(ctx, input, req); err != nil {
+		return nil, err
+	}
 
 	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
@@ -181,6 +187,10 @@ func (rt *Runtime) ExecuteLLM(ctx context.Context, input ExecuteLLMInput) (*LLMR
 	}
 	sp.End()
 
+	if err := rt.runAfterLLMResponse(ctx, input, resp); err != nil {
+		return nil, err
+	}
+
 	rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
 	rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallCompleted, modelAttr, providerAttr)
 	if resp.Usage != nil {
@@ -207,6 +217,9 @@ func (rt *Runtime) ExecuteLLM(ctx context.Context, input ExecuteLLMInput) (*LLMR
 // fallback. emit may be nil.
 func (rt *Runtime) ExecuteLLMStream(ctx context.Context, input ExecuteLLMInput) (*LLMResult, error) {
 	req := rt.BuildLLMRequest(input.Messages, input.SkipTools, input.MemoryContext, input.RetrieverContext, input.Tools)
+	if err := rt.runBeforeLLMRequest(ctx, input, req); err != nil {
+		return nil, err
+	}
 
 	llmClient := rt.AgentConfig.LLM.Client
 	model := llmClient.GetModel()
@@ -260,6 +273,12 @@ func (rt *Runtime) ExecuteLLMStream(ctx context.Context, input ExecuteLLMInput) 
 		resp, err := llmClient.Generate(ctx, req)
 		llmLatency := float64(time.Since(llmStart).Milliseconds())
 		if err != nil {
+			sp.RecordError(err)
+			rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+			rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
+			return nil, err
+		}
+		if err := rt.runAfterLLMResponse(ctx, input, resp); err != nil {
 			sp.RecordError(err)
 			rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
 			rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
@@ -350,6 +369,13 @@ func (rt *Runtime) ExecuteLLMStream(ctx context.Context, input ExecuteLLMInput) 
 		return nil, err
 	}
 
+	if err := rt.runAfterLLMResponse(ctx, input, resp); err != nil {
+		sp.RecordError(err)
+		rt.Metrics.IncrementCounter(ctx, types.MetricLLMCallFailed, modelAttr, providerAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricLLMLatencyMs, llmLatency, modelAttr, providerAttr)
+		return nil, err
+	}
+
 	result, err := rt.llmResponseToResult(resp, input.Tools)
 	if err != nil {
 		sp.RecordError(err)
@@ -370,15 +396,42 @@ func (rt *Runtime) ExecuteLLMStream(ctx context.Context, input ExecuteLLMInput) 
 	return result, nil
 }
 
-// ExecuteTool finds the named tool and executes it, recording tracing and metrics.
+// ExecuteTool runs a tool with optional memory scope; save_memory on on-demand store routes to [StoreMemoryRecords].
+// Retriever tools use [Runtime.executeRetrieverTool] inside [Runtime.executeTool].
+// For [types.ToolKindNative] and [types.ToolKindMCP] tools, [hooks.BeforeToolHook] and
+func (rt *Runtime) ExecuteTool(ctx context.Context, input ExecuteToolInput, memScope interfaces.MemoryScope) (string, error) {
+	if input.ToolName == types.SaveMemoryToolName && rt.MemoryStoreOnDemand() {
+		return rt.executeSaveMemoryTool(ctx, input, memScope)
+	}
+	return rt.executeTool(ctx, input)
+}
+
+// executeTool finds the named tool and executes it, recording tracing and metrics.
 // Returns the string representation of the tool result.
-func (rt *Runtime) ExecuteTool(ctx context.Context, log logger.Logger, tools []interfaces.Tool, toolName string, args map[string]any) (string, error) {
+func (rt *Runtime) executeTool(ctx context.Context, input ExecuteToolInput) (string, error) {
+	log := input.Logger
+	toolName := input.ToolName
+	args := input.Args
+
 	log.Debug(ctx, "runtime: tool execute started", slog.String("scope", "runtime"), slog.String("tool", toolName), slog.Int("argCount", len(args)))
 
-	tool, ok := FindToolByName(tools, toolName)
+	tool, ok := FindToolByName(input.Tools, toolName)
 	if !ok {
 		log.Warn(ctx, "runtime: unknown tool", slog.String("scope", "runtime"), slog.String("tool", toolName))
 		return "", fmt.Errorf("unknown tool: %s", toolName)
+	}
+
+	kind := types.KindOf(tool)
+	runHooks := len(rt.AgentConfig.Hooks) > 0 && kind.HooksEligible()
+
+	var hookedCall hooks.ToolCall
+	if runHooks {
+		var err error
+		hookedCall, err = rt.runBeforeToolHooks(ctx, input, tool)
+		if err != nil {
+			return "", err
+		}
+		args = hookedCall.Args
 	}
 
 	toolAttr := interfaces.Attribute{Key: types.MetricAttrTool, Value: toolName}
@@ -391,30 +444,99 @@ func (rt *Runtime) ExecuteTool(ctx context.Context, log logger.Logger, tools []i
 	)
 	defer sp.End()
 
-	result, err := tool.Execute(ctx, args)
+	var content string
+	var execErr error
+	switch kind {
+	case types.ToolKindRetriever:
+		content, execErr = rt.executeRetrieverTool(ctx, input, tool, args)
+	default:
+		var result any
+		result, execErr = tool.Execute(ctx, args)
+		if execErr == nil {
+			content = fmt.Sprintf("%v", result)
+		}
+		if runHooks {
+			var err error
+			content, execErr, err = rt.runAfterToolHooks(ctx, input, hookedCall, content, execErr)
+			if err != nil {
+				sp.RecordError(err)
+				rt.Metrics.IncrementCounter(ctx, types.MetricToolCallFailed, toolAttr)
+				rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, float64(time.Since(toolStart).Milliseconds()), toolAttr)
+				return "", err
+			}
+		}
+	}
+
 	toolLatency := float64(time.Since(toolStart).Milliseconds())
-	if err != nil {
-		sp.RecordError(err)
+
+	if execErr != nil {
+		sp.RecordError(execErr)
 		rt.Metrics.IncrementCounter(ctx, types.MetricToolCallFailed, toolAttr)
 		rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
-		return "", err
+		return "", execErr
 	}
 
 	rt.Metrics.RecordHistogram(ctx, types.MetricToolLatencyMs, toolLatency, toolAttr)
 	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallCompleted, toolAttr)
 	log.Debug(ctx, "runtime: tool execute completed", slog.String("scope", "runtime"), slog.String("tool", toolName))
-	return fmt.Sprintf("%v", result), nil
+	return content, nil
 }
 
-// ExecuteToolWithMemoryScope runs a tool; save_memory on on-demand store routes to [StoreMemoryRecords].
-func (rt *Runtime) ExecuteToolWithMemoryScope(ctx context.Context, log logger.Logger, tools []interfaces.Tool, toolName string, args map[string]any, memScope interfaces.MemoryScope) (string, error) {
-	if toolName == types.SaveMemoryToolName && rt.MemoryStoreOnDemand() {
-		return rt.executeSaveMemoryTool(ctx, log, memScope, args)
+// executeRetrieverTool runs retrieve hooks, tool.Execute, and formats documents for the LLM.
+// Metrics and tracing are handled by [Runtime.executeTool].
+func (rt *Runtime) executeRetrieverTool(ctx context.Context, input ExecuteToolInput, tool interfaces.Tool, args map[string]any) (string, error) {
+	retrieverName, ok := types.RetrieverNameFromToolName(tool.Name())
+	if !ok {
+		return "", fmt.Errorf("retriever tool: invalid tool name %q", tool.Name())
 	}
-	return rt.ExecuteTool(ctx, log, tools, toolName, args)
+
+	query, err := types.RetrieverToolParamQueryValue(args)
+	if err != nil {
+		return "", err
+	}
+
+	retrieveInput := ExecuteRetrieversInput{
+		RunID:     input.RunID,
+		Iteration: input.Iteration,
+		Query:     query,
+	}
+
+	call, err := rt.runBeforeRetrieveHooks(ctx, retrieveInput, types.RetrieverModeAgentic, retrieverName)
+	if err != nil {
+		return "", err
+	}
+
+	execArgs := map[string]any{types.RetrieverToolParamQuery: call.Query}
+	result, execErr := tool.Execute(ctx, execArgs)
+	if execErr != nil {
+		return "", execErr
+	}
+
+	docs, ok := result.([]interfaces.Document)
+	if !ok {
+		return "", fmt.Errorf("retriever tool: unexpected result type %T", result)
+	}
+
+	docs, err = rt.runAfterRetrieveHooks(ctx, retrieveInput, call, docs)
+	if err != nil {
+		return "", err
+	}
+
+	content := FormatRetrieverDocs(docs)
+	if content == "" {
+		input.Logger.Warn(ctx, "runtime: retriever returned no documents",
+			slog.String("scope", "runtime"),
+			slog.String("tool", tool.Name()),
+			slog.String("retriever", retrieverName),
+			slog.String("query", call.Query),
+		)
+	}
+	return content, nil
 }
 
-func (rt *Runtime) executeSaveMemoryTool(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, args map[string]any) (string, error) {
+func (rt *Runtime) executeSaveMemoryTool(ctx context.Context, input ExecuteToolInput, scope interfaces.MemoryScope) (string, error) {
+	log := input.Logger
+	args := input.Args
 	toolAttr := interfaces.Attribute{Key: types.MetricAttrTool, Value: types.SaveMemoryToolName}
 	rt.Metrics.IncrementCounter(ctx, types.MetricToolCallStarted, toolAttr)
 	toolStart := time.Now()
@@ -434,7 +556,13 @@ func (rt *Runtime) executeSaveMemoryTool(ctx context.Context, log logger.Logger,
 		return "", err
 	}
 
-	if err := rt.StoreMemoryRecords(ctx, log, scope, []interfaces.MemoryRecord{record}); err != nil {
+	if err := rt.StoreMemoryRecords(ctx, StoreMemoryRecordsInput{
+		Logger:    log,
+		RunID:     input.RunID,
+		Iteration: input.Iteration,
+		Scope:     scope,
+		Records:   []interfaces.MemoryRecord{record},
+	}); err != nil {
 		toolLatency := float64(time.Since(toolStart).Milliseconds())
 		sp.RecordError(err)
 		rt.Metrics.IncrementCounter(ctx, types.MetricToolCallFailed, toolAttr)
@@ -494,11 +622,16 @@ func (rt *Runtime) AuthorizeTool(ctx context.Context, log logger.Logger, tools [
 // ExecuteRetrievers runs all configured retrievers in parallel for the given query and
 // returns a combined document context string for injection into the LLM system prompt.
 // Partial failures are logged and skipped; all retrievers failing returns an error.
-func (rt *Runtime) ExecuteRetrievers(ctx context.Context, log logger.Logger, query string) (*RetrieverResult, error) {
+func (rt *Runtime) ExecuteRetrievers(ctx context.Context, input ExecuteRetrieversInput) (*RetrieverResult, error) {
+	log := input.Logger
+	query := input.Query
+
 	retrievers := rt.AgentConfig.Retrievers.Retrievers
 	if len(retrievers) == 0 {
 		return &RetrieverResult{}, nil
 	}
+
+	mode := rt.AgentConfig.Retrievers.Mode
 
 	log.Debug(ctx, "runtime: retriever prefetch started", slog.String("scope", "runtime"), slog.Int("retrieverCount", len(retrievers)), slog.String("query", query))
 
@@ -517,25 +650,45 @@ func (rt *Runtime) ExecuteRetrievers(ctx context.Context, log logger.Logger, que
 			name := ret.Name()
 			retrieverAttr := interfaces.Attribute{Key: types.MetricAttrRetriever, Value: name}
 			rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallStarted, retrieverAttr)
-			start := time.Now()
+
+			call, hookErr := rt.runBeforeRetrieveHooks(ctx, input, mode, name)
+			if hookErr != nil {
+				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallFailed, retrieverAttr)
+				results[idx] = retrieverResult{name: name, err: hookErr}
+				return
+			}
 
 			searchCtx, sp := rt.Tracer.StartSpan(ctx, "retriever.search",
 				interfaces.Attribute{Key: "retriever.name", Value: name},
-				interfaces.Attribute{Key: "query", Value: query},
+				interfaces.Attribute{Key: "query", Value: call.Query},
 			)
-			docs, err := ret.Search(searchCtx, query)
+
+			start := time.Now()
+			docs, err := ret.Search(searchCtx, call.Query)
 			latency := float64(time.Since(start).Milliseconds())
 			if err != nil {
 				sp.RecordError(err)
 				sp.End()
 				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallFailed, retrieverAttr)
 				rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
-			} else {
-				sp.End()
-				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallCompleted, retrieverAttr)
-				rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
+				results[idx] = retrieverResult{name: name, docs: docs, err: err}
+				return
 			}
-			results[idx] = retrieverResult{name: name, docs: docs, err: err}
+
+			docs, hookErr = rt.runAfterRetrieveHooks(searchCtx, input, call, docs)
+			if hookErr != nil {
+				sp.RecordError(hookErr)
+				sp.End()
+				rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallFailed, retrieverAttr)
+				rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
+				results[idx] = retrieverResult{name: name, err: hookErr}
+				return
+			}
+
+			sp.End()
+			rt.Metrics.IncrementCounter(ctx, types.MetricRetrieverCallCompleted, retrieverAttr)
+			rt.Metrics.RecordHistogram(ctx, types.MetricRetrieverLatencyMs, latency, retrieverAttr)
+			results[idx] = retrieverResult{name: name, docs: docs, err: nil}
 		}(i, r)
 	}
 	wg.Wait()
@@ -621,11 +774,15 @@ func FormatMemoryEntries(entries []interfaces.MemoryEntry) string {
 }
 
 // ExecuteMemoryRecall loads scoped memories for query and returns formatted prompt context.
-func (rt *Runtime) ExecuteMemoryRecall(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, query string) (*MemoryResult, error) {
+func (rt *Runtime) ExecuteMemoryRecall(ctx context.Context, input ExecuteMemoryRecallInput) (*MemoryResult, error) {
 	cfg := rt.AgentConfig.Memory.Config
 	if cfg == nil || cfg.Memory == nil {
 		return &MemoryResult{}, nil
 	}
+
+	log := input.Logger
+	query := input.Query
+	scope := input.Scope
 
 	log.Debug(ctx, "runtime: memory recall started",
 		slog.String("scope", "runtime"),
@@ -639,7 +796,25 @@ func (rt *Runtime) ExecuteMemoryRecall(ctx context.Context, log logger.Logger, s
 	)
 	defer sp.End()
 
-	entries, err := cfg.Memory.Load(ctx, scope, query, cfg.Recall.LoadOptions()...)
+	recall := cfg.Recall
+	loadCall := hooks.MemoryLoadCall{
+		Scope:    scope,
+		Query:    query,
+		Limit:    recall.Limit,
+		MinScore: recall.MinScore,
+		Kinds:    recall.Kinds,
+	}
+	loadCall, err := rt.runBeforeMemoryLoadHooks(ctx, input, loadCall)
+	if err != nil {
+		latency := float64(time.Since(start).Milliseconds())
+		sp.RecordError(err)
+		sp.SetAttribute("latency_ms", latency)
+		rt.Metrics.IncrementCounter(ctx, types.MetricMemoryRecallFailed)
+		rt.Metrics.RecordHistogram(ctx, types.MetricMemoryRecallLatencyMs, latency)
+		return nil, err
+	}
+
+	entries, err := cfg.Memory.Load(ctx, loadCall.Scope, loadCall.Query, loadOptionsFromCall(loadCall, true)...)
 	if err != nil {
 		latency := float64(time.Since(start).Milliseconds())
 		sp.RecordError(err)
@@ -651,10 +826,10 @@ func (rt *Runtime) ExecuteMemoryRecall(ctx context.Context, log logger.Logger, s
 	}
 
 	// Semantic recall often misses distilled memories; fall back to scoped recency list.
-	if len(entries) == 0 && strings.TrimSpace(query) != "" {
+	if len(entries) == 0 && strings.TrimSpace(loadCall.Query) != "" {
 		log.Debug(ctx, "runtime: memory recall semantic empty, trying recency fallback",
 			slog.String("scope", "runtime"))
-		fallback, fbErr := cfg.Memory.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
+		fallback, fbErr := cfg.Memory.Load(ctx, loadCall.Scope, "", cfg.Recall.RecencyLoadOptions()...)
 		if fbErr != nil {
 			latency := float64(time.Since(start).Milliseconds())
 			sp.RecordError(fbErr)
@@ -667,8 +842,18 @@ func (rt *Runtime) ExecuteMemoryRecall(ctx context.Context, log logger.Logger, s
 		entries = fallback
 	}
 
-	latency := float64(time.Since(start).Milliseconds())
 	memoryContext := strings.TrimSpace(FormatMemoryEntries(entries))
+	memoryContext, err = rt.runAfterMemoryLoadHooks(ctx, input, loadCall, memoryContext)
+	if err != nil {
+		latency := float64(time.Since(start).Milliseconds())
+		sp.RecordError(err)
+		sp.SetAttribute("latency_ms", latency)
+		rt.Metrics.IncrementCounter(ctx, types.MetricMemoryRecallFailed)
+		rt.Metrics.RecordHistogram(ctx, types.MetricMemoryRecallLatencyMs, latency)
+		return nil, err
+	}
+
+	latency := float64(time.Since(start).Milliseconds())
 	sp.SetAttribute("entry.count", len(entries))
 	sp.SetAttribute("has_context", memoryContext != "")
 	sp.SetAttribute("latency_ms", latency)
@@ -687,23 +872,30 @@ func (rt *Runtime) ExecuteMemoryRecall(ctx context.Context, log logger.Logger, s
 }
 
 // ExecuteMemoryStore extracts long-term memories from the run and persists them in scope.
-func (rt *Runtime) ExecuteMemoryStore(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, messages []interfaces.Message) error {
+func (rt *Runtime) ExecuteMemoryStore(ctx context.Context, input ExecuteMemoryStoreInput) error {
 	if !rt.RunEndMemoryStoreEnabled() {
 		return nil
 	}
 
+	log := input.Logger
 	extract := rt.resolveMemoryExtractFunc()
 	if extract == nil {
 		rt.recordMemoryExtractUnavailable(ctx, log)
 		return nil
 	}
 
-	records, err := rt.extractMemoryRecords(ctx, log, messages, extract)
+	records, err := rt.extractMemoryRecords(ctx, log, input.Messages, extract)
 	if err != nil {
 		return err
 	}
 	if len(records) == 0 {
 		return nil
 	}
-	return rt.StoreMemoryRecords(ctx, log, scope, records)
+	return rt.StoreMemoryRecords(ctx, StoreMemoryRecordsInput{
+		Logger:    log,
+		RunID:     input.RunID,
+		Iteration: input.Iteration,
+		Scope:     input.Scope,
+		Records:   records,
+	})
 }

@@ -53,6 +53,7 @@ func agentConfigFingerprintTools(c *agentConfig, tools []interfaces.Tool) string
 		string(c.agentMode),
 		c.agentToolExecutionMode,
 		retrieverConfigFingerprint(c.retrieverMode, c.retrievers),
+		hookGroupsFingerprint(c.hooks),
 	))
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/agenticenv/agent-sdk-go/internal/eventbus"
 	"github.com/agenticenv/agent-sdk-go/internal/events"
+	"github.com/agenticenv/agent-sdk-go/internal/hooks"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/memory"
@@ -92,7 +93,7 @@ type AgentSpec struct {
 	ResponseFormat *interfaces.ResponseFormat
 }
 
-// AgentConfig is static agent wiring on the runtime at construction: LLM client, tool approval policy, session, limits, and retriever config.
+// AgentConfig is static agent wiring on the runtime at construction: LLM client, tool approval policy, session, limits, retriever config, and hooks.
 type AgentConfig struct {
 	LLM                AgentLLM
 	ToolApprovalPolicy interfaces.AgentToolApprovalPolicy
@@ -100,6 +101,7 @@ type AgentConfig struct {
 	Session            AgentSession
 	Memory             AgentMemory
 	Limits             AgentLimits
+	Hooks              []hooks.HookGroup
 }
 
 // AgentMemory holds long-term memory configuration for recall and store.

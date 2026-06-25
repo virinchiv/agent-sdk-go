@@ -55,6 +55,10 @@ type AgentFingerprintPayload struct {
 	// Omitted when empty. Must match pkg/agent [retrieverConfigFingerprint] on caller and worker.
 	RetrieverFingerprint string `json:"retriever_fingerprint,omitempty"`
 
+	// HooksFingerprint is the pkg/agent digest of registered hook group names (sorted).
+	// Omitted when empty. Must match pkg/agent [hookGroupsFingerprint] on caller and worker.
+	HooksFingerprint string `json:"hooks_fingerprint,omitempty"`
+
 	Sampling *sdkruntime.LLMSampling `json:"sampling,omitempty"`
 
 	SessionSize int `json:"session_size"`
@@ -94,6 +98,7 @@ func BuildAgentFingerprintPayload(
 	agentMode string,
 	agentToolExecutionMode types.AgentToolExecutionMode,
 	retrieverFingerprint string,
+	hooksFingerprint string,
 ) AgentFingerprintPayload {
 	names := append([]string(nil), toolNames...)
 	sort.Strings(names)
@@ -117,6 +122,7 @@ func BuildAgentFingerprintPayload(
 		AgentMode:                mode,
 		AgentToolExecutionMode:   string(toolExecutionMode),
 		RetrieverFingerprint:     retrieverFingerprint,
+		HooksFingerprint:         hooksFingerprint,
 		Sampling:                 cloneLLMSampling(sampling),
 		SessionSize:              sessionSize,
 		MaxIterations:            limits.MaxIterations,
@@ -197,6 +203,7 @@ func computeAgentFingerprintFromRuntime(rt *TemporalRuntime, tools []interfaces.
 		rt.agentMode,
 		rt.ToolExecutionMode,
 		rt.retrieverFingerprint,
+		rt.hooksFingerprint,
 	)
 	return ComputeAgentFingerprint(mat)
 }

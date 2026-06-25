@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
+	"github.com/agenticenv/agent-sdk-go/internal/hooks"
 	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	testutil "github.com/agenticenv/agent-sdk-go/internal/testing"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
@@ -35,6 +36,18 @@ func newTestRuntime(exec sdkruntime.AgentConfig) *Runtime {
 
 func noopLog() logger.Logger { return logger.NoopLogger() }
 
+func storeMemoryRecords(rt *Runtime, ctx context.Context, scope interfaces.MemoryScope, records []interfaces.MemoryRecord) error {
+	return rt.StoreMemoryRecords(ctx, StoreMemoryRecordsInput{
+		Logger: noopLog(), Scope: scope, Records: records,
+	})
+}
+
+func executeMemoryStore(rt *Runtime, ctx context.Context, scope interfaces.MemoryScope, messages []interfaces.Message) error {
+	return rt.ExecuteMemoryStore(ctx, ExecuteMemoryStoreInput{
+		Logger: noopLog(), Scope: scope, Messages: messages,
+	})
+}
+
 // stubLLMClient is a minimal LLMClient that returns a fixed response.
 type stubLLMClient struct {
 	resp *interfaces.LLMResponse
@@ -50,6 +63,26 @@ func (stubLLMClient) GenerateStream(_ context.Context, _ *interfaces.LLMRequest)
 func (stubLLMClient) GetModel() string                    { return "stub" }
 func (stubLLMClient) GetProvider() interfaces.LLMProvider { return interfaces.LLMProviderOpenAI }
 func (stubLLMClient) IsStreamSupported() bool             { return false }
+
+type captureLLMClient struct {
+	lastReq *interfaces.LLMRequest
+	resp    *interfaces.LLMResponse
+	err     error
+}
+
+func (c *captureLLMClient) Generate(_ context.Context, req *interfaces.LLMRequest) (*interfaces.LLMResponse, error) {
+	if req != nil {
+		copy := *req
+		c.lastReq = &copy
+	}
+	return c.resp, c.err
+}
+func (captureLLMClient) GenerateStream(context.Context, *interfaces.LLMRequest) (interfaces.LLMStream, error) {
+	return nil, errors.New("stream not implemented")
+}
+func (captureLLMClient) GetModel() string                    { return "stub" }
+func (captureLLMClient) GetProvider() interfaces.LLMProvider { return interfaces.LLMProviderOpenAI }
+func (captureLLMClient) IsStreamSupported() bool             { return false }
 
 // --- BuildLLMRequest ---
 
@@ -188,7 +221,7 @@ func TestFetchConversationMessages_Error(t *testing.T) {
 
 func TestExecuteTool_UnknownTool(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{})
-	_, err := rt.ExecuteTool(context.Background(), noopLog(), nil, "missing", nil)
+	_, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{Logger: noopLog(), ToolName: "missing"}, interfaces.MemoryScope{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unknown tool")
 }
@@ -200,7 +233,9 @@ func TestExecuteTool_Success(t *testing.T) {
 	tool.EXPECT().Execute(gomock.Any(), gomock.Any()).Return("42", nil)
 
 	rt := newTestRuntime(sdkruntime.AgentConfig{})
-	result, err := rt.ExecuteTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "calc", map[string]any{"x": 1})
+	result, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "calc", Args: map[string]any{"x": 1},
+	}, interfaces.MemoryScope{})
 	require.NoError(t, err)
 	require.Equal(t, "42", result)
 }
@@ -212,9 +247,242 @@ func TestExecuteTool_ToolError(t *testing.T) {
 	tool.EXPECT().Execute(gomock.Any(), gomock.Any()).Return(nil, errors.New("tool failed"))
 
 	rt := newTestRuntime(sdkruntime.AgentConfig{})
-	_, err := rt.ExecuteTool(context.Background(), noopLog(), []interfaces.Tool{tool}, "fail-tool", nil)
+	_, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "fail-tool",
+	}, interfaces.MemoryScope{})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "tool failed")
+}
+
+func TestExecuteTool_BeforeToolModifiesArgs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	tool := ifmocks.NewMockTool(ctrl)
+	tool.EXPECT().Name().Return("calc").AnyTimes()
+	tool.EXPECT().DisplayName().Return("calc").AnyTimes()
+	tool.EXPECT().Execute(gomock.Any(), map[string]any{"x": 99}).Return("42", nil)
+
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Hooks: []hooks.HookGroup{{
+			Name: "guard",
+			Hooks: hooks.AgentHooks{BeforeTool: []hooks.BeforeToolHook{
+				func(_ context.Context, in hooks.BeforeToolHookInput) (hooks.BeforeToolHookOutput, error) {
+					return hooks.BeforeToolHookOutput{Args: map[string]any{"x": 99}}, nil
+				},
+			}},
+		}},
+	})
+	_, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "calc",
+		Args: map[string]any{"x": 1}, ToolCallID: "tc-1", RunID: "run-1",
+	}, interfaces.MemoryScope{})
+	require.NoError(t, err)
+}
+
+func TestExecuteTool_AfterToolModifiesResult(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	tool := ifmocks.NewMockTool(ctrl)
+	tool.EXPECT().Name().Return("calc").AnyTimes()
+	tool.EXPECT().DisplayName().Return("calc").AnyTimes()
+	tool.EXPECT().Execute(gomock.Any(), gomock.Any()).Return("raw", nil)
+
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Hooks: []hooks.HookGroup{{
+			Name: "scrub",
+			Hooks: hooks.AgentHooks{AfterTool: []hooks.AfterToolHook{
+				func(context.Context, hooks.AfterToolHookInput) (hooks.AfterToolHookOutput, error) {
+					return hooks.AfterToolHookOutput{Content: "scrubbed"}, nil
+				},
+			}},
+		}},
+	})
+	result, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "calc",
+	}, interfaces.MemoryScope{})
+	require.NoError(t, err)
+	require.Equal(t, "scrubbed", result)
+}
+
+type memoryKindTool struct{}
+
+func (memoryKindTool) Name() string                      { return "mem_tool" }
+func (memoryKindTool) DisplayName() string               { return "" }
+func (memoryKindTool) Description() string               { return "" }
+func (memoryKindTool) Parameters() interfaces.JSONSchema { return nil }
+func (memoryKindTool) Execute(context.Context, map[string]any) (any, error) {
+	return "ok", nil
+}
+func (memoryKindTool) ToolKind() types.ToolKind { return types.ToolKindMemory }
+
+func TestExecuteTool_NonHookEligibleKindSkipsHooks(t *testing.T) {
+	var beforeCalled bool
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Hooks: []hooks.HookGroup{{
+			Name: "guard",
+			Hooks: hooks.AgentHooks{BeforeTool: []hooks.BeforeToolHook{
+				func(context.Context, hooks.BeforeToolHookInput) (hooks.BeforeToolHookOutput, error) {
+					beforeCalled = true
+					return hooks.BeforeToolHookOutput{}, nil
+				},
+			}},
+		}},
+	})
+	_, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{memoryKindTool{}}, ToolName: "mem_tool",
+	}, interfaces.MemoryScope{})
+	require.NoError(t, err)
+	require.False(t, beforeCalled)
+}
+
+type testRetriever struct {
+	name      string
+	lastQuery string
+	docs      []interfaces.Document
+	err       error
+}
+
+func (r *testRetriever) Name() string { return r.name }
+
+func (r *testRetriever) Search(_ context.Context, query string) ([]interfaces.Document, error) {
+	r.lastQuery = query
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.docs, nil
+}
+
+type testRetrieverTool struct {
+	r *testRetriever
+}
+
+func (t *testRetrieverTool) Name() string        { return types.RetrieverToolName(t.r.name) }
+func (t *testRetrieverTool) DisplayName() string { return types.RetrieverToolDisplayName(t.r.name) }
+func (t *testRetrieverTool) Description() string { return "test retriever tool" }
+func (t *testRetrieverTool) Parameters() interfaces.JSONSchema {
+	return interfaces.JSONSchema{"type": "object"}
+}
+func (t *testRetrieverTool) ToolKind() types.ToolKind { return types.ToolKindRetriever }
+func (t *testRetrieverTool) Execute(ctx context.Context, args map[string]any) (any, error) {
+	raw, ok := args[types.RetrieverToolParamQuery].(string)
+	if !ok {
+		return nil, errors.New("query required")
+	}
+	query := strings.TrimSpace(raw)
+	if query == "" {
+		return nil, errors.New("query empty")
+	}
+	return t.r.Search(ctx, query)
+}
+
+func newTestRetrieverTool(r *testRetriever) interfaces.Tool {
+	return &testRetrieverTool{r: r}
+}
+
+func TestExecuteTool_RetrieverTool_FormatsDocs(t *testing.T) {
+	stub := &testRetriever{
+		name: "kb",
+		docs: []interfaces.Document{{Content: "doc", Source: "s", Score: 0.9}},
+	}
+	tool := newTestRetrieverTool(stub)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	got, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "retriever_kb",
+		Args: map[string]any{types.RetrieverToolParamQuery: "q"},
+	}, interfaces.MemoryScope{})
+	require.NoError(t, err)
+	require.Contains(t, got, "doc")
+	require.Equal(t, "q", stub.lastQuery)
+}
+
+func TestExecuteTool_RetrieverTool_BeforeRetrieveRewritesQuery(t *testing.T) {
+	stub := &testRetriever{
+		name: "kb",
+		docs: []interfaces.Document{{Content: "doc", Source: "s", Score: 0.9}},
+	}
+	tool := newTestRetrieverTool(stub)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Hooks: []hooks.HookGroup{{
+			Name: "rewrite",
+			Hooks: hooks.AgentHooks{BeforeRetrieve: []hooks.BeforeRetrieveHook{
+				func(_ context.Context, in hooks.BeforeRetrieveHookInput) (hooks.BeforeRetrieveHookOutput, error) {
+					if in.RunMeta.Iteration != 2 || in.RetrieverName != "kb" || in.Mode != types.RetrieverModeAgentic {
+						t.Fatalf("input = %#v", in)
+					}
+					return hooks.BeforeRetrieveHookOutput{Query: "hooked"}, nil
+				},
+			}},
+		}},
+	})
+	_, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "retriever_kb",
+		Args:  map[string]any{types.RetrieverToolParamQuery: "raw"},
+		RunID: "run-1", Iteration: 2,
+	}, interfaces.MemoryScope{})
+	require.NoError(t, err)
+	require.Equal(t, "hooked", stub.lastQuery)
+}
+
+func TestExecuteTool_RetrieverTool_AfterRetrieveFiltersDocs(t *testing.T) {
+	stub := &testRetriever{
+		name: "kb",
+		docs: []interfaces.Document{
+			{Content: "drop", Source: "s", Score: 0.5},
+			{Content: "keep", Source: "s", Score: 0.9},
+		},
+	}
+	tool := newTestRetrieverTool(stub)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Hooks: []hooks.HookGroup{{
+			Name: "filter",
+			Hooks: hooks.AgentHooks{AfterRetrieve: []hooks.AfterRetrieveHook{
+				func(_ context.Context, in hooks.AfterRetrieveHookInput) (hooks.AfterRetrieveHookOutput, error) {
+					return hooks.AfterRetrieveHookOutput{Documents: []interfaces.Document{in.Documents[1]}}, nil
+				},
+			}},
+		}},
+	})
+	got, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "retriever_kb",
+		Args: map[string]any{types.RetrieverToolParamQuery: "q"},
+	}, interfaces.MemoryScope{})
+	require.NoError(t, err)
+	require.Contains(t, got, "keep")
+	require.NotContains(t, got, "drop")
+}
+
+func TestExecuteTool_RetrieverTool_EmptyDocs(t *testing.T) {
+	stub := &testRetriever{name: "kb"}
+	tool := newTestRetrieverTool(stub)
+	rt := newTestRuntime(sdkruntime.AgentConfig{})
+	got, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "retriever_kb",
+		Args: map[string]any{types.RetrieverToolParamQuery: "q"},
+	}, interfaces.MemoryScope{})
+	require.NoError(t, err)
+	require.Equal(t, "", got)
+}
+
+func TestExecuteTool_RetrieverTool_BeforeRetrieveAbort(t *testing.T) {
+	stub := &testRetriever{
+		name: "kb",
+		docs: []interfaces.Document{{Content: "doc", Source: "s", Score: 0.9}},
+	}
+	tool := newTestRetrieverTool(stub)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Hooks: []hooks.HookGroup{{
+			Name: "block",
+			Hooks: hooks.AgentHooks{BeforeRetrieve: []hooks.BeforeRetrieveHook{
+				func(context.Context, hooks.BeforeRetrieveHookInput) (hooks.BeforeRetrieveHookOutput, error) {
+					return hooks.BeforeRetrieveHookOutput{}, errors.New("blocked")
+				},
+			}},
+		}},
+	})
+	_, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), Tools: []interfaces.Tool{tool}, ToolName: "retriever_kb",
+		Args: map[string]any{types.RetrieverToolParamQuery: "q"},
+	}, interfaces.MemoryScope{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked")
 }
 
 // --- AuthorizeTool ---
@@ -257,7 +525,7 @@ func TestAuthorizeTool_Denied(t *testing.T) {
 
 func TestExecuteRetrievers_NoRetrievers(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{})
-	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "query")
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "query"})
 	require.NoError(t, err)
 	require.Equal(t, "", got.Context)
 	require.Equal(t, int64(0), got.TotalSearches)
@@ -272,7 +540,7 @@ func TestExecuteRetrievers_AllFail(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
 	})
-	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "q"})
 	require.NoError(t, err)
 	require.Equal(t, "", got.Context)
 	require.Equal(t, int64(1), got.TotalSearches)
@@ -290,14 +558,202 @@ func TestExecuteRetrievers_Success(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
 	})
-	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "my query")
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "my query"})
 	require.NoError(t, err)
 	require.Contains(t, got.Context, "doc content")
 	require.Equal(t, int64(1), got.TotalSearches)
 	require.Equal(t, int64(0), got.FailedSearches)
 }
 
+func TestExecuteRetrievers_BeforeRetrieveRewritesQuery(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	r := ifmocks.NewMockRetriever(ctrl)
+	r.EXPECT().Name().Return("kb").AnyTimes()
+	r.EXPECT().Search(gomock.Any(), "hooked").Return([]interfaces.Document{
+		{Content: "doc", Source: "s", Score: 0.9},
+	}, nil)
+
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Retrievers: sdkruntime.AgentRetrievers{
+			Mode:       types.RetrieverModePrefetch,
+			Retrievers: []interfaces.Retriever{r},
+		},
+		Hooks: []hooks.HookGroup{{
+			Name: "rewrite",
+			Hooks: hooks.AgentHooks{BeforeRetrieve: []hooks.BeforeRetrieveHook{
+				func(_ context.Context, in hooks.BeforeRetrieveHookInput) (hooks.BeforeRetrieveHookOutput, error) {
+					if in.RunMeta.RunID != "run-r" || in.RunMeta.Iteration != 0 || in.RunMeta.HooksGroup != "rewrite" {
+						t.Fatalf("RunMeta = %#v", in.RunMeta)
+					}
+					if in.RetrieverName != "kb" || in.Mode != types.RetrieverModePrefetch {
+						t.Fatalf("input = %#v", in)
+					}
+					return hooks.BeforeRetrieveHookOutput{Query: "hooked"}, nil
+				},
+			}},
+		}},
+	})
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{
+		Logger: noopLog(), RunID: "run-r", Iteration: 0, Query: "raw",
+	})
+	require.NoError(t, err)
+	require.Contains(t, got.Context, "doc")
+}
+
+func TestExecuteRetrievers_AfterRetrieveFiltersDocs(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	r := ifmocks.NewMockRetriever(ctrl)
+	r.EXPECT().Name().Return("kb").AnyTimes()
+	r.EXPECT().Search(gomock.Any(), "q").Return([]interfaces.Document{
+		{Content: "drop", Source: "s", Score: 0.5},
+		{Content: "keep", Source: "s", Score: 0.9},
+	}, nil)
+
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
+		Hooks: []hooks.HookGroup{{
+			Name: "filter",
+			Hooks: hooks.AgentHooks{AfterRetrieve: []hooks.AfterRetrieveHook{
+				func(_ context.Context, in hooks.AfterRetrieveHookInput) (hooks.AfterRetrieveHookOutput, error) {
+					return hooks.AfterRetrieveHookOutput{
+						Documents: []interfaces.Document{in.Documents[1]},
+					}, nil
+				},
+			}},
+		}},
+	})
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "q"})
+	require.NoError(t, err)
+	require.Contains(t, got.Context, "keep")
+	require.NotContains(t, got.Context, "drop")
+}
+
+func TestExecuteRetrievers_BeforeRetrieveAbort(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	r := ifmocks.NewMockRetriever(ctrl)
+	r.EXPECT().Name().Return("kb").AnyTimes()
+	// Search must not be called when BeforeRetrieve aborts.
+
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
+		Hooks: []hooks.HookGroup{{
+			Name: "block",
+			Hooks: hooks.AgentHooks{BeforeRetrieve: []hooks.BeforeRetrieveHook{
+				func(context.Context, hooks.BeforeRetrieveHookInput) (hooks.BeforeRetrieveHookOutput, error) {
+					return hooks.BeforeRetrieveHookOutput{}, errors.New("blocked")
+				},
+			}},
+		}},
+	})
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "q"})
+	require.NoError(t, err)
+	require.Equal(t, "", got.Context)
+	require.Equal(t, int64(1), got.TotalSearches)
+	require.Equal(t, int64(1), got.FailedSearches)
+}
+
+func TestExecuteRetrievers_AfterRetrieveAbort(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	r := ifmocks.NewMockRetriever(ctrl)
+	r.EXPECT().Name().Return("kb").AnyTimes()
+	r.EXPECT().Search(gomock.Any(), "q").Return([]interfaces.Document{
+		{Content: "doc", Source: "s", Score: 0.9},
+	}, nil)
+
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
+		Hooks: []hooks.HookGroup{{
+			Name: "block",
+			Hooks: hooks.AgentHooks{AfterRetrieve: []hooks.AfterRetrieveHook{
+				func(context.Context, hooks.AfterRetrieveHookInput) (hooks.AfterRetrieveHookOutput, error) {
+					return hooks.AfterRetrieveHookOutput{}, errors.New("blocked")
+				},
+			}},
+		}},
+	})
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "q"})
+	require.NoError(t, err)
+	require.Equal(t, "", got.Context)
+	require.Equal(t, int64(1), got.TotalSearches)
+	require.Equal(t, int64(1), got.FailedSearches)
+}
+
 // --- ExecuteLLM ---
+
+func TestExecuteLLM_BeforeLLMModifiesRequest(t *testing.T) {
+	llm := &captureLLMClient{resp: &interfaces.LLMResponse{Content: "ok"}}
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM: sdkruntime.AgentLLM{Client: llm},
+		Hooks: []hooks.HookGroup{{
+			Name: "guardrails",
+			Hooks: hooks.AgentHooks{BeforeLLM: []hooks.BeforeLLMHook{
+				func(_ context.Context, in hooks.BeforeLLMHookInput) (hooks.BeforeLLMHookOutput, error) {
+					if in.RunMeta.RunID != "run-42" || in.RunMeta.Iteration != 2 || in.RunMeta.HooksGroup != "guardrails" {
+						t.Fatalf("RunMeta = %#v", in.RunMeta)
+					}
+					out := in.Request
+					out.SystemMessage = "hooked"
+					return hooks.BeforeLLMHookOutput{Request: out}, nil
+				},
+			}},
+		}},
+	})
+	input := ExecuteLLMInput{
+		Logger:    noopLog(),
+		AgentName: "agent",
+		MessageID: "msg-1",
+		RunID:     "run-42",
+		Iteration: 2,
+	}
+	_, err := rt.ExecuteLLM(context.Background(), input)
+	require.NoError(t, err)
+	require.NotNil(t, llm.lastReq)
+	require.Equal(t, "hooked", llm.lastReq.SystemMessage)
+}
+
+func TestExecuteLLM_AfterLLMModifiesResponse(t *testing.T) {
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
+			resp: &interfaces.LLMResponse{Content: "raw"},
+		}},
+		Hooks: []hooks.HookGroup{{
+			Name: "scrub",
+			Hooks: hooks.AgentHooks{AfterLLM: []hooks.AfterLLMHook{
+				func(_ context.Context, in hooks.AfterLLMHookInput) (hooks.AfterLLMHookOutput, error) {
+					out := in.Response
+					out.Content = "scrubbed"
+					return hooks.AfterLLMHookOutput{Response: out}, nil
+				},
+			}},
+		}},
+	})
+	result, err := rt.ExecuteLLM(context.Background(), ExecuteLLMInput{
+		Logger: noopLog(), AgentName: "agent", MessageID: "msg-1",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "scrubbed", result.Content)
+}
+
+func TestExecuteLLM_BeforeLLMErrorAborts(t *testing.T) {
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{
+			resp: &interfaces.LLMResponse{Content: "should not run"},
+		}},
+		Hooks: []hooks.HookGroup{{
+			Name: "block",
+			Hooks: hooks.AgentHooks{BeforeLLM: []hooks.BeforeLLMHook{
+				func(context.Context, hooks.BeforeLLMHookInput) (hooks.BeforeLLMHookOutput, error) {
+					return hooks.BeforeLLMHookOutput{}, errors.New("blocked")
+				},
+			}},
+		}},
+	})
+	_, err := rt.ExecuteLLM(context.Background(), ExecuteLLMInput{
+		Logger: noopLog(), AgentName: "agent", MessageID: "msg-1",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked")
+}
 
 func TestExecuteLLM_LLMError(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
@@ -541,7 +997,7 @@ func TestExecuteRetrievers_PartialFailure(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{good, bad}},
 	})
-	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "q"})
 	require.NoError(t, err) // partial is ok
 	require.Contains(t, got.Context, "useful")
 	require.Equal(t, int64(2), got.TotalSearches)
@@ -561,7 +1017,7 @@ func TestStoreMemoryRecords_appliesTTL(t *testing.T) {
 	ctx := context.Background()
 	before := time.Now().UTC()
 
-	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+	require.NoError(t, storeMemoryRecords(rt, ctx, scope, []interfaces.MemoryRecord{
 		{Text: "User prefers concise answers", Kind: memory.KindNote},
 	}))
 
@@ -581,7 +1037,7 @@ func TestStoreMemoryRecords_allowlistRejectsKind(t *testing.T) {
 		Memory: sdkruntime.AgentMemory{Config: &cfg},
 	})
 
-	err := rt.StoreMemoryRecords(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+	err := storeMemoryRecords(rt, context.Background(), interfaces.MemoryScope{UserID: "u1"},
 		[]interfaces.MemoryRecord{{Text: "note text", Kind: memory.KindNote}})
 	require.Error(t, err)
 }
@@ -597,10 +1053,10 @@ func TestStoreMemoryRecords_dedupUpserts(t *testing.T) {
 	ctx := context.Background()
 	text := "favorite color is blue"
 
-	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+	require.NoError(t, storeMemoryRecords(rt, ctx, scope, []interfaces.MemoryRecord{
 		{Text: text, Kind: memory.KindPreference},
 	}))
-	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+	require.NoError(t, storeMemoryRecords(rt, ctx, scope, []interfaces.MemoryRecord{
 		{Text: text, Kind: memory.KindFact},
 	}))
 
@@ -620,7 +1076,7 @@ func TestStoreMemoryRecords_dedupAppendsDistinctText(t *testing.T) {
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
 
-	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+	require.NoError(t, storeMemoryRecords(rt, ctx, scope, []interfaces.MemoryRecord{
 		{Text: "favorite color is blue", Kind: memory.KindPreference},
 		{Text: "prefers concise answers", Kind: memory.KindPreference},
 	}))
@@ -640,7 +1096,7 @@ func TestStoreMemoryRecords_appliesDefaultKind(t *testing.T) {
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
 
-	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+	require.NoError(t, storeMemoryRecords(rt, ctx, scope, []interfaces.MemoryRecord{
 		{Text: "remember this"},
 	}))
 
@@ -652,7 +1108,7 @@ func TestStoreMemoryRecords_appliesDefaultKind(t *testing.T) {
 
 func TestStoreMemoryRecords_notConfigured(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{})
-	require.NoError(t, rt.StoreMemoryRecords(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+	require.NoError(t, storeMemoryRecords(rt, context.Background(), interfaces.MemoryScope{UserID: "u1"},
 		[]interfaces.MemoryRecord{{Text: "x"}}))
 }
 
@@ -666,7 +1122,7 @@ func TestStoreMemoryRecords_skipsEmptyText(t *testing.T) {
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
 
-	require.NoError(t, rt.StoreMemoryRecords(ctx, noopLog(), scope, []interfaces.MemoryRecord{
+	require.NoError(t, storeMemoryRecords(rt, ctx, scope, []interfaces.MemoryRecord{
 		{Text: "   "},
 	}))
 
@@ -696,7 +1152,7 @@ func TestStoreMemoryRecords_emitsMetrics(t *testing.T) {
 	})
 	rt.Metrics = metrics
 
-	require.NoError(t, rt.StoreMemoryRecords(context.Background(), noopLog(), scope,
+	require.NoError(t, storeMemoryRecords(rt, context.Background(), scope,
 		[]interfaces.MemoryRecord{{Text: "hello world", Kind: memory.KindNote}}))
 }
 
@@ -713,9 +1169,137 @@ func TestStoreMemoryRecords_kindRejectedEmitsFailedMetric(t *testing.T) {
 	})
 	rt.Metrics = metrics
 
-	err := rt.StoreMemoryRecords(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+	err := storeMemoryRecords(rt, context.Background(), interfaces.MemoryScope{UserID: "u1"},
 		[]interfaces.MemoryRecord{{Text: "x", Kind: memory.KindNote}})
 	require.Error(t, err)
+}
+
+func TestStoreMemoryRecords_BeforeMemoryStoreRewritesRecord(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "scrub",
+			Hooks: hooks.AgentHooks{BeforeMemoryStore: []hooks.BeforeMemoryStoreHook{
+				func(_ context.Context, in hooks.BeforeMemoryStoreHookInput) (hooks.BeforeMemoryStoreHookOutput, error) {
+					if in.RunMeta.RunID != "run-s" || in.RunMeta.Iteration != 3 {
+						t.Fatalf("RunMeta = %#v", in.RunMeta)
+					}
+					return hooks.BeforeMemoryStoreHookOutput{
+						Record: interfaces.MemoryRecord{Text: "scrubbed text"},
+					}, nil
+				},
+			}},
+		}},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+	require.NoError(t, rt.StoreMemoryRecords(ctx, StoreMemoryRecordsInput{
+		Logger: noopLog(), RunID: "run-s", Iteration: 3, Scope: scope,
+		Records: []interfaces.MemoryRecord{{Text: "raw secret"}},
+	}))
+
+	entries, err := store.Load(ctx, scope, "scrubbed", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "scrubbed text", entries[0].Text)
+}
+
+func TestStoreMemoryRecords_BeforeMemoryStoreHookIDSkipsDedup(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mem := ifmocks.NewMockMemory(ctrl)
+	scope := interfaces.MemoryScope{UserID: "u1"}
+
+	mem.EXPECT().Load(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+	mem.EXPECT().Store(gomock.Any(), scope, gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, _ interfaces.MemoryScope, rec interfaces.MemoryRecord, opts ...interfaces.StoreMemoryOption) (string, error) {
+			storeOpts := interfaces.StoreMemoryOptions{}
+			for _, opt := range opts {
+				opt(&storeOpts)
+			}
+			require.Equal(t, "hook-id", storeOpts.ID)
+			require.Equal(t, "stored text", rec.Text)
+			return "hook-id", nil
+		}).Times(1)
+
+	cfg := memory.DefaultConfig(mem)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "upsert",
+			Hooks: hooks.AgentHooks{BeforeMemoryStore: []hooks.BeforeMemoryStoreHook{
+				func(context.Context, hooks.BeforeMemoryStoreHookInput) (hooks.BeforeMemoryStoreHookOutput, error) {
+					return hooks.BeforeMemoryStoreHookOutput{
+						Record: interfaces.MemoryRecord{Text: "stored text"},
+						ID:     "hook-id",
+					}, nil
+				},
+			}},
+		}},
+	})
+
+	require.NoError(t, rt.StoreMemoryRecords(context.Background(), StoreMemoryRecordsInput{
+		Logger: noopLog(), Scope: scope,
+		Records: []interfaces.MemoryRecord{{Text: "original"}},
+	}))
+}
+
+func TestStoreMemoryRecords_BeforeMemoryStoreAbort(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "block",
+			Hooks: hooks.AgentHooks{BeforeMemoryStore: []hooks.BeforeMemoryStoreHook{
+				func(context.Context, hooks.BeforeMemoryStoreHookInput) (hooks.BeforeMemoryStoreHookOutput, error) {
+					return hooks.BeforeMemoryStoreHookOutput{}, errors.New("blocked")
+				},
+			}},
+		}},
+	})
+
+	err := rt.StoreMemoryRecords(context.Background(), StoreMemoryRecordsInput{
+		Logger: noopLog(), Scope: interfaces.MemoryScope{UserID: "u1"},
+		Records: []interfaces.MemoryRecord{{Text: "x"}},
+	})
+	require.Error(t, err)
+	require.Equal(t, "blocked", err.Error())
+
+	entries, err := store.Load(context.Background(), interfaces.MemoryScope{UserID: "u1"}, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestStoreMemoryRecords_AfterMemoryStoreAbort(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	mem := ifmocks.NewMockMemory(ctrl)
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	mem.EXPECT().Load(gomock.Any(), scope, gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
+	mem.EXPECT().Store(gomock.Any(), scope, gomock.Any()).Return("id-1", nil).Times(1)
+
+	cfg := memory.DefaultConfig(mem)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "audit",
+			Hooks: hooks.AgentHooks{AfterMemoryStore: []hooks.AfterMemoryStoreHook{
+				func(_ context.Context, in hooks.AfterMemoryStoreHookInput) (hooks.AfterMemoryStoreHookOutput, error) {
+					require.Equal(t, "id-1", in.ID)
+					return hooks.AfterMemoryStoreHookOutput{}, errors.New("blocked")
+				},
+			}},
+		}},
+	})
+
+	err := rt.StoreMemoryRecords(context.Background(), StoreMemoryRecordsInput{
+		Logger: noopLog(), Scope: scope,
+		Records: []interfaces.MemoryRecord{{Text: "hello"}},
+	})
+	require.Error(t, err)
+	require.Equal(t, "blocked", err.Error())
 }
 
 // --- default memory extract (Always mode) ---
@@ -886,26 +1470,65 @@ func TestExecuteMemoryStore_skipsOnDemand(t *testing.T) {
 		Memory: sdkruntime.AgentMemory{Config: &cfg},
 	})
 	scope := interfaces.MemoryScope{UserID: "u1"}
-	require.NoError(t, rt.ExecuteMemoryStore(context.Background(), noopLog(), scope, testRunMessages("hello", "world")))
+	require.NoError(t, executeMemoryStore(rt, context.Background(), scope, testRunMessages("hello", "world")))
 	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
 	require.NoError(t, err)
 	require.Empty(t, entries)
 }
 
-func TestExecuteToolWithMemoryScope_saveMemory(t *testing.T) {
+func TestExecuteTool_saveMemory(t *testing.T) {
 	store := testutil.NewInmemMemory()
 	cfg := memory.DefaultConfig(store)
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Memory: sdkruntime.AgentMemory{Config: &cfg},
 	})
 	scope := interfaces.MemoryScope{UserID: "u1"}
-	out, err := rt.ExecuteToolWithMemoryScope(context.Background(), noopLog(), nil, types.SaveMemoryToolName,
-		map[string]any{types.MemoryToolParamText: "favorite color is blue"}, scope)
+	out, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), ToolName: types.SaveMemoryToolName,
+		Args: map[string]any{types.MemoryToolParamText: "favorite color is blue"},
+	}, scope)
 	require.NoError(t, err)
 	require.Equal(t, "memory saved", out)
 	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
+}
+
+func TestExecuteTool_saveMemory_runsBeforeStoreHook(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "scrub",
+			Hooks: hooks.AgentHooks{BeforeMemoryStore: []hooks.BeforeMemoryStoreHook{
+				func(_ context.Context, in hooks.BeforeMemoryStoreHookInput) (hooks.BeforeMemoryStoreHookOutput, error) {
+					if in.RunMeta.RunID != "run-t" || in.RunMeta.Iteration != 2 {
+						t.Fatalf("RunMeta = %#v", in.RunMeta)
+					}
+					rec := in.Record
+					if rec.Metadata == nil {
+						rec.Metadata = map[string]string{}
+					}
+					rec.Metadata["hooked"] = "true"
+					return hooks.BeforeMemoryStoreHookOutput{Record: rec}, nil
+				},
+			}},
+		}},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	_, err := rt.ExecuteTool(context.Background(), ExecuteToolInput{
+		Logger: noopLog(), RunID: "run-t", Iteration: 2,
+		ToolName: types.SaveMemoryToolName,
+		Args:     map[string]any{types.MemoryToolParamText: "favorite color is blue"},
+	}, scope)
+	require.NoError(t, err)
+
+	entries, err := store.Load(context.Background(), scope, "", cfg.Recall.RecencyLoadOptions()...)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "true", entries[0].Metadata["hooked"])
 }
 
 func TestExecuteMemoryRecallAndStore(t *testing.T) {
@@ -919,9 +1542,11 @@ func TestExecuteMemoryRecallAndStore(t *testing.T) {
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
 
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hello", "world")))
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages("hello", "world")))
 
-	res, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "hello")
+	res, err := rt.ExecuteMemoryRecall(ctx, ExecuteMemoryRecallInput{
+		Logger: noopLog(), RunID: "run-1", Iteration: 0, Scope: scope, Query: "hello",
+	})
 	require.NoError(t, err)
 	require.NotEmpty(t, res.Context)
 }
@@ -938,7 +1563,7 @@ func TestExecuteMemoryStore_AppliesTTLFromPolicy(t *testing.T) {
 	ctx := context.Background()
 	before := time.Now().UTC()
 
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hello", "world")))
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages("hello", "world")))
 
 	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
 	require.NoError(t, err)
@@ -959,8 +1584,8 @@ func TestExecuteMemoryStore_skipsEmptyMessages(t *testing.T) {
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
 
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, nil))
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, []interfaces.Message{
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, nil))
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, []interfaces.Message{
 		{Role: interfaces.MessageRoleTool, Content: "noise"},
 	}))
 
@@ -981,7 +1606,7 @@ func TestExecuteMemoryStore_noExtractorEmitsFailedMetric(t *testing.T) {
 	})
 	rt.Metrics = metrics
 
-	require.NoError(t, rt.ExecuteMemoryStore(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"},
+	require.NoError(t, executeMemoryStore(rt, context.Background(), interfaces.MemoryScope{UserID: "u1"},
 		testRunMessages("hi", "there")))
 }
 
@@ -1007,7 +1632,7 @@ func TestExecuteMemoryExtract_EmitsMetrics(t *testing.T) {
 	rt.Metrics = metrics
 
 	scope := interfaces.MemoryScope{UserID: "u1"}
-	require.NoError(t, rt.ExecuteMemoryStore(context.Background(), noopLog(), scope, testRunMessages("hello", "world")))
+	require.NoError(t, executeMemoryStore(rt, context.Background(), scope, testRunMessages("hello", "world")))
 }
 
 func TestExecuteMemoryExtract_EmitsFailedMetric(t *testing.T) {
@@ -1027,7 +1652,7 @@ func TestExecuteMemoryExtract_EmitsFailedMetric(t *testing.T) {
 	})
 	rt.Metrics = metrics
 
-	err := rt.ExecuteMemoryStore(context.Background(), noopLog(), interfaces.MemoryScope{UserID: "u1"}, testRunMessages("hi", "there"))
+	err := executeMemoryStore(rt, context.Background(), interfaces.MemoryScope{UserID: "u1"}, testRunMessages("hi", "there"))
 	require.Error(t, err)
 }
 
@@ -1044,7 +1669,7 @@ func TestExecuteMemoryStore_extractsWithDefaultLLM(t *testing.T) {
 
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("I like tea", "noted")))
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages("I like tea", "noted")))
 
 	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
 	require.NoError(t, err)
@@ -1065,7 +1690,7 @@ func TestExecuteMemoryStore_setsExtractMetadata(t *testing.T) {
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
 
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hi", "there")))
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages("hi", "there")))
 
 	entries, err := store.Load(ctx, scope, "", cfg.Recall.RecencyLoadOptions()...)
 	require.NoError(t, err)
@@ -1091,7 +1716,9 @@ func TestExecuteMemoryRecall_OmitsExpired(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	res, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "concise")
+	res, err := rt.ExecuteMemoryRecall(ctx, ExecuteMemoryRecallInput{
+		Logger: noopLog(), RunID: "run-1", Iteration: 0, Scope: scope, Query: "concise",
+	})
 	require.NoError(t, err)
 	require.Empty(t, res.Context)
 }
@@ -1107,12 +1734,95 @@ func TestExecuteMemoryRecall_SemanticMissFallsBackToRecency(t *testing.T) {
 	scope := interfaces.MemoryScope{UserID: "u1"}
 	ctx := context.Background()
 
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages(
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages(
 		"Remember that I prefer concise answers.", "Got it.")))
 
-	res, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "What answer style do I prefer?")
+	res, err := rt.ExecuteMemoryRecall(ctx, ExecuteMemoryRecallInput{
+		Logger: noopLog(), RunID: "run-1", Iteration: 0, Scope: scope, Query: "What answer style do I prefer?",
+	})
 	require.NoError(t, err)
 	require.Contains(t, res.Context, "concise answers")
+}
+
+func TestExecuteMemoryRecall_BeforeMemoryLoadRewritesQuery(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "rewrite",
+			Hooks: hooks.AgentHooks{BeforeMemoryLoad: []hooks.BeforeMemoryLoadHook{
+				func(_ context.Context, in hooks.BeforeMemoryLoadHookInput) (hooks.BeforeMemoryLoadHookOutput, error) {
+					if in.RunMeta.RunID != "run-m" || in.RunMeta.Iteration != 0 || in.RunMeta.HooksGroup != "rewrite" {
+						t.Fatalf("RunMeta = %#v", in.RunMeta)
+					}
+					return hooks.BeforeMemoryLoadHookOutput{Query: "hooked"}, nil
+				},
+			}},
+		}},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages(
+		"Remember that I prefer concise answers.", "Got it.")))
+
+	res, err := rt.ExecuteMemoryRecall(ctx, ExecuteMemoryRecallInput{
+		Logger: noopLog(), RunID: "run-m", Iteration: 0, Scope: scope, Query: "raw",
+	})
+	require.NoError(t, err)
+	require.Contains(t, res.Context, "concise answers")
+}
+
+func TestExecuteMemoryRecall_AfterMemoryLoadFiltersContext(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memoryConfigAlways(store)
+	cfg.Store.Extract = testAlwaysStoreExtract
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "filter",
+			Hooks: hooks.AgentHooks{AfterMemoryLoad: []hooks.AfterMemoryLoadHook{
+				func(_ context.Context, in hooks.AfterMemoryLoadHookInput) (hooks.AfterMemoryLoadHookOutput, error) {
+					return hooks.AfterMemoryLoadHookOutput{PromptContext: "filtered"}, nil
+				},
+			}},
+		}},
+	})
+
+	scope := interfaces.MemoryScope{UserID: "u1"}
+	ctx := context.Background()
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages("hello", "world")))
+
+	res, err := rt.ExecuteMemoryRecall(ctx, ExecuteMemoryRecallInput{
+		Logger: noopLog(), RunID: "run-1", Iteration: 0, Scope: scope, Query: "hello",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "filtered", res.Context)
+}
+
+func TestExecuteMemoryRecall_BeforeMemoryLoadAbort(t *testing.T) {
+	store := testutil.NewInmemMemory()
+	cfg := memory.DefaultConfig(store)
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		Memory: sdkruntime.AgentMemory{Config: &cfg},
+		Hooks: []hooks.HookGroup{{
+			Name: "block",
+			Hooks: hooks.AgentHooks{BeforeMemoryLoad: []hooks.BeforeMemoryLoadHook{
+				func(context.Context, hooks.BeforeMemoryLoadHookInput) (hooks.BeforeMemoryLoadHookOutput, error) {
+					return hooks.BeforeMemoryLoadHookOutput{}, errors.New("blocked")
+				},
+			}},
+		}},
+	})
+
+	_, err := rt.ExecuteMemoryRecall(context.Background(), ExecuteMemoryRecallInput{
+		Logger: noopLog(), RunID: "run-1", Iteration: 0,
+		Scope: interfaces.MemoryScope{UserID: "u1"}, Query: "q",
+	})
+	require.Error(t, err)
+	require.Equal(t, "blocked", err.Error())
 }
 
 func TestSubAgentScope(t *testing.T) {
@@ -1182,8 +1892,10 @@ func TestExecuteMemoryRecall_EmitsMetrics(t *testing.T) {
 	rt.Metrics = metrics
 
 	ctx := context.Background()
-	require.NoError(t, rt.ExecuteMemoryStore(ctx, noopLog(), scope, testRunMessages("hello", "world")))
-	_, err := rt.ExecuteMemoryRecall(ctx, noopLog(), scope, "hello")
+	require.NoError(t, executeMemoryStore(rt, ctx, scope, testRunMessages("hello", "world")))
+	_, err := rt.ExecuteMemoryRecall(ctx, ExecuteMemoryRecallInput{
+		Logger: noopLog(), RunID: "run-1", Iteration: 0, Scope: scope, Query: "hello",
+	})
 	require.NoError(t, err)
 }
 
@@ -1592,7 +2304,7 @@ func TestExecuteRetrievers_EmptyDocsSkipped(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		Retrievers: sdkruntime.AgentRetrievers{Retrievers: []interfaces.Retriever{r}},
 	})
-	got, err := rt.ExecuteRetrievers(context.Background(), noopLog(), "q")
+	got, err := rt.ExecuteRetrievers(context.Background(), ExecuteRetrieversInput{Logger: noopLog(), Query: "q"})
 	require.NoError(t, err)
 	require.Equal(t, "", got.Context)
 	require.Equal(t, int64(1), got.TotalSearches)

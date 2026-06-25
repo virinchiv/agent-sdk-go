@@ -46,6 +46,8 @@ type AgentLoopInput struct {
 	MaxSubAgentDepth int
 	// MemoryScope is resolved before the run and used for recall/store.
 	MemoryScope interfaces.MemoryScope
+	// RunID is the stable identifier for this agent run; passed to LLM hooks via [RunMeta].
+	RunID string
 }
 
 // AgentLoopResult is the outcome of a completed local agent run.
@@ -138,7 +140,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 	memoryContext := ""
 	if rt.MemoryConfigured() && rt.RecallEnabled() {
 		log.Debug(ctx, "local: memory recall started", slog.String("scope", "loop"))
-		res, err := rt.ExecuteMemoryRecall(ctx, log, input.MemoryScope, input.UserPrompt)
+		res, err := rt.ExecuteMemoryRecall(ctx, base.ExecuteMemoryRecallInput{
+			Logger:    log,
+			RunID:     input.RunID,
+			Iteration: 0,
+			Scope:     input.MemoryScope,
+			Query:     input.UserPrompt,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("memory recall: %w", err)
 		}
@@ -159,7 +167,12 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 			slog.String("scope", "loop"),
 			slog.String("mode", string(retrieverMode)),
 			slog.Int("retrieverCount", len(rt.AgentConfig.Retrievers.Retrievers)))
-		res, err := rt.ExecuteRetrievers(ctx, log, input.UserPrompt)
+		res, err := rt.ExecuteRetrievers(ctx, base.ExecuteRetrieversInput{
+			Logger:    log,
+			RunID:     input.RunID,
+			Iteration: 0,
+			Query:     input.UserPrompt,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("retriever prefetch: %w", err)
 		}
@@ -188,6 +201,8 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 			Logger:           log,
 			AgentName:        agentName,
 			MessageID:        messageID,
+			RunID:            input.RunID,
+			Iteration:        iter,
 			Messages:         messages,
 			SkipTools:        false,
 			MemoryContext:    memoryContext,
@@ -227,6 +242,8 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 				Logger:           log,
 				AgentName:        agentName,
 				MessageID:        finalMessageID,
+				RunID:            input.RunID,
+				Iteration:        iter,
 				Messages:         messages,
 				SkipTools:        true,
 				MemoryContext:    memoryContext,
@@ -272,9 +289,9 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		var toolResults []toolResult
 		switch toolExecMode {
 		case types.AgentToolExecutionModeParallel:
-			toolResults, err = rt.executeToolsParallel(ctx, input, messageID, llmResult.ToolCalls, emit)
+			toolResults, err = rt.executeToolsParallel(ctx, input, messageID, iter, llmResult.ToolCalls, emit)
 		case types.AgentToolExecutionModeSequential:
-			toolResults, err = rt.executeToolsSequential(ctx, input, messageID, llmResult.ToolCalls, emit)
+			toolResults, err = rt.executeToolsSequential(ctx, input, messageID, iter, llmResult.ToolCalls, emit)
 		default:
 			return nil, fmt.Errorf("invalid tool execution mode %q: use %q or %q",
 				toolExecMode,
@@ -319,7 +336,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 	}
 
 	if rt.RunEndMemoryStoreEnabled() {
-		if err := rt.ExecuteMemoryStore(ctx, log, input.MemoryScope, messages); err != nil {
+		if err := rt.ExecuteMemoryStore(ctx, base.ExecuteMemoryStoreInput{
+			Logger:    log,
+			RunID:     input.RunID,
+			Iteration: 0,
+			Scope:     input.MemoryScope,
+			Messages:  messages,
+		}); err != nil {
 			log.Warn(ctx, "local: memory store failed", slog.String("scope", "loop"), slog.Any("error", err))
 			telemetry.Storage.FailedMemoryStores++
 		} else {
@@ -353,6 +376,7 @@ func (rt *LocalRuntime) executeToolsParallel(
 	ctx context.Context,
 	input AgentLoopInput,
 	messageID string,
+	iteration int,
 	toolCalls []base.ToolCallRequest,
 	emit func(events.AgentEvent),
 ) ([]toolResult, error) {
@@ -367,7 +391,7 @@ func (rt *LocalRuntime) executeToolsParallel(
 		wg.Add(1)
 		go func(idx int, tc base.ToolCallRequest) {
 			defer wg.Done()
-			result, err := rt.executeSingleTool(ctx, input, messageID, tc, emit)
+			result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, emit)
 			if err != nil {
 				rt.logger.Info(ctx, "local: parallel tool failed",
 					slog.String("scope", "loop"),
@@ -396,6 +420,7 @@ func (rt *LocalRuntime) executeToolsSequential(
 	ctx context.Context,
 	input AgentLoopInput,
 	messageID string,
+	iteration int,
 	toolCalls []base.ToolCallRequest,
 	emit func(events.AgentEvent),
 ) ([]toolResult, error) {
@@ -405,7 +430,7 @@ func (rt *LocalRuntime) executeToolsSequential(
 
 	results := make([]toolResult, len(toolCalls))
 	for idx, tc := range toolCalls {
-		result, err := rt.executeSingleTool(ctx, input, messageID, tc, emit)
+		result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, emit)
 		if err != nil {
 			rt.logger.Info(ctx, "local: sequential tool failed",
 				slog.String("scope", "loop"),
@@ -432,6 +457,7 @@ func (rt *LocalRuntime) executeSingleTool(
 	ctx context.Context,
 	input AgentLoopInput,
 	messageID string,
+	iteration int,
 	tc base.ToolCallRequest,
 	emit func(events.AgentEvent),
 ) (toolResult, error) {
@@ -588,6 +614,7 @@ func (rt *LocalRuntime) executeSingleTool(
 				emit(events.NewAgentStepStartedEvent(stepName))
 				subResult, execErr := subAgentRoute.runtime.RunAgentLoop(ctx, AgentLoopInput{
 					UserPrompt:       query,
+					RunID:            uuid.New().String(),
 					StreamingEnabled: input.StreamingEnabled,
 					ChannelName:      input.ChannelName,
 					ApprovalHandler:  input.ApprovalHandler,
@@ -611,7 +638,15 @@ func (rt *LocalRuntime) executeSingleTool(
 				slog.String("scope", "loop"),
 				slog.String("tool", tc.ToolName),
 				slog.String("toolCallID", tc.ToolCallID))
-			result, execErr := rt.ExecuteToolWithMemoryScope(ctx, log, tools, tc.ToolName, tc.Args, input.MemoryScope)
+			result, execErr := rt.ExecuteTool(ctx, base.ExecuteToolInput{
+				Logger:     log,
+				Tools:      tools,
+				ToolName:   tc.ToolName,
+				Args:       tc.Args,
+				ToolCallID: tc.ToolCallID,
+				RunID:      input.RunID,
+				Iteration:  iteration,
+			}, input.MemoryScope)
 			if execErr != nil {
 				content = "Tool execution failed: " + execErr.Error()
 				failed = true

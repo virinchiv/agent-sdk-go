@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agenticenv/agent-sdk-go/internal/hooks"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
@@ -22,18 +23,19 @@ const memoryExtractSystemPrompt = "Extract durable long-term memories from the c
 var errMemoryExtractUnavailable = errors.New("memory extract unavailable: StoreMode always requires custom Extract or LLM client")
 
 // StoreMemoryRecords persists records through kind policy, dedup, TTL, and the memory backend.
-func (rt *Runtime) StoreMemoryRecords(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, records []interfaces.MemoryRecord) error {
+func (rt *Runtime) StoreMemoryRecords(ctx context.Context, input StoreMemoryRecordsInput) error {
 	if !rt.MemoryConfigured() {
 		return nil
 	}
 
+	log := input.Logger
 	ctx, batchSp := rt.Tracer.StartSpan(ctx, "memory.store.batch",
-		interfaces.Attribute{Key: "record.count", Value: len(records)},
+		interfaces.Attribute{Key: "record.count", Value: len(input.Records)},
 	)
 	defer batchSp.End()
 
-	for _, rec := range records {
-		if err := rt.storeRecord(ctx, log, scope, rec); err != nil {
+	for _, rec := range input.Records {
+		if err := rt.storeRecord(ctx, log, input, rec); err != nil {
 			batchSp.RecordError(err)
 			return err
 		}
@@ -41,9 +43,18 @@ func (rt *Runtime) StoreMemoryRecords(ctx context.Context, log logger.Logger, sc
 	return nil
 }
 
-func (rt *Runtime) storeRecord(ctx context.Context, log logger.Logger, scope interfaces.MemoryScope, rec interfaces.MemoryRecord) error {
+func (rt *Runtime) storeRecord(ctx context.Context, log logger.Logger, input StoreMemoryRecordsInput, rec interfaces.MemoryRecord) error {
 	cfg := rt.AgentConfig.Memory.Config
-	text := strings.TrimSpace(rec.Text)
+	scope := input.Scope
+
+	storeCall := hooks.MemoryStoreCall{Scope: scope, Record: rec}
+	var err error
+	storeCall, err = rt.runBeforeMemoryStoreHooks(ctx, input, storeCall)
+	if err != nil {
+		return err
+	}
+
+	text := strings.TrimSpace(storeCall.Record.Text)
 	if text == "" {
 		return nil
 	}
@@ -51,7 +62,7 @@ func (rt *Runtime) storeRecord(ctx context.Context, log logger.Logger, scope int
 	ctx, sp := rt.Tracer.StartSpan(ctx, "memory.store")
 	defer sp.End()
 
-	kind, err := cfg.Store.ResolveKind(rec.Kind)
+	kind, err := cfg.Store.ResolveKind(storeCall.Record.Kind)
 	if err != nil {
 		sp.RecordError(err)
 		rt.Metrics.IncrementCounter(ctx, types.MetricMemoryStoreFailed)
@@ -66,15 +77,22 @@ func (rt *Runtime) storeRecord(ctx context.Context, log logger.Logger, scope int
 	rt.Metrics.IncrementCounter(ctx, types.MetricMemoryStoreStarted, kindAttr)
 	start := time.Now()
 
-	storeOpts, dedupAction, dedupErr := rt.dedupStoreOptions(ctx, scope, text)
-	if dedupErr != nil {
-		latency := float64(time.Since(start).Milliseconds())
-		sp.RecordError(dedupErr)
-		sp.SetAttribute("latency_ms", latency)
-		rt.Metrics.IncrementCounter(ctx, types.MetricMemoryStoreFailed, kindAttr)
-		rt.Metrics.RecordHistogram(ctx, types.MetricMemoryStoreLatencyMs, latency, kindAttr)
-		log.Error(ctx, "runtime: memory dedup lookup failed", slog.String("scope", "runtime"), slog.Any("error", dedupErr))
-		return fmt.Errorf("memory store: dedup: %w", dedupErr)
+	var storeOpts []interfaces.StoreMemoryOption
+	var dedupAction string
+	if hookID := strings.TrimSpace(storeCall.ID); hookID != "" {
+		storeOpts = []interfaces.StoreMemoryOption{interfaces.WithMemoryID(hookID)}
+		dedupAction = "upsert"
+	} else {
+		storeOpts, dedupAction, err = rt.dedupStoreOptions(ctx, scope, text)
+		if err != nil {
+			latency := float64(time.Since(start).Milliseconds())
+			sp.RecordError(err)
+			sp.SetAttribute("latency_ms", latency)
+			rt.Metrics.IncrementCounter(ctx, types.MetricMemoryStoreFailed, kindAttr)
+			rt.Metrics.RecordHistogram(ctx, types.MetricMemoryStoreLatencyMs, latency, kindAttr)
+			log.Error(ctx, "runtime: memory dedup lookup failed", slog.String("scope", "runtime"), slog.Any("error", err))
+			return fmt.Errorf("memory store: dedup: %w", err)
+		}
 	}
 
 	dedupAttr := interfaces.Attribute{Key: types.MetricAttrMemoryDedup, Value: dedupAction}
@@ -84,11 +102,12 @@ func (rt *Runtime) storeRecord(ctx context.Context, log logger.Logger, scope int
 	record := interfaces.MemoryRecord{
 		Text:      text,
 		Kind:      kind,
-		Metadata:  rec.Metadata,
+		Metadata:  storeCall.Record.Metadata,
 		ExpiresAt: cfg.ExpiresAtForKind(kind, now),
 	}
 
-	if _, err := cfg.Memory.Store(ctx, scope, record, storeOpts...); err != nil {
+	storedID, err := cfg.Memory.Store(ctx, scope, record, storeOpts...)
+	if err != nil {
 		latency := float64(time.Since(start).Milliseconds())
 		sp.RecordError(err)
 		sp.SetAttribute("latency_ms", latency)
@@ -98,14 +117,29 @@ func (rt *Runtime) storeRecord(ctx context.Context, log logger.Logger, scope int
 		return fmt.Errorf("memory store: %w", err)
 	}
 
+	if err := rt.runAfterMemoryStoreHooks(ctx, input, hooks.MemoryStoreCall{
+		Scope:  scope,
+		Record: record,
+		ID:     storedID,
+	}); err != nil {
+		latency := float64(time.Since(start).Milliseconds())
+		sp.RecordError(err)
+		sp.SetAttribute("latency_ms", latency)
+		rt.Metrics.IncrementCounter(ctx, types.MetricMemoryStoreFailed, kindAttr)
+		rt.Metrics.RecordHistogram(ctx, types.MetricMemoryStoreLatencyMs, latency, kindAttr)
+		return err
+	}
+
 	latency := float64(time.Since(start).Milliseconds())
 	sp.SetAttribute("latency_ms", latency)
 	sp.SetAttribute("dedup.upsert", dedupAction == "upsert")
+	sp.SetAttribute("memory.id", storedID)
 	rt.Metrics.IncrementCounter(ctx, types.MetricMemoryStoreCompleted, kindAttr, dedupAttr)
 	rt.Metrics.RecordHistogram(ctx, types.MetricMemoryStoreLatencyMs, latency, kindAttr)
 	log.Debug(ctx, "runtime: memory store completed",
 		slog.String("scope", "runtime"),
-		slog.String("dedup", dedupAction))
+		slog.String("dedup", dedupAction),
+		slog.String("id", storedID))
 	return nil
 }
 
@@ -351,4 +385,17 @@ func parseMemoryExtractResponse(content string) ([]interfaces.MemoryRecord, erro
 		records = append(records, rec)
 	}
 	return records, nil
+}
+
+func loadOptionsFromCall(call hooks.MemoryLoadCall, withMinScore bool) []interfaces.LoadMemoryOption {
+	opts := []interfaces.LoadMemoryOption{
+		interfaces.WithLoadLimit(call.Limit),
+	}
+	if withMinScore && call.MinScore > 0 {
+		opts = append(opts, interfaces.WithMinScore(call.MinScore))
+	}
+	if len(call.Kinds) > 0 {
+		opts = append(opts, interfaces.WithLoadKinds(call.Kinds...))
+	}
+	return opts
 }

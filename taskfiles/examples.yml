@@ -199,6 +199,7 @@ tasks:
         - agent_with_tools/basic
         - agent_with_tools/custom
         - agent_with_tools/dynamic_registry
+        - agent_with_hooks
         - agent_with_tools/authorizer
         - agent_with_json_response
         - agent_with_stream

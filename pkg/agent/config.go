@@ -13,6 +13,7 @@ import (
 
 	"log/slog"
 
+	"github.com/agenticenv/agent-sdk-go/internal/hooks"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/temporal"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
@@ -189,7 +190,7 @@ type ObservabilityConfig struct {
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithMemory,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
 //     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithRetrievers, WithRetrieverMode, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
-//     WithObservabilityConfig, WithTracer, WithMetrics, WithLogs
+//     WithObservabilityConfig, WithTracer, WithMetrics, WithLogs, WithHooks
 //
 // When [WithObservabilityConfig] is set and a signal is not disabled, [buildAgentConfig] replaces
 // [WithTracer], [WithMetrics], and [WithLogs] for that signal with OTLP clients built from the config.
@@ -270,6 +271,9 @@ type agentConfig struct {
 	tracer              interfaces.Tracer
 	metrics             interfaces.Metrics
 	logs                interfaces.Logs
+
+	// Hooks: named middleware hook groups for the agent execution lifecycle.
+	hooks []hooks.HookGroup
 }
 
 // Default Run/Stream deadlines when [WithTimeout] is unset: shorter for interactive sessions,
@@ -640,6 +644,34 @@ func WithLogs(l interfaces.Logs) Option {
 	return func(c *agentConfig) { c.logs = l }
 }
 
+// WithHooks registers a named group of middleware hooks on the agent.
+// name should be unique across all WithHooks calls; it is used for Temporal fingerprinting and
+// run correlation (see [RunMeta]). Can be called multiple times; each call appends a new group
+// that runs independently with its own [RunMeta].HooksGroup value, preserving declaration order.
+//
+// Use hooks to intercept and modify agent behavior at runtime — for example guardrails and PII
+// scrubbing on [BeforeLLMHook]/[AfterLLMHook], tool input scrubbing on [BeforeToolHook]/[AfterToolHook],
+// retrieval filtering on [AfterRetrieveHook], and memory tenant isolation on
+// [BeforeMemoryLoadHook]/[BeforeMemoryStoreHook]. See [AgentHooks] for the full list of hook
+// points and common use cases.
+func WithHooks(name string, agentHooks AgentHooks) Option {
+	return func(c *agentConfig) {
+		c.hooks = append(c.hooks, hooks.HookGroup{
+			Name:  strings.TrimSpace(name),
+			Hooks: agentHooks,
+		})
+	}
+}
+
+// mergedHooks returns all hook groups combined in registration order.
+func (c *agentConfig) mergedHooks() AgentHooks {
+	var out AgentHooks
+	for _, g := range c.hooks {
+		out = out.Merge(g.Hooks)
+	}
+	return out
+}
+
 // otlpLogsClientConfigured reports whether logs holds a concrete OTLP [*observability.Logs] client
 // (built by the SDK or injected after [observability.NewLogs]), before [DefaultNoopLogs] fallback.
 func otlpLogsClientConfigured(logs interfaces.Logs) bool {
@@ -685,6 +717,9 @@ func buildAgentConfig(opts []Option) (*agentConfig, error) {
 
 	if c.toolApprovalPolicy == nil {
 		c.toolApprovalPolicy = RequireAllToolApprovalPolicy{}
+	}
+	if err := c.validateHookGroups(); err != nil {
+		return nil, err
 	}
 	// Temporal-specific validation: only enforced when the caller explicitly opts in to the
 	// Temporal backend. When neither is set the local runtime is used as the default backend.
@@ -1180,6 +1215,20 @@ func validateToolNames(tools []interfaces.Tool) error {
 	return nil
 }
 
+func (c *agentConfig) validateHookGroups() error {
+	seen := make(map[string]struct{}, len(c.hooks))
+	for _, g := range c.hooks {
+		if g.Name == "" {
+			return errors.New("WithHooks: hook group name is required")
+		}
+		if _, dup := seen[g.Name]; dup {
+			return fmt.Errorf("WithHooks: duplicate hook group name %q", g.Name)
+		}
+		seen[g.Name] = struct{}{}
+	}
+	return nil
+}
+
 // responseFormatForLLM returns the response format for LLM requests.
 // When user sets WithResponseFormat, that is used; otherwise text-only.
 func (c *agentConfig) responseFormatForLLM() *interfaces.ResponseFormat {
@@ -1239,6 +1288,7 @@ func (c *agentConfig) runtimeAgentConfig() runtime.AgentConfig {
 			Timeout:         c.timeout,
 			ApprovalTimeout: c.approvalTimeout,
 		},
+		Hooks: c.runtimeHookGroups(),
 	}
 	if c.llmSampling != nil {
 		d.LLM.Sampling = &runtime.LLMSampling{
@@ -1250,6 +1300,37 @@ func (c *agentConfig) runtimeAgentConfig() runtime.AgentConfig {
 		}
 	}
 	return d
+}
+
+// runtimeHookGroups copies configured hook groups onto the runtime view.
+func (c *agentConfig) runtimeHookGroups() []hooks.HookGroup {
+	if len(c.hooks) == 0 {
+		return nil
+	}
+	out := make([]hooks.HookGroup, len(c.hooks))
+	copy(out, c.hooks)
+	return out
+}
+
+// hookGroupsFingerprint returns a stable SHA-256 digest of configured hook group names for
+// [temporal.ComputeAgentFingerprint]. Names are sorted for stability. Returns "" when no hook
+// groups are configured. Hook implementations are not hashed — caller and worker must register
+// matching behavior under each name.
+func hookGroupsFingerprint(groups []hooks.HookGroup) string {
+	if len(groups) == 0 {
+		return ""
+	}
+	names := make([]string, len(groups))
+	for i, g := range groups {
+		names[i] = g.Name
+	}
+	sort.Strings(names)
+	b, err := json.Marshal(names)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 type observabilityFpShot struct {

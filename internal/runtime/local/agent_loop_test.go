@@ -555,7 +555,7 @@ func TestExecuteToolsParallel_AllSucceed(t *testing.T) {
 		testToolCall("c2", "t2"),
 	}
 
-	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg-1", calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg-1", 0, calls, noopEmit)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	// Order must match submission order (parallel but results are indexed).
@@ -569,7 +569,7 @@ func TestExecuteToolsParallel_ToolErrorInMessage(t *testing.T) {
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, failing)
 
 	calls := []base.ToolCallRequest{testToolCall("c1", "bad")}
-	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg", calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg", 0, calls, noopEmit)
 	require.NoError(t, err) // parallel swallows into message
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0].message.Content, "boom")
@@ -590,7 +590,7 @@ func TestExecuteToolsParallel_ResultsOrderPreserved(t *testing.T) {
 		testToolCall("2", "b"),
 		testToolCall("3", "c"),
 	}
-	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "m", calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "m", 0, calls, noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, []string{"A", "B", "C"}, []string{msgs[0].message.Content, msgs[1].message.Content, msgs[2].message.Content})
 }
@@ -608,7 +608,7 @@ func TestExecuteToolsSequential_AllSucceed(t *testing.T) {
 		testToolCall("c1", "s1"),
 		testToolCall("c2", "s2"),
 	}
-	msgs, err := rt.executeToolsSequential(context.Background(), loopToolsInput(tools), "msg", calls, noopEmit)
+	msgs, err := rt.executeToolsSequential(context.Background(), loopToolsInput(tools), "msg", 0, calls, noopEmit)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	require.Equal(t, "v1", msgs[0].message.Content)
@@ -621,7 +621,7 @@ func TestExecuteToolsSequential_HardErrorOnContextCancel(t *testing.T) {
 	cancel() // pre-cancelled
 
 	calls := []base.ToolCallRequest{testToolCall("c1", "missing-tool")}
-	results, err := rt.executeToolsSequential(ctx, AgentLoopInput{}, "msg", calls, noopEmit)
+	results, err := rt.executeToolsSequential(ctx, AgentLoopInput{}, "msg", 0, calls, noopEmit)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.True(t, results[0].failed)
@@ -637,7 +637,7 @@ func TestExecuteSingleTool_Approved(t *testing.T) {
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	emit, evs := captureEmit()
-	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg-1",
+	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg-1", 0,
 		testToolCall("c1", "my-tool"), emit)
 
 	require.NoError(t, err)
@@ -655,7 +655,7 @@ func TestExecuteSingleTool_ToolExecError(t *testing.T) {
 	tool := stubTool{name: "boom", execErr: errors.New("exec failed")}
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
-	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg",
+	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg", 0,
 		testToolCall("c1", "boom"), noopEmit)
 	require.NoError(t, err) // tool errors become a content message, not a hard error
 	require.Contains(t, msg.message.Content, "exec failed")
@@ -665,7 +665,7 @@ func TestExecuteSingleTool_ToolExecError(t *testing.T) {
 func TestExecuteSingleTool_UnknownToolErrors(t *testing.T) {
 	rt, _ := newLoopRT(t, 5, &seqLLMClient{}) // no tools registered
 
-	_, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg",
+	_, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg", 0,
 		testToolCall("c1", "ghost"), noopEmit)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ghost")
@@ -686,7 +686,7 @@ func TestExecuteSingleTool_AuthorizationDenied(t *testing.T) {
 	authTool := authorizerStubLocal{name: "restricted", allow: false, reason: "policy denied"}
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, authTool)
 
-	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg",
+	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg", 0,
 		testToolCall("c1", "restricted"), noopEmit)
 	require.NoError(t, err)
 	require.Contains(t, msg.message.Content, msgToolUnauthorized)
@@ -698,7 +698,7 @@ func TestExecuteSingleTool_AuthorizationError(t *testing.T) {
 	authTool := authorizerStubLocal{name: "err-tool", allow: false, authErr: errors.New("auth backend down")}
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, authTool)
 
-	_, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg",
+	_, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg", 0,
 		testToolCall("c1", "err-tool"), noopEmit)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "auth backend down")
@@ -710,7 +710,7 @@ func TestExecuteSingleTool_ApprovalUnavailable(t *testing.T) {
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	msg, err := rt.executeSingleTool(context.Background(),
-		AgentLoopInput{ChannelName: "", ApprovalHandler: nil, Tools: tools}, "msg",
+		AgentLoopInput{ChannelName: "", ApprovalHandler: nil, Tools: tools}, "msg", 0,
 		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
 	require.NoError(t, err)
 	require.Contains(t, msg.message.Content, msgToolApprovalUnavailable)
@@ -725,7 +725,7 @@ func TestExecuteSingleTool_ApprovalHandlerApproves(t *testing.T) {
 	}
 
 	msg, err := rt.executeSingleTool(context.Background(),
-		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg",
+		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg", 0,
 		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, "ok", msg.message.Content)
@@ -740,7 +740,7 @@ func TestExecuteSingleTool_ApprovalHandlerRejects(t *testing.T) {
 	}
 
 	msg, err := rt.executeSingleTool(context.Background(),
-		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg",
+		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg", 0,
 		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, msgToolRejected, msg.message.Content)
@@ -789,7 +789,7 @@ func TestExecuteSingleTool_StreamingApproveUnblocks(t *testing.T) {
 		result, resultErr = rt.executeSingleTool(
 			context.Background(),
 			AgentLoopInput{ChannelName: "some-channel", Tools: tools}, // streaming path
-			"msg",
+			"msg", 0,
 			testToolCallNeedsApproval("c1", "guarded"),
 			emit,
 		)
@@ -826,7 +826,7 @@ func TestExecuteSingleTool_ApprovalContextCancel(t *testing.T) {
 	}()
 
 	_, err := rt.executeSingleTool(ctx,
-		AgentLoopInput{ChannelName: "some-channel", Tools: tools}, "msg",
+		AgentLoopInput{ChannelName: "some-channel", Tools: tools}, "msg", 0,
 		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
 
 	<-done
