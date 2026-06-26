@@ -14,11 +14,6 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/tools"
 )
 
-var (
-	retrieverToolNameTemplate        = "retriever_%s"
-	retrieverToolDisplayNameTemplate = "%s Retriever Tool"
-)
-
 var _ interfaces.Tool = (*RetrieverTool)(nil)
 var _ types.ToolKindProvider = (*RetrieverTool)(nil)
 
@@ -27,26 +22,6 @@ type RetrieverTool struct {
 	// RetrieverName is the stable key from [interfaces.Retriever.Name] (used in tool name / display name).
 	RetrieverName string
 	Retriever     interfaces.Retriever
-}
-
-// retrieverToolName returns the registered tool name for a retriever name
-// (same format as [RetrieverTool.Name]). Trims whitespace; returns "" if empty after trim.
-func retrieverToolName(retrieverName string) string {
-	n := strings.TrimSpace(retrieverName)
-	if n == "" {
-		return ""
-	}
-	return fmt.Sprintf(retrieverToolNameTemplate, n)
-}
-
-// retrieverToolDisplayName returns the display name for a retriever name
-// (same format as [RetrieverTool.DisplayName]). Trims whitespace; returns "" if empty after trim.
-func retrieverToolDisplayName(retrieverName string) string {
-	n := strings.TrimSpace(retrieverName)
-	if n == "" {
-		return ""
-	}
-	return fmt.Sprintf(retrieverToolDisplayNameTemplate, n)
 }
 
 // NewRetrieverTool builds a RetrieverTool. Returns nil when retriever is nil or [interfaces.Retriever.Name] is empty.
@@ -69,7 +44,7 @@ func (t *RetrieverTool) Name() string {
 	if t == nil {
 		return ""
 	}
-	return retrieverToolName(t.RetrieverName)
+	return types.RetrieverToolName(t.RetrieverName)
 }
 
 // DisplayName implements [interfaces.Tool].
@@ -77,7 +52,7 @@ func (t *RetrieverTool) DisplayName() string {
 	if t == nil {
 		return ""
 	}
-	return fmt.Sprintf(retrieverToolDisplayNameTemplate, t.RetrieverName)
+	return types.RetrieverToolDisplayName(t.RetrieverName)
 }
 
 // Description implements [interfaces.Tool].
@@ -105,35 +80,16 @@ func (t *RetrieverTool) Parameters() interfaces.JSONSchema {
 }
 
 // Execute implements [interfaces.Tool]: reads the query argument, calls [interfaces.Retriever.Search],
-// and returns a numbered plain-text summary of matching documents.
+// and returns matching documents. Formatting for the LLM is done by the runtime.
 func (t *RetrieverTool) Execute(ctx context.Context, args map[string]any) (any, error) {
 	if t.Retriever == nil {
 		return nil, fmt.Errorf("retriever tool: nil retriever")
 	}
-	raw, ok := args[types.RetrieverToolParamQuery].(string)
-	if !ok {
-		return nil, fmt.Errorf("retriever tool: %q parameter required", types.RetrieverToolParamQuery)
-	}
-	query := strings.TrimSpace(raw)
-	if query == "" {
-		return nil, fmt.Errorf("retriever tool: %q must be non-empty", types.RetrieverToolParamQuery)
-	}
-	docs, err := t.Retriever.Search(ctx, query)
+	query, err := types.RetrieverToolParamQueryValue(args)
 	if err != nil {
 		return nil, err
 	}
-	return formatRetrieverDocs(docs), nil
-}
-
-func formatRetrieverDocs(docs []interfaces.Document) string {
-	if len(docs) == 0 {
-		return "no relevant documents found"
-	}
-	var sb strings.Builder
-	for i, doc := range docs {
-		fmt.Fprintf(&sb, types.RetrieverDocFormat, i+1, doc.Content, doc.Source, doc.Score)
-	}
-	return sb.String()
+	return t.Retriever.Search(ctx, query)
 }
 
 // ---------------------------------------------------------------------------

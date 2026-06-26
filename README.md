@@ -37,6 +37,7 @@
   - [Sub-agents](#sub-agents)
   - [Managing Capabilities at Runtime](#managing-capabilities-at-runtime)
   - [Approvals](#approvals)
+  - [Hooks](#hooks)
   - [Timeouts and deadlines](#timeouts-and-deadlines)
   - [Custom tools](#custom-tools)
   - [Response format](#response-format)
@@ -1081,6 +1082,243 @@ For **Run** / **RunAsync**, use `req.Respond` only. For **Stream**, use `**OnApp
 - **Run:** `Run()` returns `nil, err` with the failure.
 - **Stream:** An `AgentEventError` is emitted on the event channel with the error message.
 - **RunAsync:** `resultCh` receives `AgentRunAsyncResult` with `Error` set.
+
+### Hooks
+
+Hooks let you register middleware callbacks that fire at key points in the agent execution lifecycle — before and after LLM calls, tool executions, retrievals, and memory operations. Register once via `WithHooks` and the SDK calls your functions automatically across both `Run` and `Stream`.
+
+#### Hook points
+
+| Hook | Fires | Mutable outputs |
+|------|-------|----------------|
+| `BeforeLLMHook` | Before each LLM request | Request (messages, system prompt, tools, params) |
+| `AfterLLMHook` | After each LLM response | Response (content, tool calls) |
+| `BeforeToolHook` | Before native/MCP tool executes | Args |
+| `AfterToolHook` | After native/MCP tool executes | Content, Err |
+| `BeforeRetrieveHook` | Before each retriever search | Query |
+| `AfterRetrieveHook` | After each retriever search | Documents |
+| `BeforeMemoryLoadHook` | Before memory recall | Query, Limit, MinScore, Kinds |
+| `AfterMemoryLoadHook` | After memory recall, before injection into prompt | PromptContext |
+| `BeforeMemoryStoreHook` | Before each memory record is persisted | Record, ID |
+| `AfterMemoryStoreHook` | After memory is persisted | — (error/abort only) |
+
+Every hook receives `RunMeta` (`RunID`, `Iteration`, `HooksGroup`) for correlation and auditing. Return an error from any hook to abort the run immediately.
+
+#### Register hooks
+
+```go
+a, err := agent.NewAgent(
+    agent.WithTemporalConfig(...),
+    agent.WithLLMClient(llmClient),
+    agent.WithHooks("guardrails", agent.AgentHooks{
+        BeforeLLM: []agent.BeforeLLMHook{
+            func(ctx context.Context, in agent.BeforeLLMHookInput) (agent.BeforeLLMHookOutput, error) {
+                // inspect or modify in.Request before the LLM call
+                return agent.BeforeLLMHookOutput{Request: in.Request}, nil
+            },
+        },
+        AfterLLM: []agent.AfterLLMHook{
+            func(ctx context.Context, in agent.AfterLLMHookInput) (agent.AfterLLMHookOutput, error) {
+                // inspect or modify in.Response after the LLM call
+                return agent.AfterLLMHookOutput{Response: in.Response}, nil
+            },
+        },
+    }),
+)
+```
+
+Call `WithHooks` multiple times to register independent groups. Each group runs with its own name set in `RunMeta.HooksGroup`, so hooks know which group they belong to:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithHooks("pii-scrubber", piiHooks),
+    agent.WithHooks("cost-tracker", costHooks),
+    agent.WithHooks("audit-logger", auditHooks),
+    // ...
+)
+```
+
+#### Hook use cases
+
+##### Guardrails and safety
+
+Block unsafe inputs or outputs before they reach the LLM or the user:
+
+```go
+agent.WithHooks("safety", agent.AgentHooks{
+    BeforeLLM: []agent.BeforeLLMHook{
+        func(ctx context.Context, in agent.BeforeLLMHookInput) (agent.BeforeLLMHookOutput, error) {
+            if containsInjection(in.Request.Messages) {
+                return agent.BeforeLLMHookOutput{}, errors.New("prompt injection detected")
+            }
+            return agent.BeforeLLMHookOutput{Request: in.Request}, nil
+        },
+    },
+    AfterLLM: []agent.AfterLLMHook{
+        func(ctx context.Context, in agent.AfterLLMHookInput) (agent.AfterLLMHookOutput, error) {
+            if isToxic(in.Response.Content) {
+                return agent.AfterLLMHookOutput{}, errors.New("unsafe output blocked")
+            }
+            return agent.AfterLLMHookOutput{Response: in.Response}, nil
+        },
+    },
+})
+```
+
+**Hooks for this use case:** `BeforeLLM`, `AfterLLM`
+
+##### PII and data privacy
+
+Scrub sensitive data before it leaves your system or gets persisted:
+
+```go
+agent.WithHooks("pii", agent.AgentHooks{
+    BeforeLLM: []agent.BeforeLLMHook{
+        func(ctx context.Context, in agent.BeforeLLMHookInput) (agent.BeforeLLMHookOutput, error) {
+            req := in.Request
+            req.SystemMessage = redactPII(req.SystemMessage)
+            return agent.BeforeLLMHookOutput{Request: req}, nil
+        },
+    },
+    BeforeMemoryStore: []agent.BeforeMemoryStoreHook{
+        func(ctx context.Context, in agent.BeforeMemoryStoreHookInput) (agent.BeforeMemoryStoreHookOutput, error) {
+            rec := in.Record
+            rec.Text = redactPII(rec.Text)
+            return agent.BeforeMemoryStoreHookOutput{Record: rec}, nil
+        },
+    },
+})
+```
+
+**Hooks for this use case:** `BeforeLLM`, `AfterLLM`, `BeforeTool`, `BeforeRetrieve`, `AfterRetrieve`, `BeforeMemoryStore`, `AfterMemoryLoad`
+
+##### Token budget and cost tracking
+
+Track and enforce token budgets across LLM calls:
+
+```go
+agent.WithHooks("cost", agent.AgentHooks{
+    AfterLLM: []agent.AfterLLMHook{
+        func(ctx context.Context, in agent.AfterLLMHookInput) (agent.AfterLLMHookOutput, error) {
+            if in.Response.Usage != nil {
+                trackTokens(in.RunMeta.RunID, in.Response.Usage.TotalTokens)
+                if budgetExceeded(in.RunMeta.RunID) {
+                    return agent.AfterLLMHookOutput{}, errors.New("token budget exceeded")
+                }
+            }
+            return agent.AfterLLMHookOutput{Response: in.Response}, nil
+        },
+    },
+})
+```
+
+**Hooks for this use case:** `BeforeLLM` (cache read / short-circuit), `AfterLLM` (token tracking, cache write, model fallback)
+
+##### Memory tenant isolation
+
+Enforce that each tenant only reads and writes their own memories:
+
+```go
+agent.WithHooks("tenant-isolation", agent.AgentHooks{
+    BeforeMemoryLoad: []agent.BeforeMemoryLoadHook{
+        func(ctx context.Context, in agent.BeforeMemoryLoadHookInput) (agent.BeforeMemoryLoadHookOutput, error) {
+            if in.Scope.TenantID == "" {
+                return agent.BeforeMemoryLoadHookOutput{}, errors.New("tenant ID required for memory access")
+            }
+            return agent.BeforeMemoryLoadHookOutput{
+                Query: in.Query, Limit: in.Limit,
+                MinScore: in.MinScore, Kinds: in.Kinds,
+            }, nil
+        },
+    },
+    BeforeMemoryStore: []agent.BeforeMemoryStoreHook{
+        func(ctx context.Context, in agent.BeforeMemoryStoreHookInput) (agent.BeforeMemoryStoreHookOutput, error) {
+            if in.Scope.TenantID == "" {
+                return agent.BeforeMemoryStoreHookOutput{}, errors.New("tenant ID required for memory store")
+            }
+            return agent.BeforeMemoryStoreHookOutput{Record: in.Record, ID: in.ID}, nil
+        },
+    },
+})
+```
+
+**Hooks for this use case:** `BeforeMemoryLoad`, `BeforeMemoryStore`
+
+##### Logging and auditing
+
+Log every operation for observability without touching business logic:
+
+```go
+agent.WithHooks("audit", agent.AgentHooks{
+    AfterLLM: []agent.AfterLLMHook{
+        func(ctx context.Context, in agent.AfterLLMHookInput) (agent.AfterLLMHookOutput, error) {
+            log.Printf("run=%s iter=%d tokens=%d", in.RunMeta.RunID, in.RunMeta.Iteration, in.Response.Usage.TotalTokens)
+            return agent.AfterLLMHookOutput{Response: in.Response}, nil
+        },
+    },
+    AfterTool: []agent.AfterToolHook{
+        func(ctx context.Context, in agent.AfterToolHookInput) (agent.AfterToolHookOutput, error) {
+            log.Printf("run=%s tool=%s err=%v", in.RunMeta.RunID, in.Call.Name, in.Err)
+            return agent.AfterToolHookOutput{Content: in.Content, Err: in.Err}, nil
+        },
+    },
+    AfterMemoryStore: []agent.AfterMemoryStoreHook{
+        func(ctx context.Context, in agent.AfterMemoryStoreHookInput) (agent.AfterMemoryStoreHookOutput, error) {
+            log.Printf("run=%s memory stored id=%s", in.RunMeta.RunID, in.ID)
+            return agent.AfterMemoryStoreHookOutput{}, nil
+        },
+    },
+})
+```
+
+**Hooks for this use case:** `BeforeLLM`, `AfterLLM`, `BeforeTool`, `AfterTool`, `BeforeRetrieve`, `AfterRetrieve`, `AfterMemoryLoad`, `AfterMemoryStore`
+
+##### Retrieval query rewriting and filtering
+
+Modify the query before search and filter or re-rank results after:
+
+```go
+agent.WithHooks("retrieval", agent.AgentHooks{
+    BeforeRetrieve: []agent.BeforeRetrieveHook{
+        func(ctx context.Context, in agent.BeforeRetrieveHookInput) (agent.BeforeRetrieveHookOutput, error) {
+            return agent.BeforeRetrieveHookOutput{Query: expandQuery(in.Query)}, nil
+        },
+    },
+    AfterRetrieve: []agent.AfterRetrieveHook{
+        func(ctx context.Context, in agent.AfterRetrieveHookInput) (agent.AfterRetrieveHookOutput, error) {
+            return agent.AfterRetrieveHookOutput{Documents: rerank(in.Documents)}, nil
+        },
+    },
+})
+```
+
+**Hooks for this use case:** `BeforeRetrieve` (query rewriting), `AfterRetrieve` (filtering, re-ranking)
+
+#### Use case reference
+
+| Goal | Hooks to use |
+|------|-------------|
+| Prompt injection / input guardrails | `BeforeLLM` |
+| Output content filtering | `AfterLLM` |
+| PII scrubbing from prompts / responses | `BeforeLLM`, `AfterLLM` |
+| PII scrubbing from tool args / results | `BeforeTool`, `AfterTool` |
+| PII scrubbing from retrieval | `BeforeRetrieve`, `AfterRetrieve` |
+| PII scrubbing from memory | `BeforeMemoryStore`, `AfterMemoryLoad` |
+| Token tracking and budget enforcement | `AfterLLM` |
+| LLM response caching | `BeforeLLM` (read), `AfterLLM` (write) |
+| Model fallback on error | `AfterLLM` |
+| Tool rate limiting | `BeforeTool` |
+| Tool input validation / authorization | `BeforeTool` |
+| Log all operations | `BeforeLLM`, `AfterLLM`, `BeforeTool`, `AfterTool`, `BeforeRetrieve`, `AfterRetrieve`, `AfterMemoryLoad`, `AfterMemoryStore` |
+| Retrieval query rewriting | `BeforeRetrieve` |
+| Document re-ranking / filtering | `AfterRetrieve` |
+| Memory query rewriting | `BeforeMemoryLoad` |
+| Filter injected memory context | `AfterMemoryLoad` |
+| Memory tenant isolation | `BeforeMemoryLoad`, `BeforeMemoryStore` |
+| Control what gets persisted | `BeforeMemoryStore` |
+| Audit memory reads / writes | `AfterMemoryLoad`, `AfterMemoryStore` |
+
+See [examples/agent_with_hooks](examples/agent_with_hooks) for a runnable demo that registers every hook point (PII scrubbing, retrieval filtering, memory tenant checks). Hook activity is logged to stderr with a `[hooks]` prefix.
 
 ### Timeouts and deadlines
 

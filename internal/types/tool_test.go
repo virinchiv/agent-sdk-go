@@ -39,3 +39,14 @@ func TestToolKind_CountsTowardToolTelemetry(t *testing.T) {
 		t.Fatal("memory tool should count toward tool telemetry")
 	}
 }
+
+func TestToolKind_HooksEligible(t *testing.T) {
+	if !ToolKindNative.HooksEligible() || !ToolKindMCP.HooksEligible() {
+		t.Fatal("native and mcp should be hook eligible")
+	}
+	for _, k := range []ToolKind{ToolKindA2A, ToolKindSubAgent, ToolKindRetriever, ToolKindMemory} {
+		if k.HooksEligible() {
+			t.Fatalf("%q should not be hook eligible", k)
+		}
+	}
+}

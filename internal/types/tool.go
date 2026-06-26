@@ -54,3 +54,8 @@ func (k ToolKind) CountsTowardToolTelemetry() bool {
 		return true
 	}
 }
+
+// HooksEligible reports whether [BeforeToolHook] and [AfterToolHook] run for this tool kind.
+func (k ToolKind) HooksEligible() bool {
+	return k == ToolKindNative || k == ToolKindMCP
+}

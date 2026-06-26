@@ -33,19 +33,19 @@ func (r *retrieverExecuteStub) Search(ctx context.Context, query string) ([]inte
 }
 
 func TestRetrieverToolName(t *testing.T) {
-	if got := retrieverToolName("  wiki  "); got != "retriever_wiki" {
+	if got := types.RetrieverToolName("  wiki  "); got != "retriever_wiki" {
 		t.Fatalf("got %q", got)
 	}
-	if retrieverToolName("") != "" || retrieverToolName("  ") != "" {
+	if types.RetrieverToolName("") != "" || types.RetrieverToolName("  ") != "" {
 		t.Fatal("expected empty for missing name")
 	}
 }
 
 func TestRetrieverToolDisplayName(t *testing.T) {
-	if got := retrieverToolDisplayName("wiki"); got != "wiki Retriever Tool" {
+	if got := types.RetrieverToolDisplayName("wiki"); got != "wiki Retriever Tool" {
 		t.Fatalf("got %q", got)
 	}
-	if retrieverToolDisplayName("  ") != "" {
+	if types.RetrieverToolDisplayName("  ") != "" {
 		t.Fatal("expected empty")
 	}
 }
@@ -120,12 +120,12 @@ func TestRetrieverTool_Execute_success(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, ok := out.(string)
+	docs, ok := out.([]interfaces.Document)
 	if !ok {
 		t.Fatalf("got %T", out)
 	}
-	if !strings.Contains(s, "[1] Go is great") || !strings.Contains(s, "[2] Rust is fast") {
-		t.Fatalf("output = %q", s)
+	if len(docs) != 2 || docs[0].Content != "Go is great" || docs[1].Content != "Rust is fast" {
+		t.Fatalf("docs = %#v", docs)
 	}
 	if stub.lastQuery != "golang" {
 		t.Fatalf("query = %q", stub.lastQuery)
@@ -141,8 +141,12 @@ func TestRetrieverTool_Execute_noDocs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out != "no relevant documents found" {
-		t.Fatalf("got %q", out)
+	docs, ok := out.([]interfaces.Document)
+	if !ok {
+		t.Fatalf("got %T", out)
+	}
+	if len(docs) != 0 {
+		t.Fatalf("docs = %#v", docs)
 	}
 }
 
@@ -176,18 +180,6 @@ func TestRetrieverTool_Execute_nilRetriever(t *testing.T) {
 	_, err := tool.Execute(context.Background(), map[string]any{types.RetrieverToolParamQuery: "q"})
 	if err == nil || !strings.Contains(err.Error(), "nil retriever") {
 		t.Fatalf("got %v", err)
-	}
-}
-
-func TestFormatRetrieverDocs(t *testing.T) {
-	if formatRetrieverDocs(nil) != "no relevant documents found" {
-		t.Fatal("nil docs")
-	}
-	got := formatRetrieverDocs([]interfaces.Document{
-		{Content: "alpha", Source: "a", Score: 0.5},
-	})
-	if !strings.Contains(got, "[1] alpha") || !strings.Contains(got, "score: 0.50") {
-		t.Fatalf("got %q", got)
 	}
 }
 

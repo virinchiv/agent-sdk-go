@@ -3,6 +3,7 @@ package base
 import (
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+	"github.com/agenticenv/agent-sdk-go/pkg/logger"
 )
 
 const scopeKeyParentAgentID = "parent_agent_id"
@@ -42,9 +43,60 @@ type RetrieverResult struct {
 	FailedSearches int64
 }
 
+// ExecuteRetrieversInput holds per-invocation inputs for [Runtime.ExecuteRetrievers].
+// RunID and Iteration populate [hooks.RunMeta] for retrieve middleware hooks.
+type ExecuteRetrieversInput struct {
+	Logger    logger.Logger
+	RunID     string
+	Iteration int
+	Query     string
+}
+
 // MemoryResult is the outcome of ExecuteMemoryRecall.
 type MemoryResult struct {
 	Context       string
 	TotalRecalls  int64
 	FailedRecalls int64
+}
+
+// ExecuteMemoryRecallInput holds per-invocation inputs for [Runtime.ExecuteMemoryRecall].
+// RunID and Iteration populate [hooks.RunMeta] for memory load middleware hooks.
+type ExecuteMemoryRecallInput struct {
+	Logger    logger.Logger
+	RunID     string
+	Iteration int
+	Scope     interfaces.MemoryScope
+	Query     string
+}
+
+// StoreMemoryRecordsInput holds per-invocation inputs for [Runtime.StoreMemoryRecords].
+// RunID and Iteration populate [hooks.RunMeta] for memory store middleware hooks.
+type StoreMemoryRecordsInput struct {
+	Logger    logger.Logger
+	RunID     string
+	Iteration int
+	Scope     interfaces.MemoryScope
+	Records   []interfaces.MemoryRecord
+}
+
+// ExecuteMemoryStoreInput holds per-invocation inputs for [Runtime.ExecuteMemoryStore].
+// RunID and Iteration populate [hooks.RunMeta] for memory store middleware hooks.
+type ExecuteMemoryStoreInput struct {
+	Logger    logger.Logger
+	RunID     string
+	Iteration int
+	Scope     interfaces.MemoryScope
+	Messages  []interfaces.Message
+}
+
+// ExecuteToolInput holds per-invocation inputs for [Runtime.ExecuteTool].
+// RunID and Iteration populate [hooks.RunMeta] for tool middleware hooks.
+type ExecuteToolInput struct {
+	Logger     logger.Logger
+	Tools      []interfaces.Tool
+	ToolName   string
+	Args       map[string]any
+	ToolCallID string
+	RunID      string
+	Iteration  int
 }

@@ -78,6 +78,7 @@ type TemporalRuntime struct {
 	// agentMode is the string form of [types.AgentMode] (e.g. "interactive", "autonomous").
 	agentMode            string
 	retrieverFingerprint string
+	hooksFingerprint     string
 
 	// Temporal-specific flags
 	// disableLocalWorker mirrors pkg/agent DisableLocalWorker: when false, the client embeds a worker
@@ -329,6 +330,7 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 
 	wfInput := AgentWorkflowInput{
 		UserPrompt:       req.UserPrompt,
+		RunID:            runID,
 		StreamingEnabled: false,
 		EventWorkflowID:  "",
 		LocalChannelName: eventChannelName(workflowID),
@@ -520,6 +522,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 	}
 	wfInput := AgentWorkflowInput{
 		UserPrompt:       req.UserPrompt,
+		RunID:            runID,
 		EventWorkflowID:  eventWorkflowID,
 		EventTaskQueue:   eventTaskQueue,
 		LocalChannelName: eventChannelName(workflowID),

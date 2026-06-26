@@ -46,6 +46,7 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | `agent_with_observability` | OTLP — **`config/`** vs **`objects/`**; **[README](agent_with_observability/README.md)** | `infra:lgtm:up` (or manual collector) |
 | `agent_with_retriever` | **`weaviate/`** or **`pgvector/`**; **`RETRIEVER_MODE`** — **[README](agent_with_retriever/README.md)** | `infra:weaviate:up` or `infra:pgvector:up` |
 | `agent_with_memory` | **`weaviate/`** or **`pgvector/`** — **[README](agent_with_memory/README.md)**; `MEMORY_STORE_MODE=always\|ondemand` | `infra:weaviate:up` or `infra:pgvector:up` |
+| `agent_with_hooks` | All middleware hooks — PII scrubbing, retrieval filtering, memory tenant checks; **[README](agent_with_hooks/README.md)** | — |
 
 ### Temporal only
 
@@ -103,6 +104,17 @@ go run ./agent_with_tools/authorizer "Get the protected note for roadmap."
 go run ./agent_with_tools/custom "Reverse 'hello world'"
 go run ./agent_with_tools/dynamic_registry
 ```
+
+### Agent with hooks
+
+Middleware hooks across LLM, tools, retrieval, and memory. Hook activity is logged to stderr (`[hooks]` prefix).
+
+```bash
+go run ./agent_with_hooks
+go run ./agent_with_hooks "My email is alice@example.com. What is the return policy?"
+```
+
+See **[agent_with_hooks/README.md](agent_with_hooks/README.md)**. When using **`AGENT_RUNTIME=temporal`**, register the same hook groups on both the agent starter and the worker.
 
 ### Streaming (partial content as tokens arrive)
 

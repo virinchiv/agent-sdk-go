@@ -118,6 +118,12 @@ func WithRetrieverFingerprint(fp string) Option {
 	return func(rt *TemporalRuntime) { rt.retrieverFingerprint = fp }
 }
 
+// WithHooksFingerprint sets the hook group names digest used with [ComputeAgentFingerprint].
+// Must match pkg/agent [hookGroupsFingerprint] for the same WithHooks wiring.
+func WithHooksFingerprint(fp string) Option {
+	return func(rt *TemporalRuntime) { rt.hooksFingerprint = fp }
+}
+
 // WithToolsResolver sets the callback that resolves tools at activity time on the worker runtime.
 func WithToolsResolver(fn ToolsResolver) Option {
 	return func(rt *TemporalRuntime) { rt.resolveToolsFn = fn }

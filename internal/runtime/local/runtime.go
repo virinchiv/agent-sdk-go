@@ -131,6 +131,7 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 
 	loopResult, err := rt.RunAgentLoop(runCtx, AgentLoopInput{
 		UserPrompt:       req.UserPrompt,
+		RunID:            runID,
 		ConversationID:   conversationID,
 		MemoryScope:      memoryScope,
 		StreamingEnabled: false,
@@ -145,7 +146,6 @@ func (rt *LocalRuntime) Execute(ctx context.Context, req *sdkruntime.ExecuteRequ
 		return nil, err
 	}
 
-	_ = runID
 	return &types.AgentRunResult{
 		Content:   loopResult.Content,
 		AgentName: strings.TrimSpace(agentName),
@@ -228,6 +228,7 @@ func (rt *LocalRuntime) ExecuteStream(ctx context.Context, req *sdkruntime.Execu
 		}()
 		result, loopErr := rt.RunAgentLoop(runCtx, AgentLoopInput{
 			UserPrompt:       req.UserPrompt,
+			RunID:            runID,
 			ConversationID:   conversationID,
 			MemoryScope:      memoryScope,
 			StreamingEnabled: req.StreamingEnabled,
