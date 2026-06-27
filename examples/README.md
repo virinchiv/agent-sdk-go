@@ -34,6 +34,7 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | `agent_with_agui` | Go **`POST /agui` SSE** + **Next.js + CopilotKit** ([`agent_with_agui/README.md`](agent_with_agui/README.md)) — agent server, then `ui/` dev server | UI manual (`npm run dev` in `ui/`) |
 | `agent_with_stream_conversation` | Stream + conversation; avoid printing the same text twice (**`TEXT_MESSAGE_CONTENT`** deltas vs **`RUN_FINISHED`** body) | — |
 | `agent_with_run_async` | `RunAsync` — `resultCh`; `WithApprovalHandler` for approvals (same as `Run`) | — |
+| `agent_with_concurrent_runs` | Multiple `RunAsync` calls in parallel on a **single** `Agent` instance — fan-out with `WaitGroup`, results printed as they arrive | — |
 | `multiple_agents` | Multiple agents with `WithInstanceId` — sequential or concurrent | — |
 | `agent_with_subagents` | Main agent + math specialist — `WithSubAgents`; prints **`STEP_STARTED` / `STEP_FINISHED`** (sub-agent name) around each child run when using `Stream` | — |
 | `agent_with_json_response` | Structured LLM output — `WithResponseFormat` + `interfaces.JSONSchema` (JSON with schema; no tools) | — |
@@ -163,10 +164,12 @@ go run ./agent_with_stream_conversation "What is 5 * 8?"
 go run ./agent_with_subagents "What is 987 times 654?"
 ```
 
-### RunAsync + multiple agents
+### RunAsync + concurrent runs + multiple agents
 
 ```bash
 go run ./agent_with_run_async "What is 15 + 27?"
+go run ./agent_with_concurrent_runs
+go run ./agent_with_concurrent_runs "Who wrote Hamlet?" "What is sqrt(144)?" "Name a primary color."
 go run ./multiple_agents "What is 7 times 8?"
 go run ./multiple_agents concurrent "What is 7 times 8?"
 ```

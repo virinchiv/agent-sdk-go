@@ -216,6 +216,7 @@ tasks:
         - agent_with_subagents
         - agent_with_tools/approval
         - agent_with_run_async
+        - agent_with_concurrent_runs
       EXAMPLES_MEMORY:
         - NAME: agent_with_memory/weaviate
           MEMORY_STORE_MODE: always

@@ -41,9 +41,6 @@ const (
 	maxAgentNameWorkflowSegmentBytes = 128
 )
 
-// ErrAgentAlreadyRunning is returned when Execute, ExecuteStream, or RunAsync is called while a run is already in progress.
-var ErrAgentAlreadyRunning = errors.New("agent already has an active run")
-
 // ErrAgentFingerprintMismatch is returned when the per-run agent fingerprint does not match the worker.
 var ErrAgentFingerprintMismatch = errors.New("temporal: agent fingerprint mismatch (caller vs worker); redeploy worker or align config/registries or retry run")
 
@@ -91,9 +88,13 @@ type TemporalRuntime struct {
 	// resolveTools resolves tools from registries at activity time (worker runtime).
 	resolveToolsFn ToolsResolver
 
-	eventbus              eventbus.EventBus
-	runMu                 sync.Mutex
-	activeRunWorkflowID   string
+	eventbus eventbus.EventBus
+	runMu    sync.Mutex
+	// activeRunWorkflowIDs tracks all in-flight run workflow IDs. Multiple concurrent runs are allowed;
+	// each run gets a unique workflow ID (agent-run-{name}-{uuid}). Protected by runMu.
+	activeRunWorkflowIDs map[string]struct{}
+	// activeEventWorkflowID is the shared per-agent event pipeline workflow. All concurrent runs route
+	// their streaming events through the same pipeline. Set once (lazily) and protected by runMu.
 	activeEventWorkflowID string
 	// eventWorkflowIDOnce + suffix make agent-event-<name>-<uuid> unique per TemporalRuntime so
 	// multiple agents in one process do not collide; lazy start still uses the same ID for that runtime.
@@ -233,7 +234,10 @@ func (rt *TemporalRuntime) Close() {
 	rt.logger.Info(context.Background(), "runtime closing", slog.String("scope", "runtime"), slog.String("name", rt.AgentSpec.Name))
 
 	rt.runMu.Lock()
-	workflowID := rt.activeRunWorkflowID
+	activeIDs := make([]string, 0, len(rt.activeRunWorkflowIDs))
+	for id := range rt.activeRunWorkflowIDs {
+		activeIDs = append(activeIDs, id)
+	}
 	eventWorkflowID := rt.activeEventWorkflowID
 	rt.runMu.Unlock()
 
@@ -242,7 +246,7 @@ func (rt *TemporalRuntime) Close() {
 	if rt.temporalClient != nil {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		if workflowID != "" {
+		for _, workflowID := range activeIDs {
 			rt.logger.Debug(ctx, "runtime terminating active run", slog.String("scope", "runtime"), slog.String("workflowID", workflowID))
 			_ = rt.temporalClient.TerminateWorkflow(ctx, workflowID, "", "agent closed")
 		}
@@ -322,12 +326,10 @@ func (rt *TemporalRuntime) Execute(ctx context.Context, req *runtime.ExecuteRequ
 
 	rt.logger.Debug(runCtx, "runtime identifiers", slog.String("scope", "runtime"), slog.String("runID", runID), slog.String("threadID", threadID), slog.String("workflowID", workflowID))
 
-	cleanup, err := rt.beginRun(workflowID)
-	if err != nil {
-		return nil, err
-	}
+	cleanup := rt.beginRun(workflowID)
 	defer cleanup()
 
+	var err error
 	wfInput := AgentWorkflowInput{
 		UserPrompt:       req.UserPrompt,
 		RunID:            runID,
@@ -492,10 +494,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 
 	rt.logger.Debug(ctx, "runtime identifiers", slog.String("scope", "runtime"), slog.String("runID", runID), slog.String("threadID", threadID), slog.String("workflowID", workflowID))
 
-	cleanup, err := rt.beginRun(workflowID)
-	if err != nil {
-		return nil, err
-	}
+	cleanup := rt.beginRun(workflowID)
 	streamStarted := false
 	defer func() {
 		if !streamStarted {
@@ -503,6 +502,7 @@ func (rt *TemporalRuntime) ExecuteStream(ctx context.Context, req *runtime.Execu
 		}
 	}()
 
+	var err error
 	var eventWorkflowID, eventTaskQueue string
 	if rt.enableRemoteWorkers {
 		if err := rt.createEventWorker(); err != nil {
@@ -824,28 +824,25 @@ func getEventTaskQueue(taskQueue string) string {
 	return taskQueue + "-events"
 }
 
-// beginRun marks the start of a run. Returns (cleanup, nil) on success; call cleanup (or defer) when the run ends.
-// Returns (nil, ErrAgentAlreadyRunning) if a run is already active.
-func (rt *TemporalRuntime) beginRun(workflowID string) (func(), error) {
+// beginRun registers workflowID as an active run. Call the returned cleanup func (or defer it) when the run ends.
+// Multiple concurrent runs are allowed; each workflowID is unique per run (agent-run-{name}-{uuid}).
+func (rt *TemporalRuntime) beginRun(workflowID string) func() {
 	rt.runMu.Lock()
-	defer rt.runMu.Unlock()
-	if rt.activeRunWorkflowID != "" {
-		rt.logger.Debug(context.Background(), "runtime run rejected: already active", slog.String("scope", "runtime"), slog.String("active", rt.activeRunWorkflowID), slog.String("requested", workflowID))
-		return nil, ErrAgentAlreadyRunning
+	if rt.activeRunWorkflowIDs == nil {
+		rt.activeRunWorkflowIDs = make(map[string]struct{})
 	}
-	rt.activeRunWorkflowID = workflowID
+	rt.activeRunWorkflowIDs[workflowID] = struct{}{}
+	rt.runMu.Unlock()
 	rt.logger.Debug(context.Background(), "runtime run started", slog.String("scope", "runtime"), slog.String("workflowID", workflowID))
-	return func() { rt.endRun() }, nil
+	return func() { rt.endRun(workflowID) }
 }
 
-// endRun clears the active run state when a run completes. Does not clear activeEventWorkflowID (per-agent).
-func (rt *TemporalRuntime) endRun() {
+// endRun removes workflowID from the active run set when a run completes. Does not touch activeEventWorkflowID (per-agent).
+func (rt *TemporalRuntime) endRun(workflowID string) {
 	rt.runMu.Lock()
 	defer rt.runMu.Unlock()
-	if rt.activeRunWorkflowID != "" {
-		rt.logger.Debug(context.Background(), "runtime run finished", slog.String("scope", "runtime"), slog.String("workflowID", rt.activeRunWorkflowID))
-	}
-	rt.activeRunWorkflowID = ""
+	rt.logger.Debug(context.Background(), "runtime run finished", slog.String("scope", "runtime"), slog.String("workflowID", workflowID))
+	delete(rt.activeRunWorkflowIDs, workflowID)
 }
 
 func (rt *TemporalRuntime) getWorkflowID(runID, agentName string, isStream bool) string {
