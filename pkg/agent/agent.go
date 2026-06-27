@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -25,9 +24,6 @@ type Agent struct {
 	runtime          runtime.Runtime
 	localAgentWorker *AgentWorker // run worker; set when workers are embedded
 }
-
-// ErrAgentAlreadyRunning is returned when Run, RunAsync, or Stream is called while a run is already in progress.
-var ErrAgentAlreadyRunning = errors.New("agent already has an active run")
 
 // AgentRunOptions is the options to use runtime execution
 type AgentRunOptions = types.AgentRunOptions

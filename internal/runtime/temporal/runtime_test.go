@@ -156,22 +156,43 @@ func TestAgent_BeginRunEndRun(t *testing.T) {
 	l := logger.DefaultLogger("error")
 	a := &TemporalRuntime{logger: l}
 
-	cleanup, err := a.beginRun("wf1")
-	if err != nil {
-		t.Fatalf("beginRun: %v", err)
+	// First run: begin then end, map should be empty after cleanup.
+	cleanup1 := a.beginRun("wf1")
+	a.runMu.Lock()
+	if _, ok := a.activeRunWorkflowIDs["wf1"]; !ok {
+		t.Error("wf1 should be in active set after beginRun")
 	}
-	cleanup()
+	a.runMu.Unlock()
+	cleanup1()
+	a.runMu.Lock()
+	if _, ok := a.activeRunWorkflowIDs["wf1"]; ok {
+		t.Error("wf1 should be removed from active set after cleanup")
+	}
+	a.runMu.Unlock()
 
-	cleanup2, err := a.beginRun("wf1")
-	if err != nil {
-		t.Fatalf("beginRun after cleanup: %v", err)
+	// Concurrent runs: two distinct workflow IDs are both tracked simultaneously.
+	cleanup2 := a.beginRun("wf2")
+	cleanup3 := a.beginRun("wf3")
+	a.runMu.Lock()
+	if _, ok := a.activeRunWorkflowIDs["wf2"]; !ok {
+		t.Error("wf2 should be in active set")
 	}
-	defer cleanup2()
+	if _, ok := a.activeRunWorkflowIDs["wf3"]; !ok {
+		t.Error("wf3 should be in active set")
+	}
+	a.runMu.Unlock()
 
-	_, err = a.beginRun("wf2")
-	if err != ErrAgentAlreadyRunning {
-		t.Errorf("beginRun concurrent: got %v, want ErrAgentAlreadyRunning", err)
+	// Ending one run does not affect the other.
+	cleanup2()
+	a.runMu.Lock()
+	if _, ok := a.activeRunWorkflowIDs["wf2"]; ok {
+		t.Error("wf2 should be removed after its cleanup")
 	}
+	if _, ok := a.activeRunWorkflowIDs["wf3"]; !ok {
+		t.Error("wf3 should still be in active set")
+	}
+	a.runMu.Unlock()
+	cleanup3()
 }
 
 func TestEventChannelName(t *testing.T) {
@@ -650,7 +671,7 @@ func TestTemporalRuntime_Close_ActiveWorkflows(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt.runMu.Lock()
-	rt.activeRunWorkflowID = "run-w1"
+	rt.activeRunWorkflowIDs = map[string]struct{}{"run-w1": {}}
 	rt.activeEventWorkflowID = "evt-w1"
 	rt.runMu.Unlock()
 
