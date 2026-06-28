@@ -1,0 +1,52 @@
+---
+title: "A2A Client"
+sidebarTitle: "A2A Client"
+description: "Build an explicit A2A client with a2aclient.NewClient and register it via WithA2AClients"
+---
+
+Same outbound A2A behavior as [A2A Config](/examples/a2a-config), but builds clients explicitly with `pkg/a2a/client` and `WithA2AClients`.
+
+Source: [`examples/agent_with_a2a_client/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_a2a_client)
+
+## What it demonstrates
+
+- `a2aclient.NewClient` with timeout, token, skill filter options
+- Pre-built clients for custom transport wiring
+- Same `A2A_*` env vars as config example
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_a2a_client
+go run ./agent_with_a2a_client "What tools do you have available?"
+```
+
+## Local server workflow
+
+1. Terminal 1: `go run ./agent_with_a2a_server`
+2. Terminal 2: `export A2A_URL=http://localhost:9999` then run this example
+
+Env vars: `A2A_URL`, optional `A2A_TOKEN`, `A2A_HEADERS`, `A2A_ALLOW_SKILLS`, `A2A_BLOCK_SKILLS` — see [Configuration](/examples/configuration).
+
+## Expected output
+
+With `agent_with_a2a_server` running in terminal 1:
+
+```
+I can reach a remote agent that exposes skills including echo and calculator.
+How can I help you today?
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="A2A" icon="network-wired" href="/features/a2a">
+    A2A feature documentation
+  </Card>
+  <Card title="A2A Config" icon="gear" href="/examples/a2a-config">
+    WithA2AConfig variant
+  </Card>
+
+</CardGroup>

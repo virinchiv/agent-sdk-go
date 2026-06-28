@@ -1,0 +1,63 @@
+---
+title: "Multiple Agents"
+description: "Run two root agents concurrently in one process using WithInstanceId and distinct Temporal task queues"
+---
+
+Runs two independent root agents concurrently in the same process, each with a unique `WithInstanceId` and task queue suffix. Required when multiple agents share a Temporal namespace without colliding on workflow identity.
+
+Source: [`examples/multiple_agents/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/multiple_agents)
+
+## What it demonstrates
+
+- `WithInstanceId` for distinct Temporal workflow IDs
+- Per-agent task queue suffixes from the shared base queue
+- Concurrent `Run` calls on separate agent instances
+
+## Run
+
+From `examples/` with Temporal:
+
+```bash
+task infra:temporal:up && task infra:temporal:wait
+AGENT_RUNTIME=temporal go run ./multiple_agents
+```
+
+## Key code
+
+```go
+agent1, err := agent.NewAgent(
+    agent.WithName("agent-1"),
+    agent.WithInstanceId("agent-1"),
+    agent.WithLLMClient(llmClient),
+    agent.WithTemporalConfig(temporalCfg), // task queue gets instance suffix
+)
+
+agent2, err := agent.NewAgent(
+    agent.WithName("agent-2"),
+    agent.WithInstanceId("agent-2"),
+    agent.WithLLMClient(llmClient),
+    agent.WithTemporalConfig(temporalCfg),
+)
+```
+
+See [Multiple agents](/advanced/multiple-agents) for task queue naming and scaling patterns.
+
+## Expected output
+
+```
+[agent-1] Hello from agent 1! I'm ready to help.
+[agent-2] Hello from agent 2! I'm also ready to assist.
+```
+
+Both agents run concurrently. Each workflow ID is unique because `WithInstanceId` suffixes the Temporal workflow key — no collision on shared namespace.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Multiple Agents" icon="layer-group" href="/advanced/multiple-agents">
+    Instance IDs and task queues
+  </Card>
+  <Card title="Sub-agents" icon="sitemap" href="/examples/subagents">
+    Delegation vs separate root agents
+  </Card>
+</CardGroup>

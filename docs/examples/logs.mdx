@@ -1,0 +1,44 @@
+---
+title: "Logs"
+description: "Control stdout and stderr output routing and set LOG_LEVEL across any example"
+---
+
+All examples route user-facing output to **stdout** and SDK internal logs to **stderr**. Control verbosity with `LOG_LEVEL` without changing code.
+
+Source: [`examples/logs/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/logs)
+
+## Output routing
+
+| Output | Destination |
+|---|---|
+| User prompt and assistant reply | stdout |
+| SDK internal logs | stderr |
+
+## Usage
+
+From `examples/`:
+
+```bash
+LOG_LEVEL=debug go run ./simple_agent "Hello"
+go run ./simple_agent "Hello" 2>debug.log
+go run ./simple_agent "Hello" 2>/dev/null   # suppress SDK logs
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOG_LEVEL` | `error` | `debug`, `info`, `warn`, `error` |
+
+Optional run footers: `SHOW_LLM_USAGE=true`, `SHOW_TELEMETRY=true` — see [Running Examples](/examples/running-examples).
+
+For OTLP log export, see [Observability](/examples/observability). For file logging in the REPL, see [CLI](/getting-started/cli).
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Logs" icon="file-lines" href="/observability/logs">
+    SDK logging and OTLP export
+  </Card>
+  <Card title="Telemetry" icon="gauge" href="/observability/telemetry">
+    Per-run telemetry footers
+  </Card>
+</CardGroup>

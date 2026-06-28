@@ -1,0 +1,102 @@
+---
+title: "Memory"
+description: "Store and recall long-term memories across runs using Weaviate or pgvector backends"
+---
+
+Two-turn demos store then recall user preferences using `WithMemory`. Pick **one backend** per run.
+
+| Backend | Entrypoint |
+|---|---|
+| Weaviate | `go run ./agent_with_memory/weaviate` |
+| PostgreSQL + pgvector | `go run ./agent_with_memory/pgvector` |
+
+Uses the same Docker stack as retriever examples. `task infra:weaviate:up` / `task infra:pgvector:up` creates the **memory** class/table (`AgentMemory` / `agent_memories`) in addition to retriever schema. No seed rows — memories are written by agent runs.
+
+Source: [`examples/agent_with_memory/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_memory)
+
+## What it demonstrates
+
+- `memory.DefaultConfig` with vector backends
+- `MEMORY_STORE_MODE` — `ondemand` (`save_memory` tool) vs `always` (run-end extract)
+- Scope via `MEMORY_USER_ID` (default `demo-user`) — must match across runs you want to share
+- Telemetry: `total_memory_recalls` / `total_memory_stores` with `SHOW_TELEMETRY=true`
+
+| Backend | Default store mode |
+|---|---|
+| Weaviate | `always` |
+| pgvector | `ondemand` |
+
+Set `MEMORY_RECALL_ENABLED=false` for store-only (skip load before LLM).
+
+## Setup
+
+From `examples/`:
+
+```bash
+task infra:status    # see what's running
+```
+
+**Weaviate:**
+
+```bash
+task infra:weaviate:up
+# EMBEDDING_OPENAI_APIKEY must be in .env before up
+go run ./agent_with_memory/weaviate
+task infra:weaviate:down   # when finished
+```
+
+Verify schema: `curl -s http://localhost:8080/v1/schema | jq '.classes[].class'` — expect `Document` and `AgentMemory`.
+
+**pgvector:**
+
+```bash
+task infra:pgvector:up
+go run ./agent_with_memory/pgvector
+task infra:pgvector:down   # when finished
+```
+
+After an embedding key change: `task infra:weaviate:down && task infra:weaviate:up`.
+
+## Run behavior
+
+- **No CLI args** — two runs in one process: run 1 stores a preference, run 2 recalls it.
+- **With args** — single custom prompt.
+
+```bash
+go run ./agent_with_memory/weaviate
+go run ./agent_with_memory/pgvector "Remember I prefer window seats."
+```
+
+Batch all four combinations (each backend × each store mode): `task examples:local` includes memory targets when infra is up.
+
+## Expected output
+
+Two-run flow (no CLI args):
+
+```
+[Run 1] Prompt: "Remember I prefer window seats on flights."
+[Run 1] I'll remember that you prefer window seats on flights.
+
+[Run 2] Prompt: "What seat do I prefer?"
+[Run 2] Based on what you told me earlier, you prefer window seats on flights.
+```
+
+Run 1 stores the preference; Run 2 recalls it. With `SHOW_TELEMETRY=true`:
+
+```
+--- Telemetry ---
+total_memory_recalls: 1
+total_memory_stores:  1
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Memory" icon="brain" href="/features/memory">
+    Store modes, scope, recall config
+  </Card>
+  <Card title="Retrieval" icon="book-open" href="/examples/retrieval">
+    RAG with same vector infra
+  </Card>
+
+</CardGroup>

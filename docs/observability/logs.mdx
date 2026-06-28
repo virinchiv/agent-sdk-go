@@ -1,0 +1,187 @@
+---
+title: "Logs"
+description: "Configure structured SDK logging with slog, set log levels, and export logs via OTLP"
+---
+
+Agent SDK for Go emits **structured logs** throughout the agent lifecycle — config validation, runtime execution, workflow steps, and exporter diagnostics. Logs are separate from [Telemetry](/observability/telemetry) (run summaries) and [Tracing](/observability/tracing) (spans).
+
+## Default behavior
+
+Without observability config, the SDK uses a default logger writing to **stderr** at level **`error`**. Set the level with [`WithLogLevel`](/getting-started/configuration):
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithLogLevel("debug"), // debug, info, warn, error
+)
+```
+
+No OTLP export unless you configure it.
+
+## OTLP log export
+
+When [`WithObservabilityConfig`](/getting-started/configuration) is set and `DisableLogs` is **false**, SDK logs export to your OTLP backend automatically — the default logger is bridged to the same OpenTelemetry LoggerProvider:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithObservabilityConfig(&agent.ObservabilityConfig{
+        Endpoint: "collector:4317",
+        Protocol: agent.OTLPProtocolGRPC,
+        Insecure: true,
+        // DisableLogs: true, // skip OTLP log export
+    }),
+    agent.WithLogLevel("info"),
+)
+defer a.Close() // flushes buffered log records
+```
+
+No separate `WithLogger` call is needed for OTLP — the SDK wires [`logger.DefaultLoggerWithOtelProvider`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/logger#DefaultLoggerWithOtelProvider) when logs are enabled.
+
+Use the **same** `WithObservabilityConfig` and log level on [`NewAgentWorker`](/advanced/worker-separation) for worker-side log export.
+
+### Custom logger + OTLP
+
+If you pass [`WithLogger`](/getting-started/configuration) with a custom logger, OTLP logs from `WithObservabilityConfig` are **not** automatically bridged — the SDK warns at build time. Bridge manually:
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/logger"
+    "github.com/agenticenv/agent-sdk-go/pkg/observability"
+)
+
+logs, _ := observability.NewLogs(
+    observability.WithName("my-service"),
+    observability.WithEndpoint("collector:4317"),
+    observability.WithInsecure(true),
+)
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithLogs(logs),
+    agent.WithLogger(logger.DefaultLoggerWithOtelProvider("info", logs.Provider())),
+)
+```
+
+When `WithObservabilityConfig` enables logs, any standalone `WithLogs` value is **replaced** by the OTLP client built from config.
+
+## Bring your own logs exporter
+
+Use [`WithLogs`](/getting-started/configuration) with [`observability.NewLogs`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/observability#NewLogs) when not using `WithObservabilityConfig`:
+
+```go
+logs, err := observability.NewLogs(
+    observability.WithName("my-service"),
+    observability.WithEndpoint("collector:4317"),
+    observability.WithProtocol(observability.ProtocolHTTP),
+    observability.WithInsecure(true),
+)
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithLogs(logs),
+    agent.WithLogLevel("info"),
+)
+```
+
+## Disable logging
+
+```go
+agent.WithLogger(agent.NoopLogger())
+```
+
+Discards all SDK log output — useful in tests or when an external wrapper captures everything.
+
+## Log levels
+
+| Level | Typical content |
+|---|---|
+| `error` | Default — failures and misconfiguration |
+| `warn` | Deprecated paths, config overrides, fingerprint warnings |
+| `info` | Agent config summary, worker start/stop, run lifecycle |
+| `debug` | Per-iteration detail, hook activity, exporter diagnostics |
+
+## Shutdown and flush
+
+| Process | Flush behavior |
+|---|---|
+| `Agent.Close()` | Shuts down tracer, metrics, and logs exporters |
+| `AgentWorker.Stop()` | Flushes OTLP on standalone worker processes |
+| Embedded local worker | Flushes via `Agent.Close()` only |
+
+<Note>
+OTLP log records are batched before export. Allow a brief drain window on shutdown in production — call `Agent.Close()` or `AgentWorker.Stop()` before the process exits, not just on signal receipt.
+</Note>
+
+## Integrate with your logging pipeline
+
+**Write to a file or stdout** — override the default logger with a custom writer:
+
+```go
+import (
+    "os"
+    "github.com/agenticenv/agent-sdk-go/pkg/logger"
+)
+
+f, _ := os.OpenFile("agent.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithLogger(logger.DefaultLoggerWithWriter("info", f)),
+)
+```
+
+**Forward to an aggregator (Loki, Datadog, Splunk)** via the OTLP Collector. Wire OTLP log export from the SDK, then configure the collector to forward to your backend:
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+
+exporters:
+  loki:
+    endpoint: "http://loki:3100/loki/api/v1/push"
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [loki, debug]
+```
+
+**Forward to an existing `slog` pipeline** — implement `interfaces.Logger` wrapping your handler and pass it to `WithLogger`.
+
+## Hooks logging
+
+Hook examples in the repository log hook activity to stderr with a `[hooks]` prefix. See [Hooks](/features/hooks) and [Hooks example](/examples/hooks).
+
+Example: [Observability](/examples/observability) · [Logs example](/examples/logs).
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Observability" icon="play" href="/examples/observability">
+    OTLP traces, metrics, and logs
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tracing" icon="route" href="/observability/tracing">
+    OTLP traces in the same config block
+  </Card>
+  <Card title="Metrics" icon="chart-line" href="/observability/metrics">
+    OTLP metrics export
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithLogger, WithLogLevel, WithObservabilityConfig
+  </Card>
+  <Card title="CLI" icon="terminal" href="/getting-started/cli">
+    agentctl log file output
+  </Card>
+</CardGroup>

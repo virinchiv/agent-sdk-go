@@ -1,0 +1,89 @@
+---
+title: "Token Usage"
+description: "Aggregate prompt, completion, and reasoning token counts across LLM rounds in a run"
+---
+
+Each LLM completion can report token counts via [`interfaces.LLMUsage`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMUsage) on [`LLMResponse.Usage`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMResponse). OpenAI, Anthropic, and Gemini clients populate the fields when the provider returns them.
+
+## Usage fields
+
+| Field | Description |
+|---|---|
+| `PromptTokens` | Input tokens |
+| `CompletionTokens` | Output tokens |
+| `TotalTokens` | Sum when reported by provider |
+| `CachedPromptTokens` | Prompt cache hits (when supported) |
+| `ReasoningTokens` | Extended thinking tokens (when supported) |
+
+## Run
+
+[`AgentRunResult.LLMUsage`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#AgentRunResult) is the **sum across all LLM calls** in that run — including tool rounds. Use it for cost estimates, quotas, and logging:
+
+```go
+result, err := a.Run(ctx, prompt, nil)
+if err != nil {
+    return err
+}
+
+if result.LLMUsage != nil {
+    fmt.Printf("prompt=%d completion=%d total=%d\n",
+        result.LLMUsage.PromptTokens,
+        result.LLMUsage.CompletionTokens,
+        result.LLMUsage.TotalTokens,
+    )
+}
+```
+
+
+## Stream
+
+The same aggregate appears on `LLMUsage` in the `AgentEventTypeRunFinished` event — `Result` is an `*AgentRunResult`:
+
+```go
+for ev := range eventCh {
+    if ev.Type() != agent.AgentEventTypeRunFinished {
+        continue
+    }
+    finished, ok := ev.(*agent.AgentRunFinishedEvent)
+    if !ok || finished.Result == nil || finished.Result.LLMUsage == nil {
+        continue
+    }
+    u := finished.Result.LLMUsage
+    fmt.Printf("total tokens: %d\n", u.TotalTokens)
+}
+```
+
+OpenAI streaming with `include_usage` surfaces totals on `RUN_FINISHED`. Example: [Stream](/examples/stream).
+
+## RunAsync
+
+Token usage is on the final `AgentRunAsyncResult` when the run completes — same aggregate as `Run`.
+
+## Per-request usage
+
+For per-LLM-call breakdowns, use [`AfterLLMHook`](/features/hooks) and inspect `in.Response.Usage` on each iteration.
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Simple Agent" icon="play" href="/examples/simple-agent">
+    SHOW_LLM_USAGE footer
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Reasoning" icon="lightbulb" href="/features/reasoning">
+    ReasoningTokens from extended thinking
+  </Card>
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+    Usage on RUN_FINISHED events
+  </Card>
+  <Card title="LLM Providers" icon="robot" href="/getting-started/llm-providers">
+    Provider-specific usage reporting
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/observability/metrics">
+    Export usage as metrics
+  </Card>
+</CardGroup>

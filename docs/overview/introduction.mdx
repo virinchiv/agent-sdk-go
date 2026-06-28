@@ -1,0 +1,75 @@
+---
+title: "Introduction"
+description: "Build production-grade AI agents in Go with Temporal durability, MCP, A2A, and full observability"
+---
+
+**Agent SDK for Go** is a Go library for building production AI agents. It handles the full execution loop — LLM calls, tool use, approvals, memory, multi-agent delegation — so you write configuration and business logic, not plumbing.
+
+**Who it's for:** Go backend engineers who want to ship agents in the same language, type system, and deployment pipeline as the rest of their stack — without glue code, dynamic typing, or a Python runtime.
+
+## Your First Agent
+
+```go
+llmClient, _ := openai.NewClient(
+    llm.WithAPIKey(os.Getenv("OPENAI_API_KEY")),
+    llm.WithModel("gpt-4o"),
+)
+
+a, _ := agent.NewAgent(
+    agent.WithName("my-agent"),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+    agent.WithLLMClient(llmClient),
+)
+defer a.Close()
+
+result, _ := a.Run(ctx, "What is the capital of France?", nil)
+fmt.Println(result.Content) // Paris.
+```
+
+That's it — configure once, call repeatedly. Tools, memory, streaming, and durable execution are additive options — not new APIs to learn.
+
+## Install
+
+```bash
+go get github.com/agenticenv/agent-sdk-go@latest
+```
+
+Go 1.26+. OpenAI API key required for the example above; Anthropic and Gemini are also built in. Temporal is optional.
+
+## Why Agent SDK for Go
+
+- **Idiomatic Go** — functional options, typed interfaces, no reflection magic. Swap any component (LLM client, memory backend, approval policy) by passing a different option.
+- **Same code, two runtimes** — run in-process for development with no infrastructure, then add `WithTemporalConfig` for crash-proof durable execution in production. Nothing else changes.
+- **Concurrent by default** — one `Agent` instance handles parallel `Run`, `RunAsync`, and `Stream` calls; Temporal issues each a unique workflow automatically.
+- **Protocol-native integrations** — MCP tool servers, A2A agent-to-agent delegation, and AG-UI streaming events are first-class, not adapters bolted on after the fact.
+- **Middleware hooks** — intercept LLM calls, tool use, retrieval, and memory at any lifecycle point for logging, PII scrubbing, and guardrails without touching agent logic.
+
+## Runtimes
+
+Run agents locally for development, or with Temporal for production-grade durability and fault tolerance.
+
+| | In-process (default) | Temporal |
+|---|---|---|
+| Setup | No infra | Running Temporal server |
+| Durability | None | Survives crashes and restarts |
+| Scale | Single process | Horizontal worker pools |
+| When | Dev, scripts, low-volume APIs | Production, long-running tasks |
+
+Add `WithTemporalConfig` to switch. See [Runtimes](/runtimes/overview).
+
+## Start here
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/getting-started/quickstart">
+    Your first agent, step by step — under 5 minutes
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/overview/architecture">
+    How the agent loop maps to capabilities and runtimes
+  </Card>
+  <Card title="Runnable examples" icon="play" href="/examples/running-examples">
+    Annotated examples for every feature
+  </Card>
+  <Card title="Temporal runtime" icon="server" href="/runtimes/temporal">
+    Durable runs, worker separation, crash recovery
+  </Card>
+</CardGroup>

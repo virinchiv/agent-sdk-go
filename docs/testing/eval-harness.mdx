@@ -1,0 +1,269 @@
+---
+title: "Eval Harness"
+description: "Run behavioral regression evals to verify tool calls, completion quality, and telemetry without a live LLM"
+---
+
+The eval harness runs a single agent execution with **mock LLM and mock tools**, then prints structured JSON to stdout. Use it to catch breaking changes in CI and as a reference for wiring your own agents into eval tools like PromptFoo and DeepEval.
+
+No LLM API key is required for default tests.
+
+## Prerequisites
+
+Clone the SDK repository and run commands from the **repository root** (`agent-sdk-go/`), not from `examples/`:
+
+```bash
+git clone https://github.com/agenticenv/agent-sdk-go.git
+cd agent-sdk-go
+go run ./eval-harness/runner
+```
+
+Requires Go 1.26+ (same as the SDK). Temporal mode needs a running Temporal server on `localhost:7233`.
+
+## What it verifies
+
+Each run exercises the real SDK agent loop (`agent.NewAgent`, `Run`) and outputs:
+
+| Field | Use |
+|---|---|
+| `content` | Final assistant response text |
+| `llm_usage` | Token counts from the mock LLM |
+| `telemetry` | Run lifecycle, tool breakdown, storage counts — see [Telemetry](/observability/telemetry) |
+
+Assertions typically check `telemetry.run.finish_reason`, `telemetry.tools.breakdown`, `telemetry.tools.failed_calls`, and `llm_usage.total_tokens`.
+
+## Run the harness
+
+From the repository root:
+
+```bash
+go run ./eval-harness/runner
+go run ./eval-harness/runner -prompt "custom prompt"
+go run ./eval-harness/runner -runtime temporal
+go run ./eval-harness/runner -tools 2
+go run ./eval-harness/runner -config eval-harness/runner/config.yaml
+```
+
+Or use the Makefile shortcut:
+
+```bash
+make eval-harness
+```
+
+CI runs PromptFoo and DeepEval on pull requests — see the `eval-harness` job in `.github/workflows/ci.yml`.
+
+### CLI flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-config` | `eval-harness/runner/config.yaml` | Path to config file |
+| `-prompt` | from config | Override `user_prompt` |
+| `-runtime` | from config | `local` or `temporal` |
+| `-tools` | from config | Override `agent.tool_count` |
+
+### config.yaml
+
+Default path: `eval-harness/runner/config.yaml`
+
+| Field | Default | Description |
+|---|---|---|
+| `runtime` | `local` | `local` or `temporal` |
+| `user_prompt` | — | User message (required) |
+| `agent.name` | `eval-agent` | Agent name |
+| `agent.system_prompt` | built-in eval prompt | System instructions |
+| `agent.tool_count` | `3` | Number of mock tools |
+| `temporal.host` | `localhost` | Temporal host when `runtime: temporal` |
+| `temporal.port` | `7233` | Temporal port |
+| `temporal.namespace` | `default` | Temporal namespace |
+| `temporal.task_queue` | `eval-harness` | Task queue |
+
+Temporal mode uses an embedded local worker — no separate worker process required.
+
+### Memory scenarios
+
+Enable memory tests in config or via helper scripts:
+
+| Field | Default | Description |
+|---|---|---|
+| `memory.enabled` | `false` | Enable memory tests |
+| `memory.store_mode` | `ondemand` | `ondemand` or `always` |
+| `memory.scenario` | `store_recall` | Two-run store then recall |
+
+```bash
+./eval-harness/run_agent_memory.sh ondemand
+./eval-harness/run_agent_memory.sh always
+```
+
+When `memory.scenario: store_recall` is active, output includes a `memory_scenario` object with separate store and recall results.
+
+## Output format
+
+Stdout is always JSON:
+
+```json
+{
+  "content": "eval complete",
+  "llm_usage": {
+    "prompt_tokens": 600,
+    "completion_tokens": 400,
+    "total_tokens": 1000
+  },
+  "telemetry": {
+    "run": { "total_llm_calls": 2, "finish_reason": "complete" },
+    "tools": { "total_calls": 3, "failed_calls": 0, "breakdown": { "...": 1 } },
+    "storage": { }
+  }
+}
+```
+
+Parse this in your eval framework and assert on telemetry fields — the same contract used by PromptFoo and DeepEval integrations in the repo.
+
+## Sample output
+
+A successful run prints structured JSON to stdout:
+
+```bash
+$ go run ./eval-harness/runner
+```
+
+```json
+{
+  "content": "eval complete",
+  "llm_usage": {
+    "prompt_tokens": 600,
+    "completion_tokens": 400,
+    "total_tokens": 1000
+  },
+  "telemetry": {
+    "run": {
+      "total_llm_calls": 2,
+      "finish_reason": "complete",
+      "started_at": "2026-06-27T10:00:00Z",
+      "completed_at": "2026-06-27T10:00:00.045Z"
+    },
+    "tools": {
+      "total_calls": 3,
+      "failed_calls": 0,
+      "breakdown": {
+        "mock_tool_1": 1,
+        "mock_tool_2": 1,
+        "mock_tool_3": 1
+      }
+    },
+    "storage": {}
+  }
+}
+```
+
+Good results: `finish_reason === "complete"`, `failed_calls === 0`, all mock tools called exactly once, token counts match mock config.
+
+## Run against a real LLM provider
+
+The default harness uses a mock LLM for reproducible, zero-cost runs. To validate against a real provider:
+
+1. Copy and adapt the runner setup — swap the mock client for a real one:
+
+```go
+// eval-harness/runner/setup/setup.go (copy and modify)
+import "github.com/agenticenv/agent-sdk-go/pkg/llm/openai"
+
+llmClient, err := openai.NewClient(
+    llm.WithAPIKey(os.Getenv("OPENAI_API_KEY")),
+    llm.WithModel("gpt-4o"),
+)
+```
+
+2. Set your API key and run:
+
+```bash
+export OPENAI_API_KEY=sk-your-key
+go run ./eval-harness/runner -prompt "What is 7 times 8?"
+```
+
+3. Assert on `content` text quality with your scoring framework (PromptFoo / DeepEval) alongside the behavioral `telemetry` assertions.
+
+To compare providers, run the same prompt against multiple configs and diff the JSON output:
+
+```bash
+# Run with OpenAI
+OPENAI_API_KEY=... go run ./eval-harness/runner > result_openai.json
+
+# Run with Anthropic
+ANTHROPIC_API_KEY=... go run ./eval-harness/runner > result_anthropic.json
+
+diff result_openai.json result_anthropic.json
+```
+
+## PromptFoo integration
+
+Config: `eval-harness/promptfoo/config.yaml`
+
+PromptFoo runs the harness as an [exec provider](https://www.promptfoo.dev/docs/providers/custom-script/). Each test invokes the runner once, parses JSON stdout, and asserts with JavaScript.
+
+```bash
+cd eval-harness/promptfoo
+npx promptfoo eval -c config.yaml
+npx promptfoo view   # web UI for results
+```
+
+Requires Node.js. PromptFoo installs on demand via `npx`.
+
+| Piece | Role |
+|---|---|
+| Provider | `exec:../run_agent.sh` — wrapper in `eval-harness/` |
+| Output | Runner JSON on stdout; assertions use `JSON.parse(output)` |
+| Agent settings | From `eval-harness/runner/config.yaml` |
+
+Example assertions: all mock tools called once, `finish_reason === "complete"`, zero failed tool calls, token usage reported.
+
+## DeepEval integration
+
+Python tests in `eval-harness/deepeval/`:
+
+```bash
+cd eval-harness/deepeval
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest test_agent.py -v
+```
+
+Requires Python 3.10+ and Go.
+
+1. `harness.run_agent()` calls `eval-harness/run_agent.sh` and parses JSON
+2. Tests assert on `content`, `llm_usage`, and `telemetry`
+3. `ToolCorrectnessMetric` uses `telemetry.tools.breakdown` keys as `tools_called`
+
+Example extraction:
+
+```python
+agent_res = run_agent()
+tools = list(agent_res["telemetry"]["tools"]["breakdown"].keys())
+finish_reason = agent_res["telemetry"]["run"]["finish_reason"]
+```
+
+## Build your own evals
+
+The harness pattern applies to any framework:
+
+1. Run the agent with deterministic mocks (or a fixed LLM in staging)
+2. Capture `AgentRunResult` fields — `Content`, `LLMUsage`, `Telemetry`
+3. Assert on behavioral signals, not just text match
+
+For live LLM evals, swap the mock client in `eval-harness/runner/setup/` with a real provider and keep the same output envelope.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Telemetry" icon="gauge" href="/observability/telemetry">
+    Fields available for assertions
+  </Card>
+  <Card title="Benchmarks" icon="bolt" href="/testing/benchmarks">
+    Load and concurrency testing
+  </Card>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Tool registration and execution
+  </Card>
+  <Card title="Readiness Checklist" icon="clipboard-check" href="/production/readiness">
+    Production deployment guidelines
+  </Card>
+</CardGroup>

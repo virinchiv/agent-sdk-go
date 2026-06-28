@@ -1,0 +1,87 @@
+---
+title: "Concurrent Runs"
+description: "Run multiple prompts concurrently on one Agent instance using RunAsync and sync.WaitGroup"
+---
+
+Dispatches several `RunAsync` calls simultaneously on **one** `Agent` instance. Each run gets its own Temporal workflow (or local goroutine) — no separate `Agent` per request required.
+
+Source: [`examples/agent_with_concurrent_runs/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_concurrent_runs)
+
+## What it demonstrates
+
+- `RunAsync` + `sync.WaitGroup` for fan-out across one agent
+- Results printed as they arrive (arrival order varies)
+- Runtime-agnostic: `local` and `temporal` both supported via `AGENT_RUNTIME`
+
+## Run
+
+From `examples/`:
+
+```bash
+# local runtime (default)
+go run ./agent_with_concurrent_runs
+
+# pass your own prompts
+go run ./agent_with_concurrent_runs "Who wrote Hamlet?" "What is sqrt(144)?" "Name a primary color."
+
+# Temporal runtime
+task infra:temporal:up && task infra:temporal:wait
+AGENT_RUNTIME=temporal go run ./agent_with_concurrent_runs
+```
+
+## Key code
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithName("concurrent-agent"),
+    agent.WithLLMClient(llmClient),
+    // ...same options for local or Temporal
+)
+
+var wg sync.WaitGroup
+resultCh := make(chan result, len(prompts))
+
+for i, prompt := range prompts {
+    wg.Add(1)
+    go func(idx int, p string) {
+        defer wg.Done()
+        asyncCh, _ := a.RunAsync(context.Background(), p, nil)
+        ar := <-asyncCh
+        resultCh <- result{idx: idx, prompt: p, res: ar.Result, err: ar.Error}
+    }(i, prompt)
+}
+
+go func() { wg.Wait(); close(resultCh) }()
+
+for r := range resultCh {
+    fmt.Printf("Q: %s\nA: %s\n\n", r.prompt, r.res.Content)
+}
+```
+
+Each `RunAsync` returns immediately; the goroutine blocks on `<-asyncCh` until that run completes. All runs are in flight simultaneously on the same `Agent`.
+
+## Expected output
+
+```
+Q: Who wrote Hamlet?
+A: Hamlet was written by William Shakespeare.
+
+Q: What is sqrt(144)?
+A: The square root of 144 is 12.
+
+Q: Name a primary color.
+A: Red is a primary color.
+```
+
+Arrival order varies — results print as each run finishes, not in submission order.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Multiple Agents" icon="layer-group" href="/examples/multiple-agents">
+    Separate agent instances with distinct task queues
+  </Card>
+  <Card title="Run Async" icon="bolt" href="/examples/run-async">
+    Non-blocking RunAsync with result channel
+  </Card>
+</CardGroup>

@@ -1,0 +1,68 @@
+---
+title: "JSON Response"
+description: "Configure ResponseFormat with a JSONSchema to get structured machine-parseable output from the agent"
+---
+
+Constrains every LLM call to a JSON schema using `WithResponseFormat` — the model returns parseable structured data, not free-form markdown.
+
+Source: [`examples/agent_with_json_response/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_json_response)
+
+## What it demonstrates
+
+- `interfaces.ResponseFormat` with `ResponseFormatJSON` and `JSONSchema`
+- Parsing `result.Content` as JSON after `Run`
+- Schema enforcement across tool rounds
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_json_response "What is the capital of France?"
+```
+
+## Key code
+
+Define the schema once at agent construction:
+
+```go
+rf := &interfaces.ResponseFormat{
+    Type: interfaces.ResponseFormatJSON,
+    Name: "FactAnswer",
+    Schema: interfaces.JSONSchema{
+        "type": "object",
+        "properties": interfaces.JSONSchema{
+            "answer":       interfaces.JSONSchema{"type": "string"},
+            "confidence":   interfaces.JSONSchema{"type": "string", "enum": []any{"low", "medium", "high"}},
+        },
+        "required":             []any{"answer", "confidence"},
+        "additionalProperties": false,
+    },
+}
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithResponseFormat(rf),
+)
+```
+
+See [Response format](/features/response-format) for provider support and limitations.
+
+## Expected output
+
+```json
+{"answer":"Paris","confidence":"high"}
+```
+
+The model is constrained to return valid JSON matching the schema — `result.Content` is always parseable with `json.Unmarshal`.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Response Format" icon="code" href="/features/response-format">
+    Schema design and parsing
+  </Card>
+  <Card title="Token Usage" icon="coins" href="/features/token-usage">
+    Usage on structured runs
+  </Card>
+</CardGroup>

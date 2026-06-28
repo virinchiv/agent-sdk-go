@@ -1,0 +1,177 @@
+---
+title: "Telemetry"
+description: "Enable OpenTelemetry export and access run-level agent telemetry data"
+---
+
+The SDK has two observability layers:
+
+1. **OpenTelemetry export** — distributed traces, metrics, and structured logs pushed to any OTLP-compatible backend (Jaeger, Grafana, Datadog, etc.). Configured once at agent creation.
+2. **Run-level telemetry** — `AgentTelemetry` on every `AgentRunResult`. LLM round counts, tool breakdowns, and storage operation summaries returned inline with each result. No configuration required.
+
+## Enable OpenTelemetry
+
+Pass [`WithObservabilityConfig`](/getting-started/configuration) to wire traces, metrics, and logs in one block:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithObservabilityConfig(&agent.ObservabilityConfig{
+        Endpoint: "localhost:4317",        // gRPC OTLP endpoint
+        Protocol: agent.OTLPProtocolGRPC,  // or OTLPProtocolHTTP
+        Insecure: true,                    // dev only — omit for TLS
+    }),
+    agent.WithLogLevel("info"),
+)
+defer a.Close() // flushes all OTLP exporters — required
+```
+
+Use the **same** `WithObservabilityConfig` on `NewAgent` and `NewAgentWorker`. LLM calls and tool executions run on the worker process — without matching config those spans and metrics are dropped.
+
+Opt out of individual signals:
+
+```go
+agent.WithObservabilityConfig(&agent.ObservabilityConfig{
+    Endpoint:       "localhost:4317",
+    DisableTraces:  false, // default — enabled
+    DisableMetrics: false, // default — enabled
+    DisableLogs:    false, // default — enabled
+})
+```
+
+See [Tracing](/observability/tracing), [Metrics](/observability/metrics), and [Logs](/observability/logs) for per-signal details and collector configuration.
+
+---
+
+## Run-level telemetry (`AgentTelemetry`)
+
+Every completed run populates [`AgentTelemetry`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#AgentTelemetry) on [`AgentRunResult`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#AgentRunResult). This is **run-level behavioral data** returned with the result — separate from OTLP export. Use it for app-side logging, dashboards, and eval harness assertions.
+
+## Structure
+
+`AgentTelemetry` has three sections:
+
+| Section | Tracks |
+|---|---|
+| `Run` | Orchestration lifecycle — timing, LLM round count, finish reason |
+| `Tools` | Tool invocation totals, failures, per-tool breakdown |
+| `Storage` | Retriever searches and memory recall/store operations |
+
+Fields are **zero** when the corresponding feature is not configured (no retriever → retriever counts are 0; no memory → memory counts are 0).
+
+## Run telemetry
+
+| Field | Description |
+|---|---|
+| `StartedAt` | Run start time |
+| `CompletedAt` | Run completion time |
+| `TotalLLMCalls` | LLM calls across all tool rounds |
+| `FinishReason` | `complete` or `max_iterations` |
+
+`max_iterations` means the run hit [`WithMaxIterations`](/getting-started/configuration) before producing a final answer.
+
+## Tool telemetry
+
+| Field | Description |
+|---|---|
+| `TotalCalls` | Total tool invocations |
+| `FailedCalls` | Tools that returned an error — excludes approval-denied and unauthorized cases |
+| `Breakdown` | Per-tool invocation counts — key is tool name |
+| `FailedBreakdown` | Per-tool failure counts |
+
+Covers native tools, MCP tools, retriever tools, and sub-agent delegation tools.
+
+## Storage telemetry
+
+| Field | Description |
+|---|---|
+| `TotalRetrieverSearches` | Total RAG searches |
+| `FailedRetrieverSearches` | Failed retriever searches |
+| `PrefetchSearches` | Searches from prefetch or hybrid mode |
+| `AgenticSearches` | Searches from agentic or hybrid mode (LLM-initiated) |
+| `TotalMemoryRecalls` | Memory load operations before the run |
+| `FailedMemoryRecalls` | Failed recall operations |
+| `TotalMemoryStores` | Memory persist operations |
+| `FailedMemoryStores` | Failed store operations |
+
+See [Retrieval](/features/retrieval) and [Memory](/features/memory) for when each counter increments.
+
+## Run
+
+```go
+result, err := a.Run(ctx, "What's the weather in Tokyo?", nil)
+if err != nil {
+    return err
+}
+
+t := result.Telemetry
+fmt.Printf("llm_calls=%d finish=%s\n", t.Run.TotalLLMCalls, t.Run.FinishReason)
+fmt.Printf("tool_calls=%d failed=%d\n", t.Tools.TotalCalls, t.Tools.FailedCalls)
+fmt.Printf("retriever=%d prefetch=%d agentic=%d\n",
+    t.Storage.TotalRetrieverSearches,
+    t.Storage.PrefetchSearches,
+    t.Storage.AgenticSearches)
+fmt.Printf("memory recall=%d store=%d\n",
+    t.Storage.TotalMemoryRecalls,
+    t.Storage.TotalMemoryStores)
+```
+
+Example: [Simple Agent](/examples/simple-agent) · [Observability](/examples/observability).
+
+## Stream
+
+Telemetry is on `Result.Telemetry` inside the `AgentEventTypeRunFinished` event:
+
+```go
+for ev := range eventCh {
+    if ev.Type() != agent.AgentEventTypeRunFinished {
+        continue
+    }
+    finished, ok := ev.(*agent.AgentRunFinishedEvent)
+    if !ok || finished.Result == nil || finished.Result.Telemetry == nil {
+        continue
+    }
+    fmt.Println(finished.Result.Telemetry.Run.TotalLLMCalls)
+}
+```
+
+## RunAsync
+
+Same as `Run` — telemetry is on the final `AgentRunAsyncResult.Result.Telemetry` when the run completes.
+
+## Token usage vs telemetry
+
+| Data | Where | Purpose |
+|---|---|---|
+| **Telemetry** | `Result.Telemetry` | Run behavior — LLM round count, tool breakdown, storage ops |
+| **Token usage** | `Result.LLMUsage` | Aggregate token counts for cost and quota tracking |
+
+See [Token Usage](/features/token-usage).
+
+## Eval harness
+
+Telemetry fields are designed for eval assertions — total LLM calls, tool breakdown, finish reason, and storage counts. See [Eval Harness](/testing/eval-harness).
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Telemetry" icon="play" href="/examples/simple-agent">
+    SHOW_TELEMETRY on run results
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Metrics" icon="chart-line" href="/observability/metrics">
+    OTLP counters and histograms
+  </Card>
+  <Card title="Tracing" icon="route" href="/observability/tracing">
+    Distributed spans per LLM and tool call
+  </Card>
+  <Card title="Token Usage" icon="coins" href="/features/token-usage">
+    LLMUsage on run results
+  </Card>
+  <Card title="Observability Example" icon="flask" href="/examples/observability">
+    Runnable demo with telemetry footer
+  </Card>
+</CardGroup>

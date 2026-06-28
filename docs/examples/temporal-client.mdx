@@ -1,0 +1,63 @@
+---
+title: "Temporal Client"
+description: "Build a caller-owned Temporal client connection for TLS, API keys, and Temporal Cloud"
+---
+
+Uses `WithTemporalClient` instead of `WithTemporalConfig`. You create and own the Temporal SDK client — required for TLS, API key auth, Temporal Cloud, and custom connection options.
+
+Source: [`examples/agent_with_temporal_client/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_temporal_client)
+
+## What it demonstrates
+
+- `client.Dial` with your own `client.Options`
+- `WithTemporalClient(tc, taskQueue)` on `NewAgent`
+- Caller-owned client lifecycle (`defer tc.Close()`)
+
+## Run
+
+From `examples/` with Temporal running:
+
+```bash
+task infra:temporal:up && task infra:temporal:wait
+AGENT_RUNTIME=temporal go run ./agent_with_temporal_client "Hello, what can you do?"
+```
+
+Set `TEMPORAL_HOST`, `TEMPORAL_PORT`, `TEMPORAL_NAMESPACE`, and `TEMPORAL_TASKQUEUE` in `.env`.
+
+## Key code
+
+```go
+tc, err := client.Dial(client.Options{
+    HostPort:  "localhost:7233",
+    Namespace: "default",
+    // ConnectionOptions, Credentials for Cloud / mTLS
+})
+defer tc.Close()
+
+a, err := agent.NewAgent(
+    agent.WithTemporalClient(tc, "my-task-queue"),
+    agent.WithLLMClient(llmClient),
+)
+```
+
+For simple local dev without custom dial options, `WithTemporalConfig` is sufficient — see [Temporal runtime](/runtimes/temporal).
+
+## Expected output
+
+```
+I'm a helpful assistant powered by an LLM. I can answer questions, help with tasks,
+and have multi-turn conversations. What would you like to explore?
+```
+
+The Temporal workflow ID and task queue are logged to stderr at `LOG_LEVEL=debug`. The response itself is identical to the simple-agent — the difference is the execution path (Temporal workflow vs in-process goroutine).
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Temporal Runtime" icon="server" href="/runtimes/temporal">
+    WithTemporalConfig vs WithTemporalClient
+  </Card>
+  <Card title="Agent Worker" icon="gears" href="/examples/agent-worker">
+    Split client and worker
+  </Card>
+</CardGroup>

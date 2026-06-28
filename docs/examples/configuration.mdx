@@ -1,0 +1,123 @@
+---
+title: "Configuration"
+description: "Configure Go, LLM credentials, Docker dependencies, and env vars before running any example"
+---
+
+Set this up once before running any example. Individual example pages only list services or variables needed beyond this base.
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| **Go 1.26+** | `go version` to verify |
+| **LLM API key** | Set `LLM_APIKEY` in `examples/.env` |
+| **Repository clone** | `git clone https://github.com/agenticenv/agent-sdk-go && cd agent-sdk-go/examples` |
+
+Supported providers: `openai`, `anthropic`, `gemini` — configured via `LLM_PROVIDER` and `LLM_MODEL`.
+
+## Environment file setup
+
+Examples load **`examples/.env.defaults`** automatically on startup — do not copy it. Create **`examples/.env`** (gitignored) only for your API key and overrides:
+
+```bash
+cd examples
+cat >> .env <<'EOF'
+LLM_APIKEY=your-key-here
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o
+EOF
+```
+
+Load order: `.env.defaults` → `.env` → process environment. Process-level exports win last. Never commit API keys.
+
+## Optional dependencies
+
+| Dependency | When needed |
+|---|---|
+| **Docker + Compose** | Weaviate, pgvector, Redis, Temporal, OTLP collector |
+| **[Task](https://taskfile.dev)** | `task infra:*:up` targets from `examples/` |
+| **Node.js** | MCP stdio server (`npx`), AG-UI Next.js UI |
+| **Temporal server** | When `AGENT_RUNTIME=temporal` |
+| **Embedding API key** | pgvector and some memory/retriever examples — `EMBEDDING_OPENAI_APIKEY` in `.env` |
+
+## Runtime modes
+
+| Mode | Setting | Requirement |
+|---|---|---|
+| **Local** (default) | `AGENT_RUNTIME=local` or unset | None |
+| **Temporal** | `AGENT_RUNTIME=temporal` | Running Temporal server — `task infra:temporal:up && task infra:temporal:wait` |
+
+## Environment variables
+
+### Core
+
+| Variable | Description |
+|---|---|
+| `LLM_PROVIDER` | `openai`, `anthropic`, or `gemini` |
+| `LLM_APIKEY` | API key — **required** |
+| `LLM_MODEL` | e.g. `gpt-4o`, `claude-sonnet-4-20250514`, `gemini-2.5-flash` |
+| `LLM_BASEURL` | Optional custom or proxy endpoint |
+| `AGENT_RUNTIME` | `local` (default) or `temporal` |
+| `LOG_LEVEL` | `error` (default), `warn`, `info`, `debug` — written to stderr |
+| `SHOW_LLM_USAGE` | `true` to print token usage footer after each run |
+| `SHOW_TELEMETRY` | `true` to print run telemetry footer |
+
+### Temporal
+
+Used when `AGENT_RUNTIME=temporal`:
+
+| Variable | Default |
+|---|---|
+| `TEMPORAL_HOST` | `127.0.0.1` |
+| `TEMPORAL_PORT` | `7233` |
+| `TEMPORAL_NAMESPACE` | `default` |
+| `TEMPORAL_TASKQUEUE` | `agent-sdk-go` (each example appends a suffix) |
+
+### Conversation
+
+| Variable | Description |
+|---|---|
+| `REDIS_ADDR` | Redis address for conversation examples (default `localhost:6379`) |
+| `CONVERSATION_ID` | Optional session ID override |
+
+### MCP
+
+| Variable | Description |
+|---|---|
+| `MCP_TRANSPORT` | `stdio` or `streamable_http` |
+| `MCP_STDIO_COMMAND` / `MCP_STDIO_ARGS` | Local subprocess MCP (default: filesystem sandbox via `npx`) |
+| `MCP_STREAMABLE_HTTP_URL` | Remote MCP URL |
+| `MCP_BEARER_TOKEN`, `MCP_ALLOW_TOOLS`, `MCP_BLOCK_TOOLS` | Auth and tool filters |
+| `MCP_CLIENT_ID`, `MCP_CLIENT_SECRET`, `MCP_TOKEN_URL` | OAuth client credentials |
+| `MCP_SKIP_TLS_VERIFY` | Dev only |
+
+### A2A
+
+| Variable | Description |
+|---|---|
+| `A2A_URL` | Remote agent base URL (client examples) |
+| `A2A_TOKEN`, `A2A_HEADERS`, `A2A_ALLOW_SKILLS`, `A2A_BLOCK_SKILLS` | Client options |
+| `A2A_SERVER_HOST`, `A2A_SERVER_PORT`, `A2A_SERVER_BEARER_TOKENS` | Inbound server example |
+
+### Observability
+
+| Variable | Description |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Collector `host:port` — e.g. `localhost:4317` |
+| `OTLP_PROTOCOL` | `grpc` (default) or `http` |
+| `OTLP_INSECURE` | `true` for plaintext local collectors |
+
+### Retriever and memory
+
+| Variable | Description |
+|---|---|
+| `RETRIEVER_MODE` | `agentic`, `prefetch`, or `hybrid` |
+| `WEAVIATE_*` | Weaviate host, class, field names |
+| `PGVECTOR_DSN`, `PGVECTOR_TABLE`, `EMBEDDING_*` | Postgres + embeddings |
+| `MEMORY_USER_ID`, `MEMORY_STORE_MODE`, `MEMORY_RECALL_*` | Long-term memory examples |
+
+The authoritative default values for all variables live in `examples/.env.defaults` in the repository.
+
+<Card title="Running Examples" icon="play" href="/examples/running-examples">
+  Commands, Task infra, suggested order, and multi-process examples
+</Card>

@@ -1,0 +1,78 @@
+---
+title: "Hooks"
+description: "Implement lifecycle hooks for PII scrubbing, retrieval filtering, and memory tenant access checks"
+---
+
+Registers hook groups across LLM, tools, retrieval, and memory lifecycle points. Hook activity logs to **stderr** with a `[hooks]` prefix so you can see when each hook fires without mixing into the assistant reply.
+
+Source: [`examples/agent_with_hooks/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_hooks)
+
+## What it demonstrates
+
+| Hook | What this example does |
+|---|---|
+| `BeforeLLM` / `AfterLLM` | Redact email addresses and SSNs from prompts and responses |
+| `BeforeTool` / `AfterTool` | Scrub PII from tool args and results |
+| `BeforeRetrieve` / `AfterRetrieve` | Prefix queries with `kb:`; drop documents containing SSNs |
+| `BeforeMemoryLoad` / `AfterMemoryLoad` | Require `tenant_id` in scope; wrap recalled context with a scrubbed header |
+| `BeforeMemoryStore` / `AfterMemoryStore` | Scrub PII before persist; audit log after store |
+
+The sample uses `WithHooks` with named hook groups. See [Hooks](/features/hooks) for every hook point and `RunMeta` fields.
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_hooks
+```
+
+Default: two-run demo (store memories + prefetch retrieval + tools, then recall).
+
+```bash
+go run ./agent_with_hooks "My email is alice@example.com. What is the return policy?"
+```
+
+Watch stderr for `[hooks]` lines as each hook fires.
+
+## Expected output
+
+stdout (assistant reply):
+
+```
+Our return policy allows returns within 30 days. I've noted your query.
+```
+
+stderr (`[hooks]` lines, interleaved):
+
+```
+[hooks] BeforeLLM: redacted 0 PII items
+[hooks] BeforeRetrieve: prefixed query with "kb:"
+[hooks] AfterRetrieve: kept 3 documents (0 dropped)
+[hooks] AfterLLM: redacted 0 PII items
+```
+
+Sending `"My email is alice@example.com..."` triggers PII redaction and you'll see `redacted 1 PII items` in the hook output.
+
+## Temporal
+
+Hooks are Go functions — they run in the **process that executes activities** (the worker). Register the same hook groups on both the agent starter and the worker via `HookOptions()` (or equivalent `WithHooks` calls). Group **names** are fingerprinted for drift detection; hook **logic** consistency is your responsibility.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Hooks" icon="code-branch" href="/features/hooks">
+    Hook points and RunMeta
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/examples/observability">
+    OTLP alongside hooks
+  </Card>
+
+  <Card title="Memory" icon="brain" href="/features/memory">
+    Before/after memory hooks
+  </Card>
+  <Card title="Retrieval" icon="book-open" href="/features/retrieval">
+    Before/after retrieve hooks
+  </Card>
+
+</CardGroup>

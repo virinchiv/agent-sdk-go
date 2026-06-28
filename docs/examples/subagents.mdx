@@ -1,0 +1,72 @@
+---
+title: "Sub-agents"
+description: "Delegate tasks to a specialist sub-agent with its own task queue and approval flow"
+---
+
+Main agent delegates to a MathSpecialist sub-agent on its own task queue. Tool and delegation approval events from the specialist fan in to the main agent's stream.
+
+Source: [`examples/agent_with_subagents/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_subagents)
+
+## What it demonstrates
+
+- `WithSubAgents` registering a specialist with its own tools and task queue
+- Delegation approval (`CUSTOM` delegation events) and tool approval from sub-agent streams
+- Separate Temporal task queues per agent when `AGENT_RUNTIME=temporal`
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_subagents "Use the math specialist to compute 847 * 293"
+```
+
+Approve delegation and tool calls when prompted on stdin.
+
+## Key code
+
+```go
+mathAgent, err := agent.NewAgent(
+    agent.WithName("MathSpecialist"),
+    agent.WithTaskQueue(mathQueue),
+    agent.WithToolRegistry(mathReg),
+    agent.WithLLMClient(llmClient),
+)
+
+mainAgent, err := agent.NewAgent(
+    agent.WithName("MainAgent"),
+    agent.WithTaskQueue(mainQueue),
+    agent.WithSubAgents(map[string]agent.SubAgentConfig{
+        "math": {Agent: mathAgent, Description: "Handles arithmetic"},
+    }),
+    agent.WithLLMClient(llmClient),
+)
+```
+
+Each sub-agent needs its own worker polling its task queue in Temporal mode. See [Sub-agents](/features/sub-agents).
+
+## Expected output
+
+```
+Delegating to MathSpecialist...
+Approve delegation to MathSpecialist? [y/n]: y
+Tool call: calculator({"expression":"847*293"})
+Approve? [y/n]: y
+847 × 293 = 248,171
+```
+
+The main agent emits a delegation approval event before calling the sub-agent. The sub-agent then calls its tools and approval events fan in to the main agent's stream.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+    Depth limits, policies, streaming fan-in
+  </Card>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    Delegation and tool approval
+  </Card>
+  <Card title="Multiple Agents" icon="layer-group" href="/examples/multiple-agents">
+    Multiple root agents in one process
+  </Card>
+</CardGroup>

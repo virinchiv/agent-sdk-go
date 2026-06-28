@@ -1,0 +1,89 @@
+---
+title: "Response Format"
+description: "Configure plain-text or JSON schema structured output from the LLM using ResponseFormat"
+---
+
+By default the agent uses **text-only** output. Use [`WithResponseFormat`](/getting-started/configuration) to request structured output — for example JSON with a schema the model must follow.
+
+## Default (text)
+
+Omit `WithResponseFormat` — the LLM responds as plain text:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+    // No WithResponseFormat — text output
+)
+```
+
+Force text explicitly when you need to reset a previously set format:
+
+```go
+agent.WithResponseFormat(&interfaces.ResponseFormat{
+    Type: interfaces.ResponseFormatText,
+})
+```
+
+## JSON with schema
+
+Use `interfaces.ResponseFormatJSON` with a valid JSON Schema. The root must be `type: "object"` with `properties`:
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithResponseFormat(&interfaces.ResponseFormat{
+        Type: interfaces.ResponseFormatJSON,
+        Name: "AgentResponse",
+        Schema: interfaces.JSONSchema{
+            "type": "object",
+            "properties": interfaces.JSONSchema{
+                "response":   interfaces.JSONSchema{"type": "string"},
+                "confidence": interfaces.JSONSchema{"type": "number"},
+            },
+            "required": []any{"response"},
+        },
+    }),
+)
+```
+
+The schema is sent to the LLM on every request for that agent. Parse `result.Content` as JSON in your application.
+
+<Note>
+The schema root must be `type: "object"`. Primitive or array roots are not valid JSON Schema for Structured Outputs.
+</Note>
+
+## Provider support
+
+Structured Outputs (JSON schema enforcement) require models that support it — for example `gpt-4o` and `gpt-4o-mini` on OpenAI. Older models may fall back to JSON mode without strict schema enforcement.
+
+<Warning>
+Response format is part of the static agent spec. Include the **same** `WithResponseFormat` on both `NewAgent` and `NewAgentWorker` when using split processes — it participates in the fingerprint check.
+</Warning>
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="JSON Response" icon="play" href="/examples/json-response">
+    Structured output with response format
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="LLM Providers" icon="robot" href="/getting-started/llm-providers">
+    OpenAI, Anthropic, and Gemini clients
+  </Card>
+  <Card title="Reasoning" icon="lightbulb" href="/features/reasoning">
+    Extended thinking alongside structured output
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithResponseFormat reference
+  </Card>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Combine structured output with tool use
+  </Card>
+</CardGroup>

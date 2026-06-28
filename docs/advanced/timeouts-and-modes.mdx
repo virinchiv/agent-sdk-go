@@ -1,0 +1,174 @@
+---
+title: "Timeouts and Agent Modes"
+sidebarTitle: "Timeouts & Modes"
+description: "Configure run duration, approval timeouts, and interactive vs autonomous agent behavior"
+---
+
+**The problem:** An agent run that calls slow tools, waits for human approval, or hits an LLM provider delay can hang indefinitely. For interactive apps, that means a frozen UI. For background pipelines, it means a stuck job that never retries or terminates.
+
+**The solution:** Bound every run with a deadline, choose an agent mode that matches your use case (interactive vs autonomous), and set explicit approval timeouts. When a limit fires the SDK fails the run cleanly with a typed error — no silent hangs.
+
+## Run timeouts
+
+Two ways to limit how long a run waits:
+
+### Option 1 — Context deadline (per call)
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+defer cancel()
+
+result, err := a.Run(ctx, "Hello", nil)
+```
+
+Works with `Run`, `Stream`, and `RunAsync`. The context deadline applies to the entire call.
+
+### Option 2 — WithTimeout (agent default)
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTimeout(5 * time.Minute),
+)
+
+result, err := a.Run(context.Background(), "Hello", nil)
+```
+
+Used when the context has **no deadline**. Agent-only — ignored by `NewAgentWorker`.
+
+### Precedence
+
+| Rule | Behavior |
+|---|---|
+| Context deadline | **Always wins** — if ctx expires in 2 min but `WithTimeout` is 10 min, the run ends at 2 min |
+| Default when unset | Follows agent mode — see below |
+
+## Agent modes
+
+Set with [`WithAgentMode`](/getting-started/configuration):
+
+| Mode | Default timeout | Worker check (Temporal) | Best for |
+|---|---|---|---|
+| `AgentModeInteractive` (default) | **5 minutes** | When `DisableLocalWorker` is set, checks for available workers before submitting — returns a clear error if none are ready | Chat, REPL, web apps where a human is waiting |
+| `AgentModeAutonomous` | **60 minutes** | Skipped — Temporal queues the workflow until a worker is available | Background jobs, pipelines, long-running tasks |
+
+```go
+// Interactive (default) — 5 min timeout, worker pre-check
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithAgentMode(agent.AgentModeInteractive),
+)
+
+// Autonomous — 60 min timeout, no worker pre-check
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithAgentMode(agent.AgentModeAutonomous),
+)
+```
+
+Agent mode is included in the Temporal agent fingerprint — caller and worker must agree.
+
+Worker-check and queueing behavior apply primarily to the **Temporal runtime**. In-process agents use the same default timeouts but do not perform worker pre-checks.
+
+## Approval timeout
+
+[`WithApprovalTimeout`](/getting-started/configuration) limits how long the user has to approve or reject each tool call. Agent-only.
+
+| Setting | Default |
+|---|---|
+| `WithApprovalTimeout` | Agent timeout − **30 seconds** |
+| Maximum | 31 days (`MaxApprovalTimeout`) |
+
+**Must be less than** the agent run timeout. Validation fails at `NewAgent` if `approvalTimeout >= timeout`.
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTimeout(10 * time.Minute),
+    agent.WithApprovalTimeout(9 * time.Minute),
+    agent.WithApprovalHandler(approvalHandler),
+)
+```
+
+### On approval timeout
+
+| Method | Behavior |
+|---|---|
+| `Run` | Returns error |
+| `Stream` | Emits `AgentEventTypeRunError` |
+| `RunAsync` | `resultCh` receives result with `Error` set |
+
+<Warning>
+If you use a long context deadline but omit `WithTimeout`, approval still expires at ~4.5 minutes (interactive default 5 min − 30s). Set `WithTimeout` or `WithApprovalTimeout` explicitly for longer approval windows.
+</Warning>
+
+See [Approvals](/features/approvals).
+
+## Max iterations
+
+[`WithMaxIterations`](/getting-started/configuration) caps LLM rounds (default **5**). When reached, the run finishes with finish reason `max_iterations` on telemetry. Separate from wall-clock timeout — a run can hit max iterations before the timeout fires.
+
+## Behavior under failure
+
+| Failure | `Run` | `Stream` | `RunAsync` |
+|---|---|---|---|
+| **Context deadline exceeded** | Returns `context.DeadlineExceeded` | Emits `AgentEventTypeRunError` | Channel receives result with `Error` set |
+| **Agent timeout fires** | Returns timeout error | Emits `AgentEventTypeRunError` | Channel receives result with `Error` set |
+| **Approval timeout** | Returns error after approval window expires | Emits `AgentEventTypeRunError` | Channel receives result with `Error` set |
+| **Max iterations reached** | Returns result with `FinishReason: max_iterations` | Emits `RUN_FINISHED` with reason set | Channel receives result normally |
+| **LLM provider error** | Returns the provider error | Emits `AgentEventTypeRunError` | Channel receives result with `Error` set |
+
+On the **Temporal runtime**, process crashes and worker restarts do not appear as failures — the workflow resumes from the last recorded step. Only deadline expiry, max iterations, and provider errors surface as run failures. See [Temporal runtime](/runtimes/temporal).
+
+## Practical combinations
+
+**Chat UI with Temporal split processes:**
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithTemporalConfig(cfg),
+    agent.WithLLMClient(llmClient),
+    agent.DisableLocalWorker(),
+    agent.EnableRemoteWorkers(),
+    agent.WithAgentMode(agent.AgentModeInteractive),
+    agent.WithTimeout(5 * time.Minute),
+    agent.WithStream(true),
+)
+```
+
+**Background pipeline:**
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithTemporalConfig(cfg),
+    agent.WithLLMClient(llmClient),
+    agent.WithAgentMode(agent.AgentModeAutonomous),
+    agent.WithTimeout(45 * time.Minute),
+    agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+)
+```
+
+**Per-request override:**
+
+```go
+ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+defer cancel()
+result, err := a.Run(ctx, quickPrompt, nil) // 30s cap regardless of agent timeout
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    Approval handler and OnApproval flows
+  </Card>
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+    Interactive worker pre-check with DisableLocalWorker
+  </Card>
+  <Card title="Temporal Runtime" icon="clock-rotate-left" href="/runtimes/temporal">
+    Agent mode on Temporal
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithTimeout, WithApprovalTimeout, WithAgentMode
+  </Card>
+</CardGroup>

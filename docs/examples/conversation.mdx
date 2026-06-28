@@ -1,0 +1,72 @@
+---
+title: "Conversation"
+description: "Persist multi-turn conversation history in Redis using WithConversation and a session ID"
+---
+
+Persists message history across turns using Redis and `WithConversation`. Runs with the same conversation ID share context across multiple `Run` calls.
+
+Source: [`examples/agent_with_conversation/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_conversation)
+
+## What it demonstrates
+
+- `conversation.Config` with Redis backend
+- `AgentRunOptions.ConversationOptions.ID` per run
+- Interactive REPL (no args) or single-turn CLI prompt
+
+## Run
+
+From `examples/`:
+
+```bash
+task infra:redis:up
+go run ./agent_with_conversation
+go run ./agent_with_conversation "Hello, remember I'm Alice"
+```
+
+Interactive mode accepts multiple prompts until you type `exit`.
+
+## Key code
+
+```go
+conv, err := redis.New(conversation.Config{
+    RedisAddr: cfg.RedisAddr,
+})
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithConversation(conv),
+)
+
+result, err := a.Run(ctx, prompt, &agent.AgentRunOptions{
+    ConversationOptions: &agent.ConversationRunOptions{
+        ID: "session-123",
+    },
+})
+```
+
+Use a distributed store (Redis, not in-memory) when agent client and worker run in separate processes. See [Conversation](/features/conversation).
+
+## Expected output
+
+```
+> Hello, remember I'm Alice
+Nice to meet you, Alice! How can I help you today?
+
+> What's my name?
+Your name is Alice — you told me at the start of our conversation.
+
+> exit
+```
+
+Redis persists the session between process restarts. The same `CONVERSATION_ID` (or `session-123` default) replays history on the next `go run`.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Conversation" icon="messages" href="/features/conversation">
+    Backends and session scope
+  </Card>
+  <Card title="Stream + Conversation" icon="layer-group" href="/examples/stream-conversation">
+    Streaming with persisted history
+  </Card>
+</CardGroup>

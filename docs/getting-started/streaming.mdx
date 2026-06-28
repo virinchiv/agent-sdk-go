@@ -1,0 +1,216 @@
+---
+title: "Streaming"
+description: "Enable token streaming and handle lifecycle events with Stream() and the AgentEvent channel"
+---
+
+Use streaming when your application needs live output — chat UIs, progress indicators, or AG-UI-compatible frontends.
+
+| Method | Returns | Blocking |
+|---|---|---|
+| `Run` | `*AgentRunResult` | Yes — waits for completion |
+| `RunAsync` | `<-chan AgentRunAsyncResult` | No — one result arrives on the channel when the run finishes |
+| `Stream` | `<-chan AgentEvent` | No — events arrive as the run progresses |
+
+See [Quickstart](/getting-started/quickstart) for a blocking `Run` example.
+
+## Enable streaming
+
+Pass [`WithStream(true)`](/getting-started/configuration) at agent creation:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+    agent.WithStream(true),
+)
+```
+
+Then call `Stream` instead of `Run`:
+
+```go
+eventCh, err := a.Stream(ctx, "What's 17 * 23?", nil)
+if err != nil {
+    return err
+}
+
+for ev := range eventCh {
+    if ev == nil {
+        continue
+    }
+    switch ev.Type() {
+    case agent.AgentEventTypeTextMessageContent:
+        if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok {
+            fmt.Print(t.Delta)
+        }
+    case agent.AgentEventTypeToolCallStart:
+        if t, ok := ev.(*agent.AgentToolCallStartEvent); ok {
+            fmt.Printf("\n[tool] %s\n", t.ToolCallName)
+        }
+    case agent.AgentEventTypeRunFinished:
+        fmt.Println("\n[done]")
+    case agent.AgentEventTypeRunError:
+        if t, ok := ev.(*agent.AgentRunErrorEvent); ok {
+            fmt.Printf("\n[error] %s\n", t.Message)
+        }
+    }
+}
+```
+
+<Warning>
+Always check `if ev == nil { continue }` before calling `ev.Type()`. The channel can deliver a nil sentinel to signal the end of a batch.
+</Warning>
+
+## Event types
+
+Stream events are typed [`AgentEvent`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#AgentEvent) values. Use `ev.Type()` and type-assert to the concrete struct to access fields.
+
+### Lifecycle
+
+| Event | When |
+|---|---|
+| `AgentEventTypeRunStarted` | Run begins |
+| `AgentEventTypeRunFinished` | Run completes — carries final result on `AgentRunFinishedEvent.Result` |
+| `AgentEventTypeRunError` | Run failed — error message on `AgentRunErrorEvent.Message` |
+| `AgentEventTypeStepStarted` | Sub-agent child workflow begins — `StepName` is the sub-agent route name |
+| `AgentEventTypeStepFinished` | Sub-agent child workflow ends |
+
+### Text output
+
+| Event | When |
+|---|---|
+| `AgentEventTypeTextMessageStart` | Assistant message begins |
+| `AgentEventTypeTextMessageContent` | Partial text delta — print `Delta` as it arrives |
+| `AgentEventTypeTextMessageEnd` | Assistant message ends |
+
+### Tool calls
+
+| Event | When |
+|---|---|
+| `AgentEventTypeToolCallStart` | Tool invocation begins — `ToolCallName` identifies the tool |
+| `AgentEventTypeToolCallArgs` | Partial tool arguments streaming in |
+| `AgentEventTypeToolCallEnd` | Tool invocation ends |
+| `AgentEventTypeToolCallResult` | Tool result content |
+
+### Reasoning
+
+| Event | When |
+|---|---|
+| `AgentEventTypeReasoningMessageContent` | Partial reasoning/thinking delta (Anthropic when extended thinking is enabled) |
+
+### Custom (approvals and delegation)
+
+| Event | When |
+|---|---|
+| `AgentEventTypeCustom` | Approval or delegation requests during `Stream` |
+
+Parse approval events with `ParseCustomEventApproval` / `ParseCustomEventDelegation`, then call [`OnApproval`](/features/approvals) with the `ApprovalToken`. See [Approvals](/features/approvals) for the full flow.
+
+## Displaying streamed text
+
+<Warning>
+`TEXT_MESSAGE_CONTENT` deltas and `AgentRunFinishedEvent.Result.Content` carry the same text. **Do not print both.** If you rendered deltas live, skip printing `result.Content` from `RUN_FINISHED`.
+</Warning>
+
+When sub-agents are configured, events from delegated runs **fan in** to the parent stream. Use `AgentName` on typed events to identify which agent emitted them. Multiple `RUN_FINISHED` events may appear before the root run finishes — each corresponds to one completed sub-agent run.
+
+## Token usage from Stream
+
+Aggregated token counts are on `Result.LLMUsage` inside [`AgentRunFinishedEvent`](/features/token-usage):
+
+```go
+for ev := range eventCh {
+    if ev == nil {
+        continue
+    }
+    if finished, ok := ev.(*agent.AgentRunFinishedEvent); ok && finished.Result != nil {
+        if finished.Result.LLMUsage != nil {
+            fmt.Printf("tokens: input=%d output=%d total=%d\n",
+                finished.Result.LLMUsage.PromptTokens,
+                finished.Result.LLMUsage.CompletionTokens,
+                finished.Result.LLMUsage.TotalTokens,
+            )
+        }
+    }
+}
+```
+
+See [Token Usage](/features/token-usage) for field details.
+
+## RunAsync
+
+`RunAsync` starts the run in a goroutine and returns a channel that delivers one [`AgentRunAsyncResult`](/getting-started/quickstart) when the run completes. Use it when you want a final result without blocking the caller, but do not need live token events.
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithApprovalHandler(func(ctx context.Context, req *agent.ApprovalRequest) {
+        _ = req.Respond(agent.ApprovalStatusApproved)
+    }),
+)
+
+resultCh, err := a.RunAsync(ctx, "Summarize this document", nil)
+if err != nil {
+    return err
+}
+
+res := <-resultCh
+if res.Error != nil {
+    return res.Error
+}
+fmt.Println(res.Result.Content)
+```
+
+Handle tool approvals with [`WithApprovalHandler`](/features/approvals) — the same callback as `Run`.
+
+## Streaming with conversation history
+
+Pass `ConversationOptions` to share history across turns while streaming. The same session ID links messages across calls:
+
+```go
+conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithStream(true),
+    agent.WithConversation(conversation.Config{Conversation: conv, Size: 20}),
+)
+
+opts := &agent.AgentRunOptions{
+    ConversationOptions: &agent.ConversationOptions{ID: "session-1"},
+}
+
+// First turn
+eventCh, _ := a.Stream(ctx, "My name is Alice.", opts)
+for ev := range eventCh { /* handle */ }
+
+// Second turn — agent remembers the session
+eventCh, _ = a.Stream(ctx, "What's my name?", opts)
+for ev := range eventCh { /* handle */ }
+```
+
+See [Conversation](/features/conversation) for backend options and lifecycle management.
+
+## AG-UI protocol
+
+Stream events follow the [AG-UI open protocol](https://docs.ag-ui.com). Serialize any event with `event.ToJSON()` and forward over SSE or WebSocket to a compatible frontend. See [AG-UI Protocol](/features/ag-ui-protocol).
+
+## Temporal streaming notes
+
+On the Temporal runtime, the agent run is durable but live stream delivery is not backfilled — see [Temporal runtime](/runtimes/temporal#streaming-and-approvals).
+
+## Examples
+
+<CardGroup cols={2}>
+  <Card title="Stream example" icon="play" href="/examples/stream">
+    Partial tokens, tool events, and RUN_FINISHED handling
+  </Card>
+  <Card title="RunAsync example" icon="play" href="/examples/run-async">
+    Non-blocking run with approval handler
+  </Card>
+  <Card title="AG-UI example" icon="play" href="/examples/agui">
+    Go SSE server with CopilotKit frontend
+  </Card>
+  <Card title="Approvals" icon="shield" href="/features/approvals">
+    Approval flow for Run, RunAsync, and Stream
+  </Card>
+</CardGroup>

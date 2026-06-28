@@ -1,0 +1,60 @@
+---
+title: "MCP Client"
+description: "Build explicit MCP clients with mcpclient.NewClient and register them via WithMCPClients"
+---
+
+Same MCP env as [MCP Config](/examples/mcp-config), but builds clients with `pkg/mcp/client` and passes them via `WithMCPClients`.
+
+Source: [`examples/agent_with_mcp_client/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_mcp_client)
+
+## What it demonstrates
+
+- `mcpclient.NewClient` with `WithTimeout`, `WithRetryAttempts`, `WithToolFilter`
+- Mixing config-based and client-based registration patterns
+- Pre-built clients for custom transport wiring
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_mcp_client
+go run ./agent_with_mcp_client "List tools you can call."
+```
+
+Configure `MCP_TRANSPORT`, stdio or HTTP URLs, and auth in `.env` — see [MCP Config](/examples/mcp-config) for transport details and [Configuration](/examples/configuration) for the full variable reference.
+
+## Key code
+
+```go
+client, err := mcpclient.NewClient(
+    mcpclient.WithTransport(transport),
+    mcpclient.WithTimeout(30 * time.Second),
+    mcpclient.WithRetryAttempts(3),
+    mcpclient.WithToolFilter(mcpclient.AllowTools("read_file", "list_directory")),
+)
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithMCPClients(client),
+)
+```
+
+## Expected output
+
+```
+I have access to read_file and list_directory tools from the configured MCP server.
+What would you like to do?
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="MCP" icon="plug" href="/features/mcp">
+    MCP feature documentation
+  </Card>
+  <Card title="MCP Config" icon="gear" href="/examples/mcp-config">
+    WithMCPConfig variant
+  </Card>
+
+</CardGroup>

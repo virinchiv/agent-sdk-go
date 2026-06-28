@@ -1,0 +1,203 @@
+---
+title: "Metrics"
+description: "Export OpenTelemetry counters and histograms for LLM latency, token usage, and tool calls"
+---
+
+Agent SDK for Go records **OpenTelemetry metrics** for agent API calls and runtime operations. Metrics are **no-op by default** until you wire an OTLP exporter.
+
+## Wire OTLP
+
+Use [`WithObservabilityConfig`](/getting-started/configuration) — the same block configures traces, metrics, and logs:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithObservabilityConfig(&agent.ObservabilityConfig{
+        Endpoint: "collector:4317",
+        Protocol: agent.OTLPProtocolGRPC,
+        Insecure: true,
+        // DisableMetrics: true, // opt out of metrics only
+    }),
+)
+defer a.Close()
+```
+
+<Warning>
+Apply the **same `WithObservabilityConfig`** on both `NewAgent` and `NewAgentWorker`. LLM calls, tool executions, and memory operations run as Temporal activities on the worker — without matching config, those spans and metrics are silently dropped and never reach your collector.
+</Warning>
+
+## Bring your own metrics
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/observability"
+
+metrics, err := observability.NewMetrics(
+    observability.WithName("my-service"),
+    observability.WithEndpoint("collector:4317"),
+    observability.WithInsecure(true),
+)
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithMetrics(metrics),
+)
+```
+
+When `WithObservabilityConfig` enables metrics, any `WithMetrics` value is **replaced** by the OTLP client built from config.
+
+For advanced tuning (metrics export interval, headers, sampling), use [`observability.NewMetrics`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/observability#NewMetrics) with [`observability.Option`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/observability#Option) directly.
+
+## Agent API metrics
+
+Emitted by `Agent.Run`, `RunAsync`, and `Stream`:
+
+| Metric | Kind | Description |
+|---|---|---|
+| `agent.run.started` | counter | Each `Run` / `RunAsync` invocation |
+| `agent.run.completed` | counter | Successful run |
+| `agent.run.failed` | counter | Failed run — includes `error` attribute |
+| `agent.run.duration_ms` | histogram | Run wall-clock time in ms |
+| `agent.stream.started` | counter | Each `Stream` invocation |
+| `agent.stream.dispatched` | counter | Workflow successfully dispatched |
+| `agent.stream.failed` | counter | Dispatch failed |
+| `agent.stream.duration_ms` | histogram | Stream dispatch wall-clock time in ms |
+
+Stream metrics cover the **dispatch phase** — not per-token streaming duration.
+
+## Runtime metrics
+
+Emitted per LLM call, tool execution, retriever search, and memory operation on both in-process and Temporal runtimes.
+
+### LLM
+
+| Metric | Kind | Description |
+|---|---|---|
+| `agent.llm.call.started` | counter | LLM call started |
+| `agent.llm.call.completed` | counter | LLM call succeeded |
+| `agent.llm.call.failed` | counter | LLM call failed |
+| `agent.llm.latency_ms` | histogram | LLM wall-clock time in ms |
+| `agent.llm.tokens.input` | histogram | Prompt tokens when provider reports usage |
+| `agent.llm.tokens.output` | histogram | Completion tokens when provider reports usage |
+
+### Tools
+
+| Metric | Kind | Description |
+|---|---|---|
+| `agent.tool.call.started` | counter | Tool execute started |
+| `agent.tool.call.completed` | counter | Tool execute succeeded |
+| `agent.tool.call.failed` | counter | Tool execute failed |
+| `agent.tool.latency_ms` | histogram | Tool wall-clock time in ms |
+
+### Retriever
+
+| Metric | Kind | Description |
+|---|---|---|
+| `agent.retriever.call.started` | counter | Retriever search started |
+| `agent.retriever.call.completed` | counter | Retriever search succeeded |
+| `agent.retriever.call.failed` | counter | Retriever search failed |
+| `agent.retriever.latency_ms` | histogram | Search wall-clock time in ms |
+
+### Memory
+
+| Metric | Kind | Description |
+|---|---|---|
+| `agent.memory.recall.*` | counter + histogram | Recall load operations |
+| `agent.memory.store.*` | counter + histogram | Store operations |
+| `agent.memory.dedup.*` | counter + histogram | Semantic dedup lookups |
+| `agent.memory.extract.*` | counter + histogram | Run-end extraction (`StoreModeAlways`) |
+
+Each memory operation family has `.started`, `.completed`, `.failed` counters and a `.latency_ms` histogram.
+
+## Common attributes
+
+Runtime metrics include attributes when available:
+
+| Attribute | Values |
+|---|---|
+| `model` | LLM model name |
+| `provider` | `openai`, `anthropic`, `gemini` |
+| `tool` | Tool name |
+| `retriever` | Retriever name |
+| `memory.kind` | Memory record kind |
+| `memory.dedup` | Dedup decision metadata |
+
+## Export to Prometheus
+
+The SDK pushes OTLP metrics — it does not expose a Prometheus scrape endpoint directly. Use the [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) as a bridge: receive OTLP from the SDK and expose a `/metrics` endpoint for Prometheus to scrape.
+
+Minimal `otel-collector-config.yaml`:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+
+exporters:
+  prometheus:
+    endpoint: "0.0.0.0:8889"   # Prometheus scrapes this
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]
+```
+
+Prometheus `scrape_configs` entry:
+
+```yaml
+scrape_configs:
+  - job_name: agent-sdk
+    static_configs:
+      - targets: ["otel-collector:8889"]
+```
+
+The agent exports to `localhost:4317` (OTLP gRPC), the collector bridges to Prometheus on `:8889`:
+
+```go
+agent.WithObservabilityConfig(&agent.ObservabilityConfig{
+    Endpoint:      "localhost:4317",
+    Protocol:      agent.OTLPProtocolGRPC,
+    Insecure:      true,
+    DisableTraces: true, // metrics only
+    DisableLogs:   true,
+})
+```
+
+## Telemetry vs metrics
+
+| | Telemetry (`Result.Telemetry`) | OTLP metrics |
+|---|---|---|
+| **Scope** | Per-run summary on the result | Continuous export to collector |
+| **Use** | App logging, eval assertions | Dashboards, alerts, SLO tracking |
+| **Setup** | Always populated — no config | Requires `WithObservabilityConfig` or `WithMetrics` |
+
+See [Telemetry](/observability/telemetry).
+
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Observability" icon="play" href="/examples/observability">
+    OTLP traces, metrics, and logs
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tracing" icon="route" href="/observability/tracing">
+    Distributed spans for the same operations
+  </Card>
+  <Card title="Token Usage" icon="coins" href="/features/token-usage">
+    Per-run token totals on AgentRunResult
+  </Card>
+  <Card title="Logs" icon="file-lines" href="/observability/logs">
+    Structured SDK logs via OTLP
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithObservabilityConfig and WithMetrics
+  </Card>
+</CardGroup>

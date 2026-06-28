@@ -1,0 +1,128 @@
+---
+title: "Retrieval (RAG)"
+description: "Connect agents to external knowledge bases with agentic, prefetch, or hybrid retriever modes"
+---
+
+Retrieval-Augmented Generation (RAG) lets agents query external knowledge bases and ground responses in up-to-date or domain-specific content — without hardcoding it into the prompt.
+
+Built-in retriever implementations are in `pkg/retriever/weaviate` and `pkg/retriever/pgvector`. Bring your own by implementing [`interfaces.Retriever`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#Retriever).
+
+**Infrastructure setup (local dev):**
+
+```bash
+# Weaviate
+docker run --rm -p 8080:8080 -p 50051:50051 cr.weaviate.io/semitechnologies/weaviate:latest
+
+# pgvector (Postgres with pgvector extension)
+docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=pass pgvector/pgvector:pg16
+```
+
+## Enable
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/retriever/weaviate"
+
+r, err := weaviate.NewRetriever("product_knowledge",
+    weaviate.WithHost("localhost:8080"),
+    weaviate.WithClassName("ProductDocs"),
+)
+if err != nil {
+    return err
+}
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithRetrievers(r),
+    agent.WithRetrieverMode(agent.RetrieverModeAgentic), // default
+)
+```
+
+Pass multiple retrievers — each must have a **unique** `Name()`:
+
+```go
+agent.WithRetrievers(productRetriever, supportRetriever)
+```
+
+## Retriever modes
+
+Set with `WithRetrieverMode`:
+
+| Mode | Behavior | Best for |
+|---|---|---|
+| `RetrieverModeAgentic` (default) | LLM calls the retriever as a tool when it decides to search | Multi-step agents where retrieval is not always needed |
+| `RetrieverModePrefetch` | Context injected before every LLM call — no retriever tools exposed | Always-grounded Q&A, enterprise knowledge bases |
+| `RetrieverModeHybrid` | Prefetch context **plus** retriever exposed as a tool | Grounded defaults with on-demand deeper search |
+
+```go
+agent.WithRetrieverMode(agent.RetrieverModeAgentic)
+agent.WithRetrieverMode(agent.RetrieverModePrefetch)
+agent.WithRetrieverMode(agent.RetrieverModeHybrid)
+```
+
+<Note>
+In agentic and hybrid modes, each retriever is registered as a tool the LLM can invoke. Its name must be unique across all tool sources.
+</Note>
+
+## Backends
+
+### Weaviate
+
+```go
+r, err := weaviate.NewRetriever("product_knowledge",
+    weaviate.WithHost("localhost:8080"),
+    weaviate.WithClassName("ProductDocs"),
+)
+```
+
+Local Docker, zero auth for development. The first argument is the retriever's tool name — must be unique.
+
+### pgvector
+
+Postgres with pgvector extension — requires an embed function:
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/retriever/pgvector"
+
+r, err := pgvector.NewRetriever("support_knowledge", embedFn,
+    pgvector.WithDSN("postgres://user:pass@localhost:5432/mydb"),
+    pgvector.WithTable("documents"),
+)
+```
+
+## Custom retriever
+
+Implement [`interfaces.Retriever`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#Retriever):
+
+```go
+type Retriever interface {
+    Name() string
+    Search(ctx context.Context, query string) ([]interfaces.Document, error)
+}
+```
+
+Register with `WithRetrievers`. In agentic and hybrid modes, the retriever becomes a callable tool — `Name()` is the tool name the LLM uses.
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Retrieval" icon="play" href="/examples/retrieval">
+    Agentic, prefetch, and hybrid RAG
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Memory" icon="brain" href="/features/memory">
+    User-scoped long-term memory
+  </Card>
+  <Card title="Hooks" icon="code-branch" href="/features/hooks">
+    Query rewriting and document filtering
+  </Card>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    How retriever tools merge with other tools
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithRetrievers and WithRetrieverMode
+  </Card>
+</CardGroup>

@@ -1,0 +1,86 @@
+---
+title: "Agent Worker"
+description: "Split the agent client and Temporal worker into separate processes using DisableLocalWorker and NewAgentWorker"
+---
+
+Minimal **agent + worker** split: worker polls the task queue; agent process starts runs with `DisableLocalWorker`.
+
+Source: [`examples/agent_with_worker/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_worker)
+
+## What it demonstrates
+
+- `NewAgentWorker` with the same options as `NewAgent`
+- `DisableLocalWorker` on the client process
+- `Stream` from the remote agent process
+- Foundation pattern for production worker separation
+
+## Run
+
+From `examples/` with Temporal running:
+
+```bash
+task infra:temporal:up && task infra:temporal:wait
+
+# Terminal 1
+AGENT_RUNTIME=temporal go run ./agent_with_worker/worker
+
+# Terminal 2
+AGENT_RUNTIME=temporal go run ./agent_with_worker/agent "Hello from remote agent!"
+```
+
+For interactive durability scenarios (kill/restart), see [Durable Agent](/examples/durable-agent).
+
+## Key code
+
+**worker/main.go** — polls Temporal, executes workflows and activities:
+
+```go
+w, err := agent.NewAgentWorker(
+    agent.WithName("agent-worker"),
+    agent.WithLLMClient(llmClient),
+    agent.WithTemporalConfig(temporalCfg),
+)
+w.Start()
+```
+
+**agent/main.go** — starts runs, consumes stream without a local worker:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithName("agent-worker"),
+    agent.WithLLMClient(llmClient),
+    agent.WithTemporalConfig(temporalCfg),
+    agent.DisableLocalWorker(),
+    agent.EnableRemoteWorkers(),
+)
+eventCh, _ := a.Stream(ctx, prompt, nil)
+```
+
+Both processes use identical agent options so the SDK fingerprint matches.
+
+## Expected output
+
+Terminal 1 (worker) shows Temporal polling logs at `LOG_LEVEL=info`.
+
+Terminal 2 (agent) prints the streamed reply:
+
+```
+Hello from remote agent! I'm running as a Temporal workflow on a separate worker process.
+```
+
+See [Worker Separation](/advanced/worker-separation) and [Temporal Runtime](/runtimes/temporal) for production context.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+    Production split-process guide
+  </Card>
+  <Card title="Durable Agent" icon="shield" href="/examples/durable-agent">
+    Advanced durability scenarios
+  </Card>
+  <Card title="Agent Chat" icon="comments" href="/reference-apps/agent-chat">
+    Full app using same pattern
+  </Card>
+
+</CardGroup>

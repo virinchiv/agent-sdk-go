@@ -1,0 +1,80 @@
+---
+title: "Reasoning"
+description: "Configure extended thinking per provider via WithLLMSampling and LLMReasoning"
+---
+
+Reasoning (extended thinking) lets supported models spend additional compute on internal reasoning before producing a final answer. Configure it per agent with [`WithLLMSampling`](/getting-started/configuration) and [`LLMReasoning`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMReasoning).
+
+Fields are **provider-agnostic** — each LLM client maps them to its native API.
+
+## Configure
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithLLMSampling(&agent.LLMSampling{
+        Reasoning: &interfaces.LLMReasoning{
+            Enabled:      true,
+            Effort:       "medium",  // OpenAI reasoning_effort; Gemini thinking level
+            BudgetTokens: 4096,      // Anthropic / Gemini thinking budget
+        },
+    }),
+)
+```
+
+## Field mapping
+
+| Field | OpenAI | Anthropic | Gemini |
+|---|---|---|---|
+| `Enabled` | Does not infer `reasoning_effort` alone — standard chat models reject that parameter | If `BudgetTokens` is 0, uses minimum **1024** tokens for extended thinking | Helps turn on thought output (`IncludeThoughts`) |
+| `Effort` | Maps to `reasoning_effort` when non-empty — use with reasoning-capable models only | Not used for the thinking API | Maps to `ThinkingLevel` (`low` / `medium` / `high` / `minimal`) — only when `BudgetTokens` is 0 |
+| `BudgetTokens` | Not used | Extended-thinking budget (≥1024 when non-zero; values below 1024 are clamped up) | Maps to `ThinkingBudget` — wins over `Effort` when set |
+
+<Warning>
+Gemini forbids setting both `BudgetTokens` and `Effort` (`ThinkingLevel`) together. If you set `BudgetTokens`, `Effort` is not sent as `ThinkingLevel`. Prefer `BudgetTokens` over `Effort` when targeting Gemini.
+</Warning>
+
+<Note>
+Anthropic extended thinking requires `BudgetTokens` ≥ 1024. The SDK clamps lower values to 1024 automatically.
+</Note>
+
+## Streaming
+
+When the provider returns thinking deltas, streaming emits reasoning events:
+
+| Event | When |
+|---|---|
+| `AgentEventTypeReasoningStart` | Reasoning block begins |
+| `AgentEventTypeReasoningMessageContent` | Partial thinking delta — Anthropic emits this as `ThinkingDelta` |
+| `AgentEventTypeReasoningEnd` | Reasoning block ends |
+
+See [Streaming](/getting-started/streaming) for event handling patterns.
+
+## Token usage
+
+Reasoning tokens appear in [`LLMUsage.ReasoningTokens`](/features/token-usage) when the provider reports them. They are included in the aggregate on `AgentRunResult.LLMUsage`.
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Reasoning" icon="play" href="/examples/reasoning">
+    Extended thinking on supported models
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="LLM Providers" icon="robot" href="/getting-started/llm-providers">
+    Provider clients and model selection
+  </Card>
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+    Reasoning stream events
+  </Card>
+  <Card title="Token Usage" icon="coins" href="/features/token-usage">
+    ReasoningTokens in usage reports
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithLLMSampling reference
+  </Card>
+</CardGroup>

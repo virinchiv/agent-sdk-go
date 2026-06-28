@@ -1,0 +1,198 @@
+---
+title: "Tools"
+description: "Register built-in or custom tools and control parallel vs sequential execution per turn"
+---
+
+Tools are callable capabilities the LLM can invoke during a run. Agent SDK for Go converts each registered tool into a JSON schema the model sees, executes the tool when the model returns a tool call, and feeds the result back into the next LLM round.
+
+## Register tools
+
+**At creation** — pass tools directly or via a registry:
+
+```go
+reg := agent.NewToolRegistry()
+if err := agent.RegisterTools(reg, calculator.New(), weather.New()); err != nil {
+    log.Fatal(err)
+}
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithToolRegistry(reg),
+    agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+)
+```
+
+| Option | When to use |
+|---|---|
+| [`WithTools`](/getting-started/configuration) | Fixed tool set known at startup |
+| [`WithToolRegistry`](/getting-started/configuration) | Add or remove tools after `NewAgent` — see [Dynamic Capabilities](/advanced/dynamic-capabilities) |
+
+Built-in tools live under `pkg/tools/` (calculator, weather, search, and others).
+
+## Custom tools
+
+Implement [`interfaces.Tool`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#Tool). All five methods are required:
+
+| Method | Purpose |
+|---|---|
+| `Name() string` | Stable identifier the LLM uses in tool calls — must be unique across all tool sources |
+| `DisplayName() string` | Human-readable label for UI and logs |
+| `Description() string` | When and how the model should use this tool — quality here affects routing accuracy |
+| `Parameters() JSONSchema` | JSON Schema for tool arguments — build with `pkg/tools` helpers |
+| `Execute(ctx, args) (any, error)` | Run the tool and return a result |
+
+### Complete implementation
+
+```go
+package search
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/agenticenv/agent-sdk-go/pkg/interfaces"
+    "github.com/agenticenv/agent-sdk-go/pkg/tools"
+)
+
+// SearchTool implements interfaces.Tool for a product search capability.
+type SearchTool struct {
+    client *SearchClient
+}
+
+func New(client *SearchClient) *SearchTool {
+    return &SearchTool{client: client}
+}
+
+func (t *SearchTool) Name() string {
+    return "search_products"
+}
+
+func (t *SearchTool) DisplayName() string {
+    return "Product Search"
+}
+
+func (t *SearchTool) Description() string {
+    return "Search the product catalog by keyword. Use when the user asks about products, availability, or pricing."
+}
+
+func (t *SearchTool) Parameters() interfaces.JSONSchema {
+    return tools.Params(
+        map[string]interfaces.JSONSchema{
+            "query": tools.ParamString("Search keywords or product name"),
+            "limit": tools.ParamInteger("Maximum results to return (default 10, max 50)"),
+        },
+        "query", // required parameters
+    )
+}
+
+func (t *SearchTool) Execute(ctx context.Context, args map[string]any) (any, error) {
+    query, ok := args["query"].(string)
+    if !ok || query == "" {
+        return nil, fmt.Errorf("query is required")
+    }
+
+    limit := 10
+    if l, ok := args["limit"].(float64); ok && l > 0 {
+        limit = int(l)
+    }
+
+    return t.client.Search(ctx, query, limit)
+}
+```
+
+<Note>
+Tool arguments from the LLM arrive as `map[string]any`. JSON numbers decode as `float64` — cast accordingly (see `limit` above).
+</Note>
+
+### schema helpers
+
+`pkg/tools` provides type-safe helpers for `Parameters()`:
+
+| Helper | JSON type |
+|---|---|
+| `tools.ParamString(desc)` | `"string"` |
+| `tools.ParamInteger(desc)` | `"integer"` |
+| `tools.ParamNumber(desc)` | `"number"` |
+| `tools.ParamBool(desc)` | `"boolean"` |
+| `tools.ParamEnum(desc, vals...)` | `"string"` with `"enum"` |
+| `tools.ParamArray(desc, items)` | `"array"` |
+| `tools.Params(properties, required...)` | Full `"object"` schema |
+
+### Optional tool interfaces
+
+| Interface | Purpose |
+|---|---|
+| [`ToolApproval`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#ToolApproval) | Tool-level hint for interactive human approval — overridden by the agent's `WithToolApprovalPolicy` |
+| [`ToolAuthorizer`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#ToolAuthorizer) | Programmatic gate (scopes, tenancy, feature flags) before approval or execution |
+
+```go
+// ToolAuthorizer example — check tenant scope before execution
+func (t *SearchTool) Authorize(ctx context.Context, args map[string]any) (interfaces.ToolAuthorizationDecision, error) {
+    if !hasSearchPermission(ctx) {
+        return interfaces.ToolAuthorizationDecision{Allow: false, Reason: "search not permitted"}, nil
+    }
+    return interfaces.ToolAuthorizationDecision{Allow: true}, nil
+}
+```
+
+See [Approvals](/features/approvals) for the full approval and authorization flow.
+
+## Tool execution mode
+
+When the model returns **multiple tool calls in one turn**, the SDK runs them in parallel by default:
+
+```go
+// Default — independent tools run concurrently
+agent.WithAgentToolExecutionMode(agent.AgentToolExecutionModeParallel)
+
+// Ordered — each tool completes before the next starts (model order)
+agent.WithAgentToolExecutionMode(agent.AgentToolExecutionModeSequential)
+```
+
+Use **sequential** when tools share mutable state, hit rate limits, or must run in strict order.
+
+<Warning>
+Use the **same** `WithAgentToolExecutionMode` on `NewAgent`, `NewAgentWorker`, and all sub-agents in a deployment. A mismatch between the agent and worker causes a fingerprint error on the Temporal runtime.
+</Warning>
+
+## How tools merge at run time
+
+Each `Run`, `Stream`, or `RunAsync` resolves the full tool list from all registered sources:
+
+1. Native / custom tools in [`ToolRegistry`](/advanced/dynamic-capabilities)
+2. MCP tools ([MCP](/features/mcp))
+3. A2A skills ([A2A](/features/a2a))
+4. Sub-agent delegation tools ([Sub-agents](/features/sub-agents))
+5. Retriever tools when mode is agentic or hybrid ([Retrieval](/features/retrieval))
+6. `save_memory` when memory store mode is on-demand ([Memory](/features/memory))
+
+Tool names must be unique across all sources — validation fails fast at `NewAgent` and on each run.
+
+<Note>
+MCP tool names are prefixed as `mcp_<serverKey>_<toolName>` and A2A skills as `a2a_<server>_<skillId>`. This prevents collisions when multiple servers expose tools with the same logical name.
+</Note>
+
+## Examples
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="play" href="/examples/tools">
+    Built-in, approval, authorizer, custom, and dynamic registry
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    Require human approval before tool execution
+  </Card>
+  <Card title="MCP" icon="plug" href="/features/mcp">
+    External tools via Model Context Protocol
+  </Card>
+  <Card title="Dynamic Capabilities" icon="rotate" href="/advanced/dynamic-capabilities">
+    Register and unregister tools at runtime
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithTools, WithToolRegistry, WithAgentToolExecutionMode
+  </Card>
+</CardGroup>

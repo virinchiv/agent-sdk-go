@@ -1,0 +1,165 @@
+---
+title: "Multiple Agents"
+description: "Run several agents in one process or deployment with unique task queues and instance IDs"
+---
+
+**The problem:** You need more than one agent — an orchestrator and a specialist, two agents with different system prompts, or many instances of the same agent scaled across pods. Each needs its own identity and Temporal routing without interfering with the others.
+
+**The solution:** Each `Agent` instance is independent. Give distinct agents unique task queues; give scaled instances of the same agent a shared base queue plus a unique `WithInstanceId`. This page covers patterns for co-locating agents in one process and scaling them across pods.
+
+## One agent per task queue
+
+Each agent needs a **unique `TaskQueue`** in Temporal. Sub-agents also require separate queues. This prevents workflow and activity routing collisions:
+
+```go
+mainAgent, _ := agent.NewAgent(
+    agent.WithName("Orchestrator"),
+    agent.WithTemporalConfig(&agent.TemporalConfig{
+        Host: "localhost", Port: 7233, Namespace: "default",
+        TaskQueue: "my-app-main",
+    }),
+    agent.WithLLMClient(llmClient),
+)
+
+mathAgent, _ := agent.NewAgent(
+    agent.WithName("MathSpecialist"),
+    agent.WithTemporalConfig(&agent.TemporalConfig{
+        Host: "localhost", Port: 7233, Namespace: "default",
+        TaskQueue: "my-app-math",
+    }),
+    agent.WithLLMClient(llmClient),
+)
+```
+
+Register specialists on the main agent with [`WithSubAgents`](/features/sub-agents) rather than sharing a task queue.
+
+## WithInstanceId
+
+When multiple agents share a **base task queue name** — for example scaled pods running the same agent definition — use [`WithInstanceId`](/getting-started/configuration) so each instance gets a unique derived queue: `{TaskQueue}-{InstanceId}`.
+
+```go
+cfg := &agent.TemporalConfig{
+    Host: "localhost", Port: 7233, Namespace: "default",
+    TaskQueue: "my-app",
+}
+
+a1, _ := agent.NewAgent(
+    agent.WithName("agent-1"),
+    agent.WithTemporalConfig(cfg),
+    agent.WithInstanceId("agent-1"),
+    agent.WithLLMClient(llmClient),
+)
+defer a1.Close()
+
+a2, _ := agent.NewAgent(
+    agent.WithName("agent-2"),
+    agent.WithTemporalConfig(cfg),
+    agent.WithInstanceId("agent-2"),
+    agent.WithLLMClient(llmClient),
+)
+defer a2.Close()
+
+// a1 polls "my-app-agent-1", a2 polls "my-app-agent-2"
+```
+
+Use the **same** `TaskQueue` and `InstanceId` on `NewAgent` and `NewAgentWorker` for a given agent so client and worker pair correctly.
+
+## Same process, concurrent runs
+
+### Single agent, multiple requests
+
+A single `Agent` instance handles **concurrent `Run`, `RunAsync`, and `Stream` calls** from different goroutines. Each call gets its own unique Temporal workflow (or in-process goroutine) — no serialisation, no queuing.
+
+```go
+var wg sync.WaitGroup
+for _, prompt := range prompts {
+    wg.Add(1)
+    go func(p string) {
+        defer wg.Done()
+        asyncCh, _ := a.RunAsync(ctx, p, nil)
+        res := <-asyncCh
+        fmt.Println(res.Result.Content)
+    }(prompt)
+}
+wg.Wait()
+```
+
+Use this when one agent definition serves many parallel requests — a single `Agent` object is all you need.
+
+Example: [Concurrent Runs](/examples/concurrent-runs).
+
+### Multiple agents, concurrent runs
+
+Multiple `NewAgent` instances in one process each start their own embedded worker (unless `DisableLocalWorker` is set). Use separate instances when the agents have different configurations, system prompts, or task queues:
+
+```go
+var wg sync.WaitGroup
+wg.Add(2)
+go func() {
+    defer wg.Done()
+    result, _ := a1.Run(ctx, "What is 7 times 8?", nil)
+    fmt.Println(result.Content)
+}()
+go func() {
+    defer wg.Done()
+    result, _ := a2.Run(ctx, "Write a haiku about rain.", nil)
+    fmt.Println(result.Content)
+}()
+wg.Wait()
+```
+
+Example: [Multiple Agents](/examples/multiple-agents).
+
+## Shared vs separate resources
+
+| Resource | Per agent or shared |
+|---|---|
+| LLM client | Can share one client across agents — use [`WithLLMSampling`](/getting-started/configuration) for per-agent overrides |
+| Task queue | **Unique per agent** (or per instance via `WithInstanceId`) |
+| Conversation store | Shared backend OK — isolate by conversation ID |
+| Memory store | Shared backend OK — isolate by scope (user, tenant, agent name) |
+| Tool registries | **Per agent** — each `Agent` has its own registries |
+
+## Worker separation with multiple agents
+
+When splitting client and worker:
+
+1. Create one `NewAgentWorker` **per task queue** (main agent and each sub-agent queue)
+2. Pass matching options to each worker and its corresponding `NewAgent`
+3. Use Redis conversation when any agent uses remote workers
+
+See [Worker Separation](/advanced/worker-separation).
+
+## In-process runtime
+
+Multiple in-process agents (no Temporal) are also supported — omit Temporal options on each `NewAgent`. Each agent runs its loop inside your Go process with no task queue requirement. Use this for development and single-process deployments.
+
+See [In-Process runtime](/runtimes/in-process).
+
+## Examples
+
+<CardGroup cols={2}>
+  <Card title="Concurrent Runs" icon="bolt" href="/examples/concurrent-runs">
+    Fan-out on a single Agent instance
+  </Card>
+  <Card title="Multiple Agents" icon="play" href="/examples/multiple-agents">
+    Instance IDs and task queue patterns
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+    Orchestrator + specialist pattern
+  </Card>
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+    One worker per task queue
+  </Card>
+  <Card title="Temporal Runtime" icon="clock-rotate-left" href="/runtimes/temporal">
+    Task queues and child workflows
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithInstanceId and WithTemporalConfig
+  </Card>
+</CardGroup>
