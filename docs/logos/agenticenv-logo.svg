@@ -1,0 +1,48 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="80" fill="#0d1b2e"/>
+
+  <!-- outer dashed orbit ring -->
+  <ellipse cx="256" cy="256" rx="180" ry="72" fill="none" stroke="#4a9eff" stroke-width="1.5" stroke-dasharray="8,6" opacity="0.35" transform="rotate(-20 256 256)"/>
+
+  <!-- middle orbit ring -->
+  <ellipse cx="256" cy="256" rx="136" ry="136" fill="none" stroke="#4a9eff" stroke-width="1.5" stroke-dasharray="10,5" opacity="0.2"/>
+
+  <!-- inner orbit ring tilted -->
+  <ellipse cx="256" cy="256" rx="180" ry="72" fill="none" stroke="#7ec8ff" stroke-width="2" stroke-dasharray="8,6" opacity="0.5" transform="rotate(70 256 256)"/>
+
+  <!-- connector lines to satellites -->
+  <line x1="256" y1="204" x2="256" y2="112" stroke="#4a9eff" stroke-width="1.5" opacity="0.5"/>
+  <line x1="306" y1="226" x2="370" y2="186" stroke="#4a9eff" stroke-width="1.5" opacity="0.5"/>
+  <line x1="306" y1="286" x2="368" y2="326" stroke="#4a9eff" stroke-width="1.5" opacity="0.5"/>
+  <line x1="256" y1="308" x2="256" y2="398" stroke="#4a9eff" stroke-width="1.5" opacity="0.5"/>
+  <line x1="206" y1="286" x2="144" y2="326" stroke="#4a9eff" stroke-width="1.5" opacity="0.5"/>
+  <line x1="206" y1="226" x2="142" y2="186" stroke="#4a9eff" stroke-width="1.5" opacity="0.5"/>
+
+  <!-- satellite nodes -->
+  <circle cx="256" cy="104" r="14" fill="#4a9eff" opacity="0.9"/>
+  <circle cx="256" cy="104" r="24" fill="none" stroke="#4a9eff" stroke-width="1.5" opacity="0.3"/>
+
+  <circle cx="378" cy="178" r="12" fill="#4a9eff" opacity="0.8"/>
+  <circle cx="378" cy="178" r="20" fill="none" stroke="#4a9eff" stroke-width="1.2" opacity="0.25"/>
+
+  <circle cx="378" cy="334" r="10" fill="#4a9eff" opacity="0.7"/>
+  <circle cx="378" cy="334" r="18" fill="none" stroke="#4a9eff" stroke-width="1" opacity="0.2"/>
+
+  <circle cx="256" cy="406" r="12" fill="#4a9eff" opacity="0.8"/>
+  <circle cx="256" cy="406" r="20" fill="none" stroke="#4a9eff" stroke-width="1.2" opacity="0.25"/>
+
+  <circle cx="134" cy="334" r="10" fill="#4a9eff" opacity="0.7"/>
+  <circle cx="134" cy="334" r="18" fill="none" stroke="#4a9eff" stroke-width="1" opacity="0.2"/>
+
+  <circle cx="134" cy="178" r="12" fill="#4a9eff" opacity="0.8"/>
+  <circle cx="134" cy="178" r="20" fill="none" stroke="#4a9eff" stroke-width="1.2" opacity="0.25"/>
+
+  <!-- core agent node -->
+  <circle cx="256" cy="256" r="56" fill="#0a3d7a" stroke="#4a9eff" stroke-width="2.5" opacity="0.95"/>
+  <circle cx="256" cy="256" r="36" fill="#1a6fd4" opacity="0.9"/>
+  <circle cx="256" cy="256" r="18" fill="#4a9eff" opacity="1"/>
+
+  <!-- pulse rings -->
+  <circle cx="256" cy="256" r="72" fill="none" stroke="#4a9eff" stroke-width="1.2" opacity="0.15"/>
+  <circle cx="256" cy="256" r="90" fill="none" stroke="#4a9eff" stroke-width="0.8" opacity="0.08"/>
+</svg>

@@ -1,0 +1,49 @@
+---
+title: "Reasoning"
+description: "Enable extended thinking with WithLLMSampling and stream provider-specific reasoning deltas"
+---
+
+Configures generic `LLMReasoning` through `WithLLMSampling` and streams the run to observe thinking output (e.g. Anthropic extended thinking).
+
+Source: [`examples/agent_with_reasoning/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_reasoning)
+
+## What it demonstrates
+
+- `WithLLMSampling` with `Reasoning: &interfaces.LLMReasoning{...}`
+- Provider-specific mapping of `Enabled`, `Effort`, `BudgetTokens`
+- Streaming reasoning-related events
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_reasoning
+go run ./agent_with_reasoning "Why is the sky blue? One short paragraph."
+```
+
+Use a model that supports extended thinking for your provider — for example `claude-sonnet-4-20250514` with Anthropic, or `o3` with OpenAI.
+
+## Expected output
+
+With Anthropic extended thinking enabled you will see thinking deltas on stderr (or as events) followed by the final answer:
+
+```
+[thinking] The blue color of the sky is due to a phenomenon called Rayleigh scattering...
+The sky appears blue because of Rayleigh scattering — shorter blue wavelengths scatter
+more than longer red ones as sunlight passes through the atmosphere.
+```
+
+Thinking content appears only when the provider emits it; output format varies by provider.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Reasoning" icon="lightbulb" href="/features/reasoning">
+    Field mapping per provider
+  </Card>
+  <Card title="Stream" icon="wave-pulse" href="/examples/stream">
+    Streaming event handling
+  </Card>
+
+</CardGroup>

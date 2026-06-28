@@ -1,0 +1,255 @@
+---
+title: "Benchmarks"
+description: "Run config-driven benchmarks to measure agent latency, throughput, and token usage under load"
+---
+
+The benchmarks directory contains a standalone performance utility for Agent SDK for Go. It runs real `agent.NewAgent` execution loops under configurable load — **mock LLM and tools by default** — so you can measure latency, memory, CPU, token counts, and success rate without external API keys.
+
+Use it to stress-test orchestration behavior (multi-turn runs, tool batches, sub-agents, local vs Temporal runtime) before pointing the same harness at real LLMs and tools.
+
+## Prerequisites
+
+Clone the SDK repository and run from the **repository root**:
+
+```bash
+git clone https://github.com/agenticenv/agent-sdk-go.git
+cd agent-sdk-go
+go run ./benchmarks/
+```
+
+Requires Go 1.26+. No LLM API key for default mock runs. Temporal scenarios need a running Temporal server.
+
+## What it measures
+
+Most agent benchmarks focus on token throughput alone. Production workloads also depend on **orchestration scaling**: concurrent runs, multi-turn tool loops, sub-agent delegation, durable Temporal workflows, and stable memory use over hundreds of executions.
+
+Each benchmark session reports:
+
+| Metric | Description |
+|---|---|
+| Latency p50 / p95 / p99 / avg | Wall-clock per `Run()` |
+| Heap and total allocation | Memory delta over the session |
+| Process CPU time | CPU usage |
+| Input / output tokens | From mock LLM stats (includes sub-agent LLM calls) |
+| Success rate | `Run()` completed without error |
+| Memory recalls / stores | When `memory.enabled: true` — from run telemetry |
+| `est_cost_usd` | Placeholder `0` until pricing is configured |
+
+Reports are written to `benchmarks/reports/` (JSON or text). Optional SDK logs go to `benchmarks/logs/`.
+
+## Quick start
+
+From the repository root:
+
+```bash
+go run ./benchmarks/
+```
+
+Uses `benchmarks/config.yaml` by default — 100 sequential runs, local runtime, 3 tools, 2 sub-agents.
+
+Custom config:
+
+```bash
+go run ./benchmarks/ -config benchmarks/config.yaml
+go run ./benchmarks/ -config /path/to/my-benchmark.yaml
+```
+
+## How each run works
+
+Each **run** calls `agent.Run()` once on a shared root agent. The mock LLM follows a fixed two-turn script:
+
+1. **Turn 1** — returns tool calls for all registered tools (and sub-agent tools when configured)
+2. **Turn 2** — returns final text after tool results are applied
+
+Mock components apply configurable latency and jitter:
+
+| Component | Behavior |
+|---|---|
+| Mock LLM | Base latency + jitter; fixed token usage per call |
+| Mock tools | `benchmark_tool_1` … `benchmark_tool_N` with latency + jitter |
+| Sub-agents | Real SDK sub-agents (`subagent-1`, `subagent-1.1`, …) with the same mock script |
+| Tool execution mode | `sequential` or `parallel` via `WithAgentToolExecutionMode` |
+
+**Concurrency:** one root agent is reused. When `concurrent: true`, runs execute in batches of `concurrent_count` goroutines.
+
+## Example scenarios
+
+**Fast local smoke test:**
+
+```yaml
+runtime: local
+llm:
+  latency_ms: 5
+  jitter_ms: 0
+tool:
+  latency_ms: 2
+  jitter_ms: 0
+agent:
+  runs: 10
+  concurrent: false
+  tools:
+    count: 2
+    execution: parallel
+  subagents:
+    count: 0
+    levels: 0
+```
+
+**Concurrent batches:**
+
+```yaml
+agent:
+  runs: 100
+  concurrent: true
+  concurrent_count: 10
+```
+
+**Temporal runtime** — requires a running Temporal server:
+
+```yaml
+runtime: temporal
+temporal:
+  host: localhost
+  port: 7233
+  namespace: default
+  task_queue: agent-sdk-go
+  workers_count: 0   # embedded worker in agent process
+```
+
+**External root workers** (`workers_count: 1+`) — spawns separate worker processes and enables `EnableRemoteWorkers()` on the root agent:
+
+```yaml
+runtime: temporal
+temporal:
+  workers_count: 2
+```
+
+Manual worker:
+
+```bash
+go run ./benchmarks/worker -config benchmarks/config.yaml -worker-id 1
+```
+
+## Configuration reference
+
+All paths in config are relative to the **repository root** unless absolute.
+
+### `runtime`
+
+| Value | Description |
+|---|---|
+| `local` | In-process SDK runtime — no Temporal required |
+| `temporal` | Durable execution — Temporal server must be running |
+
+### `agent`
+
+| Field | Description |
+|---|---|
+| `runs` | Number of `Run()` calls |
+| `concurrent` | Sequential vs batched parallel runs |
+| `concurrent_count` | Max parallel runs per batch |
+| `tools.count` | Mock tool count |
+| `tools.execution` | `sequential` or `parallel` |
+| `subagents.count` | Sub-agents per level (0 to disable) |
+| `subagents.levels` | Max nesting depth (1–5) |
+
+### `llm` / `tool`
+
+| Field | Description |
+|---|---|
+| `latency_ms` | Base delay per call |
+| `jitter_ms` | Random extra delay `[0, jitter_ms]` |
+| `mock_tokens` | Total tokens reported per LLM call (~60% input / ~40% output) |
+
+### `memory`
+
+In-process inmem backend — no Docker required. Disabled by default.
+
+| Field | Description |
+|---|---|
+| `enabled` | Wire `WithMemory` — recall before run, store after |
+| `store_mode` | `ondemand` or `always` |
+| `user_id` | Scope user ID via `memory.WithContextUserID` |
+
+### `output`
+
+| Field | Description |
+|---|---|
+| `console` | Print report to stdout |
+| `file` | Write timestamped report file |
+| `dir` | Report directory (default `benchmarks/reports`) |
+| `format` | `json` or `text` |
+
+### `logger`
+
+| Field | Description |
+|---|---|
+| `enabled` | Write JSON SDK logs to files |
+| `dir` | Log directory (default `benchmarks/logs`) |
+| `level` | `debug`, `info`, `warn`, or `error` |
+
+## Sample output
+
+A default run (`100 sequential runs, 3 tools, 2 sub-agents, local runtime`) produces a text report like:
+
+```
+=== Benchmark Report ===
+Config:        benchmarks/config.yaml
+Runtime:       local
+Runs:          100 (sequential)
+Tools:         3 (parallel)
+Sub-agents:    2 x 1 level
+
+--- Latency (ms) ---
+  p50:   42.1
+  p95:   68.4
+  p99:   91.2
+  avg:   44.7
+  min:    8.3
+  max:   103.6
+
+--- Throughput ---
+  runs/sec:  22.4
+
+--- Resources ---
+  heap_alloc_mb:  18.2
+  total_alloc_mb: 412.1
+  cpu_time_sec:    4.8
+
+--- LLM Usage ---
+  input_tokens:   60000
+  output_tokens:  40000
+  total_tokens:  100000
+
+--- Results ---
+  success_rate:  100.0%
+  failed:        0
+  est_cost_usd:  0.00
+```
+
+JSON format (`output.format: json`) emits the same data as a structured object — suitable for CI assertion scripts and trend dashboards.
+
+Good results: `success_rate: 100%`, p99 latency within your SLO, heap stable across the run (not growing linearly with run count).
+
+## Real LLM and tools
+
+LLM and tool calls are **mocked by default** for reproducible, zero-cost runs. To benchmark with real providers, replace the mock client and tool registry in `benchmarks/setup/` — the harness structure (runs, concurrency, reporting, Temporal workers) stays the same.
+
+Latency, token counts, and cost will follow your provider; configure pricing separately for `est_cost_usd`.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Eval Harness" icon="flask" href="/testing/eval-harness">
+    Behavioral regression without live LLM
+  </Card>
+  <Card title="Telemetry" icon="gauge" href="/observability/telemetry">
+    Per-run metrics in benchmark telemetry
+  </Card>
+  <Card title="Temporal Runtime" icon="server" href="/runtimes/temporal">
+    Temporal benchmark configuration
+  </Card>
+  <Card title="Multiple Agents" icon="layer-group" href="/advanced/multiple-agents">
+    Sub-agent trees in benchmarks
+  </Card>
+</CardGroup>

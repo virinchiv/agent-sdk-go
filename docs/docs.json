@@ -1,0 +1,190 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "sequoia",
+  "name": "Agent SDK for Go",
+  "colors": {
+    "primary": "#00ADD8",
+    "light": "#5CD2E6",
+    "dark": "#004C6D"
+  },
+  "favicon": "/logos/agenticenv-logo.svg",
+  "background": {
+    "decoration": "gradient"
+  },
+  "appearance": {
+    "default": "system"
+  },
+  "navbar": {
+    "links": [
+      { "icon": "github", "label": "GitHub", "href": "https://github.com/agenticenv/agent-sdk-go" },
+      { "icon": "tag", "label": "Releases", "href": "https://github.com/agenticenv/agent-sdk-go/releases" },
+      { "icon": "book", "label": "Go Docs", "href": "https://pkg.go.dev/github.com/agenticenv/agent-sdk-go" }
+    ]
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "overview/introduction",
+              "overview/architecture"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "getting-started/quickstart",
+              "getting-started/llm-providers",
+              "getting-started/streaming",
+              "getting-started/configuration",
+              "getting-started/cli"
+            ]
+          },
+          {
+            "group": "Runtimes",
+            "pages": [
+              "runtimes/overview",
+              "runtimes/in-process",
+              "runtimes/temporal"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/tools",
+              "features/conversation",
+              "features/memory",
+              "features/retrieval",
+              "features/mcp",
+              "features/a2a",
+              "features/sub-agents",
+              "features/approvals",
+              "features/hooks",
+              "features/response-format",
+              "features/token-usage",
+              "features/reasoning",
+              "features/ag-ui-protocol"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/dynamic-capabilities",
+              "advanced/worker-separation",
+              "advanced/multiple-agents",
+              "advanced/timeouts-and-modes"
+            ]
+          },
+          {
+            "group": "Observability",
+            "pages": [
+              "observability/telemetry",
+              "observability/tracing",
+              "observability/metrics",
+              "observability/logs"
+            ]
+          },
+          {
+            "group": "Testing & Evaluation",
+            "pages": [
+              "testing/eval-harness",
+              "testing/benchmarks"
+            ]
+          },
+          {
+            "group": "Production",
+            "pages": [
+              "production/readiness"
+            ]
+          },
+          {
+            "group": "Reference Apps",
+            "pages": [
+              "reference-apps/agent-chat"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Before You Begin",
+            "pages": [
+              "examples/configuration",
+              "examples/running-examples"
+            ]
+          },
+          {
+            "group": "Basic Agents",
+            "pages": [
+              "examples/simple-agent",
+              "examples/temporal-client",
+              "examples/run-async",
+              "examples/concurrent-runs",
+              "examples/json-response",
+              "examples/reasoning"
+            ]
+          },
+          {
+            "group": "Tools & MCP",
+            "pages": [
+              "examples/tools",
+              "examples/mcp-config",
+              "examples/mcp-client"
+            ]
+          },
+          {
+            "group": "Streaming & AG-UI",
+            "pages": [
+              "examples/stream",
+              "examples/conversation",
+              "examples/stream-conversation",
+              "examples/agui"
+            ]
+          },
+          {
+            "group": "Memory & RAG",
+            "pages": [
+              "examples/memory",
+              "examples/retrieval"
+            ]
+          },
+          {
+            "group": "Observability & Hooks",
+            "pages": [
+              "examples/observability",
+              "examples/hooks",
+              "examples/logs"
+            ]
+          },
+          {
+            "group": "A2A",
+            "pages": [
+              "examples/a2a-server",
+              "examples/a2a-config",
+              "examples/a2a-client"
+            ]
+          },
+          {
+            "group": "Multi-agent",
+            "pages": [
+              "examples/subagents",
+              "examples/multiple-agents"
+            ]
+          },
+          {
+            "group": "Durable & Distributed",
+            "pages": [
+              "examples/durable-agent",
+              "examples/agent-worker"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

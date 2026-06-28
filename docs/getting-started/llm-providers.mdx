@@ -1,0 +1,154 @@
+---
+title: "LLM Providers"
+description: "Configure OpenAI, Anthropic, or Gemini — or bring your own LLM client"
+---
+
+Every agent requires an [`interfaces.LLMClient`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMClient). Pass it to [`NewAgent`](/getting-started/quickstart) with [`WithLLMClient`](/getting-started/configuration).
+
+Built-in clients live under `pkg/llm/` and share option helpers from `pkg/llm`:
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/llm"
+```
+
+## Supported providers
+
+| Provider | Package | `GetProvider()` value |
+|---|---|---|
+| OpenAI | `pkg/llm/openai` | `openai` |
+| Anthropic | `pkg/llm/anthropic` | `anthropic` |
+| Gemini | `pkg/llm/gemini` | `gemini` |
+
+All three implement the same interface:
+
+```go
+type LLMClient interface {
+    Generate(ctx context.Context, request *LLMRequest) (*LLMResponse, error)
+    GenerateStream(ctx context.Context, request *LLMRequest) (LLMStream, error)
+    GetModel() string
+    GetProvider() LLMProvider
+    IsStreamSupported() bool
+}
+```
+
+## OpenAI
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/llm"
+    "github.com/agenticenv/agent-sdk-go/pkg/llm/openai"
+)
+
+llmClient, err := openai.NewClient(
+    llm.WithAPIKey(os.Getenv("OPENAI_API_KEY")),
+    llm.WithModel("gpt-4o"),
+    llm.WithBaseURL("https://api.openai.com/v1"), // optional — for proxies or Azure-compatible endpoints
+)
+if err != nil {
+    return err
+}
+```
+
+Common models: `gpt-4o`, `gpt-4o-mini`. The model name is sent as-is to the provider — an invalid name will return an API error at run time, not at `NewAgent`.
+
+## Anthropic
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/llm"
+    "github.com/agenticenv/agent-sdk-go/pkg/llm/anthropic"
+)
+
+llmClient, err := anthropic.NewClient(
+    llm.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
+    llm.WithModel("claude-sonnet-4-20250514"),
+)
+```
+
+Anthropic supports extended thinking via [`WithLLMSampling`](/features/reasoning). See [Reasoning](/features/reasoning).
+
+## Gemini
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/llm"
+    "github.com/agenticenv/agent-sdk-go/pkg/llm/gemini"
+)
+
+llmClient, err := gemini.NewClient(
+    llm.WithAPIKey(os.Getenv("GOOGLE_API_KEY")),
+    llm.WithModel("gemini-2.5-flash"),
+)
+```
+
+<Note>
+`llm.WithAPIKey` takes precedence. If you omit it, the Gemini client falls back to the `GOOGLE_API_KEY` environment variable automatically.
+</Note>
+
+## Shared LLM options
+
+All built-in clients accept functional options from `pkg/llm`:
+
+| Option | Purpose |
+|---|---|
+| `llm.WithAPIKey(key)` | Provider API key |
+| `llm.WithModel(model)` | Model name sent to the provider |
+| `llm.WithBaseURL(url)` | Custom base URL (OpenAI-compatible endpoints, proxies) |
+
+## Sampling and reasoning
+
+Control temperature, max tokens, and reasoning per agent with [`WithLLMSampling`](/getting-started/configuration):
+
+```go
+temp := 0.7
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithLLMSampling(&agent.LLMSampling{
+        Temperature: &temp,
+        MaxTokens:   4096,
+    }),
+)
+```
+
+Field support varies by provider:
+
+| Field | OpenAI | Anthropic | Gemini |
+|---|---|---|---|
+| `Temperature` | ✓ | ✓ | ✓ |
+| `MaxTokens` | ✓ | ✓ | ✓ |
+| `TopP` | ✓ | — | ✓ |
+| `TopK` | — | ✓ | — |
+| `Reasoning` | Partial | ✓ | ✓ |
+
+See [Reasoning](/features/reasoning) for extended thinking configuration per provider.
+
+## Bring your own LLM client
+
+Implement [`interfaces.LLMClient`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMClient) and pass your implementation to `WithLLMClient`.
+
+Your implementation must handle:
+
+- **`Generate`** — synchronous completion; populate `LLMResponse.ToolCalls` when the provider returns tool calls
+- **`GenerateStream`** — streaming chunks via `LLMStream.Next()` and `LLMStream.Current()` when `IsStreamSupported()` returns `true`
+- **`GetModel`** / **`GetProvider`** — metadata that appears on `AgentRunResult.Model` and `AgentRunResult.AgentName`
+
+<Tip>
+Copy the patterns from `pkg/llm/openai`, `pkg/llm/anthropic`, or `pkg/llm/gemini` as a starting point — they show request marshaling, response parsing, tool call handling, and stream chunk iteration.
+</Tip>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/getting-started/quickstart">
+    Run your first agent end to end
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithLLMClient, WithLLMSampling, and other options
+  </Card>
+  <Card title="Reasoning" icon="lightbulb" href="/features/reasoning">
+    Extended thinking on Anthropic and Gemini
+  </Card>
+  <Card title="Token Usage" icon="coins" href="/features/token-usage">
+    Read LLMUsage from run results
+  </Card>
+</CardGroup>

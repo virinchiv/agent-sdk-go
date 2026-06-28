@@ -1,0 +1,95 @@
+---
+title: "Sub-agents"
+description: "Register specialist sub-agents and configure delegation depth, approval policies, and task queue routing"
+---
+
+Sub-agents let a **main agent** delegate work to **specialist agents** — each with its own LLM, tools, prompts, and Temporal task queue. The main agent sees each specialist as a delegation tool the LLM can invoke.
+
+Use sub-agents for domain specialists (math, research, coding) without concentrating every capability into one prompt and tool list.
+
+## Setup
+
+Build each specialist with `NewAgent`, then register it on the main agent:
+
+```go
+mathAgent, err := agent.NewAgent(
+    agent.WithName("MathSpecialist"),
+    agent.WithDescription("Arithmetic; uses calculator tools."),
+    agent.WithTemporalConfig(&agent.TemporalConfig{
+        Host: "localhost", Port: 7233, Namespace: "default",
+        TaskQueue: "my-app-math",  // unique task queue for this specialist
+    }),
+    agent.WithLLMClient(llmClient),
+    agent.WithToolRegistry(mathTools),
+    agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+)
+if err != nil {
+    return err
+}
+defer mathAgent.Close()
+
+mainAgent, err := agent.NewAgent(
+    agent.WithName("Orchestrator"),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+    agent.WithTemporalConfig(&agent.TemporalConfig{
+        Host: "localhost", Port: 7233, Namespace: "default",
+        TaskQueue: "my-app-main",
+    }),
+    agent.WithLLMClient(llmClient),
+    agent.WithSubAgents(mathAgent),
+    agent.WithMaxSubAgentDepth(2),
+)
+if err != nil {
+    return err
+}
+defer mainAgent.Close()
+
+result, err := mainAgent.Run(ctx, "What is 144 divided by 12?", nil)
+```
+
+| Option | Description |
+|---|---|
+| [`WithSubAgents`](/getting-started/configuration) | Register specialists at creation |
+| [`WithMaxSubAgentDepth`](/getting-started/configuration) | Max delegation nesting depth — default **2** |
+
+Each specialist needs a **unique** `TaskQueue` when using Temporal. Use clear `WithName` and `WithDescription` values — they appear in the delegation tool schema the LLM sees for routing decisions.
+
+## Behavior
+
+- **Conversation isolation** — sub-agents do not inherit the main agent's conversation ID. They run without session history from the parent.
+- **Independent approval policies** — parent and child policies are independent (see [Approvals](/features/approvals)).
+- **Worker pairing** — with `DisableLocalWorker`, pair each `NewAgentWorker` with the same options as the `NewAgent` it runs.
+- **Validation at build** — sub-agent graphs are validated for cycles and depth violations at `NewAgent`. Errors fail fast.
+
+<Warning>
+Sub-agents do **not** share the parent's conversation history. If you need the specialist to have context from the parent session, include it in the delegation prompt or tool call arguments.
+</Warning>
+
+## Streaming
+
+When streaming, events from all delegated sub-agents fan in to the main agent's stream, bracketed by `STEP_STARTED` and `STEP_FINISHED`. See [Streaming](/getting-started/streaming) for the full event reference and approval handling patterns.
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Sub-agents" icon="play" href="/examples/subagents">
+    Orchestrator delegating to a math specialist
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="A2A" icon="network-wired" href="/features/a2a">
+    Remote agents over the A2A protocol
+  </Card>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    Parent vs specialist approval policies
+  </Card>
+  <Card title="Dynamic Capabilities" icon="rotate" href="/advanced/dynamic-capabilities">
+    Register sub-agents after NewAgent
+  </Card>
+  <Card title="Multiple Agents" icon="layer-group" href="/advanced/multiple-agents">
+    Instance IDs and task queue patterns
+  </Card>
+</CardGroup>

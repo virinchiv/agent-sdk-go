@@ -1,0 +1,111 @@
+---
+title: "Running Examples"
+description: "Run examples with go run or Task — example index, infra setup, suggested order, and multi-process commands"
+---
+
+Run commands from the **`examples/`** directory unless noted otherwise. Complete [Configuration](/examples/configuration) first to set up your API key and environment.
+
+## Quick start
+
+```bash
+cd examples
+go run ./simple_agent "Hello, what can you do?"
+```
+
+## Credentials
+
+Examples use `LLM_APIKEY`, `LLM_PROVIDER`, and `LLM_MODEL` from `examples/.env` (loaded with `.env.defaults`). The [Quickstart](/getting-started/quickstart) uses provider-native names such as `OPENAI_API_KEY` in your own module. The [CLI](/getting-started/cli) uses `AGENT_LLM_*` prefixes. Same SDK — different env conventions per entry point.
+
+## Local vs Temporal
+
+| Mode | Setting | Before `go run` |
+|---|---|---|
+| **Local** (default) | `AGENT_RUNTIME=local` or unset | Nothing extra |
+| **Temporal** | `AGENT_RUNTIME=temporal` | `task infra:temporal:up` and `task infra:temporal:wait` |
+
+## Example index
+
+| Example | Feature guide | Runtime | Infrastructure |
+|---|---|---|---|
+| [Simple Agent](/examples/simple-agent) | [Quickstart](/getting-started/quickstart) | Local, Temporal | — |
+| [Temporal Client](/examples/temporal-client) | [Temporal](/runtimes/temporal) | Temporal | Temporal |
+| [Run Async](/examples/run-async) | [Approvals](/features/approvals) | Local, Temporal | — |
+| [JSON Response](/examples/json-response) | [Response format](/features/response-format) | Local, Temporal | — |
+| [Reasoning](/examples/reasoning) | [Reasoning](/features/reasoning) | Local, Temporal | — |
+| [Tools](/examples/tools) | [Tools](/features/tools) | Local, Temporal | — |
+| [MCP Config](/examples/mcp-config) | [MCP](/features/mcp) | Local, Temporal | MCP server |
+| [MCP Client](/examples/mcp-client) | [MCP](/features/mcp) | Local, Temporal | MCP server |
+| [Stream](/examples/stream) | [Streaming](/getting-started/streaming) | Local, Temporal | — |
+| [Conversation](/examples/conversation) | [Conversation](/features/conversation) | Local, Temporal | Redis |
+| [Stream + Conversation](/examples/stream-conversation) | [Conversation](/features/conversation) | Local, Temporal | Redis |
+| [AG-UI](/examples/agui) | [AG-UI](/features/ag-ui-protocol) | Local, Temporal | Node.js (UI) |
+| [Memory](/examples/memory) | [Memory](/features/memory) | Local, Temporal | Weaviate or pgvector |
+| [Retrieval](/examples/retrieval) | [Retrieval](/features/retrieval) | Local, Temporal | Weaviate or pgvector |
+| [Observability](/examples/observability) | [Tracing](/observability/tracing) | Local, Temporal | OTLP collector |
+| [Hooks](/examples/hooks) | [Hooks](/features/hooks) | Local, Temporal | — |
+| [Logs](/examples/logs) | [Logs](/observability/logs) | All examples | — |
+| [A2A Server](/examples/a2a-server) | [A2A](/features/a2a) | Local, Temporal | — |
+| [A2A Config](/examples/a2a-config) | [A2A](/features/a2a) | Local, Temporal | A2A server |
+| [A2A Client](/examples/a2a-client) | [A2A](/features/a2a) | Local, Temporal | A2A server |
+| [Sub-agents](/examples/subagents) | [Sub-agents](/features/sub-agents) | Local, Temporal | — |
+| [Multiple Agents](/examples/multiple-agents) | [Multiple agents](/advanced/multiple-agents) | Temporal | Temporal |
+| [Agent Worker](/examples/agent-worker) | [Worker separation](/advanced/worker-separation) | Temporal | Temporal |
+| [Durable Agent](/examples/durable-agent) | [Temporal](/runtimes/temporal) | Temporal | Temporal |
+
+## Suggested order
+
+**Basics** — [Simple Agent](/examples/simple-agent) → [Tools](/examples/tools) → [Stream](/examples/stream)
+
+**Stateful agents** — [Conversation](/examples/conversation) → [Memory](/examples/memory) or [Retrieval](/examples/retrieval)
+
+**Production patterns** — [Temporal Client](/examples/temporal-client) → [Agent Worker](/examples/agent-worker) → [Durable Agent](/examples/durable-agent) → [Agent Chat](/reference-apps/agent-chat)
+
+**Integrations** — [MCP Config](/examples/mcp-config) → [A2A Server](/examples/a2a-server) → [AG-UI](/examples/agui)
+
+## Task infrastructure
+
+From `examples/`, use `Taskfile.yml` for Docker-backed dependencies:
+
+| Task | Starts |
+|---|---|
+| `task infra:redis:up` | Redis |
+| `task infra:weaviate:up` | Weaviate |
+| `task infra:pgvector:up` | Postgres + pgvector |
+| `task infra:temporal:up` | Temporal dev server |
+| `task infra:lgtm:up` | OTLP collector (Grafana LGTM) |
+| `task infra:a2a:up` | Sample A2A server |
+| `task infra:status` | Check running services |
+
+From the repository root: `task examples:local`, `task examples:temporal`, or `task examples:all`.
+
+## Logging
+
+| Output | Destination |
+|---|---|
+| Prompt and reply | stdout |
+| SDK logs | stderr (`LOG_LEVEL`) |
+
+```bash
+SHOW_LLM_USAGE=true SHOW_TELEMETRY=true go run ./simple_agent "Hello"
+```
+
+See [Logs](/examples/logs).
+
+## Multi-process examples
+
+| Example | Terminal 1 | Terminal 2 |
+|---|---|---|
+| [Agent Worker](/examples/agent-worker) | `go run ./agent_with_worker/worker` | `go run ./agent_with_worker/agent "..."` |
+| [Durable Agent](/examples/durable-agent) | `go run ./durable_agent/worker` | `go run ./durable_agent/agent` |
+| [AG-UI](/examples/agui) | `go run ./agent_with_agui/server` | `cd agent_with_agui/ui && npm run dev` |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="circle-check" href="/examples/configuration">
+    Go, LLM key, env vars, Docker
+  </Card>
+  <Card title="Simple Agent" icon="bolt" href="/examples/simple-agent">
+    First example
+  </Card>
+</CardGroup>

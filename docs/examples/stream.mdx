@@ -1,0 +1,84 @@
+---
+title: "Stream"
+description: "Enable streaming and handle text deltas and tool lifecycle events on an AgentEvent channel"
+---
+
+Agent configured with `WithStream(true)` that emits lifecycle events as the loop runs — text deltas, tool calls, run finished.
+
+Source: [`examples/agent_with_stream/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_stream)
+
+## What it demonstrates
+
+- `Stream()` returning `<-chan AgentEvent`
+- Handling `TEXT_MESSAGE_CONTENT`, tool lifecycle events, and `RUN_FINISHED`
+- Built-in tools with auto-approval
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_stream "What's the weather in Tokyo?"
+go run ./agent_with_stream "What is 15 + 27?"
+```
+
+## Key code
+
+Enable streaming at construction, then consume the event channel:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithStream(true),
+    agent.WithToolRegistry(reg),
+    agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+)
+
+eventCh, err := a.Stream(ctx, prompt, nil)
+if err != nil {
+    log.Fatal(err)
+}
+for ev := range eventCh {
+    if ev == nil {
+        continue
+    }
+    switch ev.Type() {
+    case agent.AgentEventTypeTextMessageContent:
+        if t, ok := ev.(*agent.AgentTextMessageContentEvent); ok {
+            fmt.Print(t.Delta)
+        }
+    case agent.AgentEventTypeRunFinished:
+        // result and LLMUsage available on AgentRunFinishedEvent.Result
+    case agent.AgentEventTypeRunError:
+        if t, ok := ev.(*agent.AgentRunErrorEvent); ok {
+            log.Println("error:", t.Message)
+        }
+    }
+}
+```
+
+See [Streaming](/getting-started/streaming) for all event types and [AG-UI Protocol](/features/ag-ui-protocol) for frontend integration.
+
+## Expected output
+
+Tokens print to stdout as they arrive, with no trailing newline until the run finishes:
+
+```
+The current weather in Tokyo is 18°C, partly cloudy with light winds from the northeast.
+```
+
+With `SHOW_LLM_USAGE=true` a usage footer follows on a new line. Tool lifecycle events are consumed silently in this example — add a `case` for `AgentEventTypeToolCallStart` to log them.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+    Event types and consumption patterns
+  </Card>
+  <Card title="Stream + Conversation" icon="messages" href="/examples/stream-conversation">
+    Streaming with persisted history
+  </Card>
+  <Card title="AG-UI" icon="diagram-project" href="/examples/agui">
+    SSE server for web frontends
+  </Card>
+</CardGroup>

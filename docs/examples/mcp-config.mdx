@@ -1,0 +1,80 @@
+---
+title: "MCP Config"
+description: "Connect MCP servers using WithMCPConfig over stdio or streamable HTTP via env variables"
+---
+
+Registers MCP servers through `WithMCPConfig` and `agent.MCPServers` — transport and credentials from env (`MCP_*`). Contrast with [MCP Client](/examples/mcp-client), which uses `mcpclient.NewClient` + `WithMCPClients`.
+
+Source: [`examples/agent_with_mcp_config/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_mcp_config)
+
+## What it demonstrates
+
+- `MCPStdio` and `MCPStreamableHTTP` transports from env
+- Tool filters, timeouts, retries per server
+- Local stdio MCP using defaults in `.env.defaults` — filesystem server pointed at `mcp-filesystem-sandbox/` (sample data only, not a separate example)
+
+## Configure MCP
+
+**Transport** — set `MCP_TRANSPORT` to `stdio` or `streamable_http`.
+
+**Remote (`streamable_http`):**
+
+- `MCP_STREAMABLE_HTTP_URL` — required
+- Auth: `MCP_BEARER_TOKEN`, or OAuth trio `MCP_CLIENT_ID` + `MCP_CLIENT_SECRET` + `MCP_TOKEN_URL` (OAuth wins when all three set)
+- `MCP_SKIP_TLS_VERIFY=true` — dev TLS only
+
+**Local (`stdio`):**
+
+- `MCP_STDIO_COMMAND` and optional `MCP_STDIO_ARGS` (JSON array), `MCP_STDIO_ENV` (JSON object)
+
+Shared optional knobs: `MCP_SERVER_NAME`, `MCP_TIMEOUT_SECONDS`, `MCP_RETRY_ATTEMPTS`, `MCP_ALLOW_TOOLS` / `MCP_BLOCK_TOOLS` (comma-separated; only one list type). See [Configuration](/examples/configuration) and committed `.env.defaults` in the repo for every variable.
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_mcp_config
+go run ./agent_with_mcp_config "List tools you can call."
+```
+
+## Testing against a real HTTP MCP server
+
+This repo does **not** start an MCP server — point `.env` at **your** server.
+
+Example with a TypeScript streamable HTTP server on port 8123:
+
+```bash
+# In examples/.env:
+# MCP_TRANSPORT=streamable_http
+# MCP_STREAMABLE_HTTP_URL=http://localhost:8123/mcp
+go run ./agent_with_mcp_config
+```
+
+Quick check while the server runs: `curl -sS -o /dev/null -w "%{http_code}\n" "http://localhost:8123/mcp"`
+
+For **stdio**, set `MCP_STDIO_COMMAND` (and args/env if needed). The SDK spawns the subprocess and speaks MCP over stdin/stdout.
+
+## Expected output
+
+With the default stdio filesystem MCP server and no prompt:
+
+```
+I have access to the following MCP tools: read_file, write_file, list_directory,
+create_directory, and move_file. These let me interact with the local filesystem
+sandbox. How can I help?
+```
+
+The exact tool list reflects what the MCP server advertises on startup. With a remote HTTP server the response depends on that server's capabilities.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="MCP" icon="plug" href="/features/mcp">
+    MCP feature documentation
+  </Card>
+  <Card title="MCP Client" icon="code" href="/examples/mcp-client">
+    WithMCPClients variant
+  </Card>
+
+</CardGroup>

@@ -1,0 +1,177 @@
+---
+title: "Memory"
+description: "Store and recall long-term memories scoped by user or tenant using Weaviate, pgvector, or custom backends"
+---
+
+Memory lets agents **remember facts and preferences across separate runs** — scoped per user, tenant, or custom tags — without relying on conversation history alone.
+
+Use it when users return across sessions, when preferences should persist beyond a single conversation, or when you need tenant- or project-scoped memory separate from chat history.
+
+## Enable
+
+Pass [`WithMemory`](/getting-started/configuration) with a [`memory.Config`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/memory#Config):
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    "github.com/agenticenv/agent-sdk-go/pkg/memory"
+    wmem "github.com/agenticenv/agent-sdk-go/pkg/memory/weaviate"
+)
+
+store, _ := wmem.NewMemory(
+    wmem.WithHost("localhost:8080"),
+    wmem.WithClassName("AgentMemory"),
+)
+
+a, err := agent.NewAgent(
+    agent.WithMemory(memory.DefaultConfig(store)),
+    agent.WithLLMClient(llmClient),
+)
+defer a.Close()
+
+// Attach scope on the context for each run
+ctx := memory.WithContextUserID(context.Background(), "user-123")
+result, _ := a.Run(ctx, "Remember I prefer concise answers.", nil)
+```
+
+## Backends
+
+| Backend | Package | Notes |
+|---|---|---|
+| Weaviate | `pkg/memory/weaviate` | Vector search — Docker-friendly for dev |
+| pgvector | `pkg/memory/pgvector` | Postgres + pgvector — requires an embed function |
+| Custom | Implement `interfaces.Memory` | Pass to `memory.DefaultConfig(yourStore)` |
+
+**Infrastructure setup (local dev):**
+
+```bash
+# Weaviate
+docker run --rm -p 8080:8080 -p 50051:50051 cr.weaviate.io/semitechnologies/weaviate:latest
+
+# pgvector (Postgres with pgvector extension)
+docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=pass pgvector/pgvector:pg16
+```
+
+Both Weaviate and pgvector are external shared stores — the same backend works for single-process and remote-worker deployments. Both processes must reach the same host or cluster.
+
+## Scope
+
+Memories are isolated by scope. Attach context values on every run that should share memories:
+
+```go
+ctx := memory.WithContextUserID(ctx, userID)
+ctx = memory.WithContextTenantID(ctx, tenantID) // optional
+a.Run(ctx, prompt, nil)
+```
+
+By default, memories are also isolated per agent name. Override resolvers or add custom tags on `memCfg.ScopeConfig`:
+
+```go
+memCfg.ScopeConfig = memory.ScopeConfig{
+    UserIDResolver: func(ctx context.Context) string { return myApp.UserID(ctx) },
+    ExtraKeys:      []string{"project_id"},
+    TagResolvers: map[string]memory.ScopeResolver{
+        "project_id": func(ctx context.Context) string { return myApp.ProjectID(ctx) },
+    },
+}
+```
+
+## Store modes
+
+| Mode | Behavior |
+|---|---|
+| **On-demand** (default) | The LLM calls the `save_memory` tool during the run when it decides to persist something |
+| **Always** | Memories are saved automatically when the run finishes |
+
+```go
+memCfg := memory.DefaultConfig(store)
+memCfg.Store.Mode = memory.StoreModeOnDemand  // default
+// memCfg.Store.Mode = memory.StoreModeAlways
+```
+
+Use **on-demand** when the model should decide what to persist. Use **always** when every run should be saved without relying on tool calls.
+
+<Warning>
+With `StoreModeAlways` and no custom `Extract`, the worker needs `WithLLMClient` when using remote workers — the SDK runs an LLM call at run-end to extract memories. Set `memCfg.Store.Extract` to a custom function if you want to avoid this extra LLM call.
+</Warning>
+
+## Recall config
+
+```go
+memCfg.Recall = memory.RecallConfig{
+    Enabled:  true,    // default true; set false for store-only
+    Limit:    20,      // default 10
+    MinScore: 0.4,     // default 0.35
+    Kinds:    []interfaces.MemoryKind{memory.KindPreference, memory.KindFact},
+}
+```
+
+## TTL and dedup
+
+Default TTL per memory kind:
+
+| Kind | Default TTL |
+|---|---|
+| `decision` | 7 days |
+| `note` | 48 hours |
+| `fact` | No expiry |
+| `preference` | No expiry |
+| `instruction` | No expiry |
+
+Override with `memCfg.TTLPolicy`:
+
+```go
+memCfg.TTLPolicy = memory.TTLPolicy{
+    memory.KindPreference: 0,              // no expiry
+    memory.KindNote:       7 * 24 * time.Hour,
+}
+```
+
+`memCfg.Store.DedupMinScore` (default **0.85**) controls whether a near-duplicate memory is updated or appended. Lower to dedup more aggressively; raise to keep distinct entries.
+
+## Remote workers
+
+Pass the **same** `memory.Config` to both `NewAgent` and `NewAgentWorker`. Both processes must reach the same backend host. See [Worker Separation](/advanced/worker-separation) for the full split-process setup.
+
+## Custom backend
+
+Implement [`interfaces.Memory`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#Memory):
+
+```go
+type Memory interface {
+    Store(ctx context.Context, scope MemoryScope, record MemoryRecord, opts ...StoreMemoryOption) (string, error)
+    Load(ctx context.Context, scope MemoryScope, query string, opts ...LoadMemoryOption) ([]MemoryEntry, error)
+    Clear(ctx context.Context, scope MemoryScope) error
+}
+```
+
+- `Store` persists in scope and returns an ID. Support `WithMemoryID` for upserts.
+- `Load` returns scoped results ordered by relevance; honor limit and min-score options.
+- `Clear` deletes all memories in a scope.
+
+Pass to `memory.DefaultConfig(yourStore)` and use with `agent.WithMemory`.
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Memory" icon="play" href="/examples/memory">
+    Weaviate and pgvector store/recall demos
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Conversation" icon="messages" href="/features/conversation">
+    Session history within a single chat
+  </Card>
+  <Card title="Retrieval" icon="book-open" href="/features/retrieval">
+    RAG from external document stores
+  </Card>
+  <Card title="Hooks" icon="code-branch" href="/features/hooks">
+    BeforeMemoryLoad and BeforeMemoryStore hooks
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithMemory reference
+  </Card>
+</CardGroup>

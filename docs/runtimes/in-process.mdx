@@ -1,0 +1,108 @@
+---
+title: "In-Process Runtime"
+sidebarTitle: "In-Process"
+description: "Run the full agent loop in-process with no external infrastructure or Temporal required"
+---
+
+The in-process runtime is the **default**. When you call [`NewAgent`](/getting-started/quickstart) without Temporal options, the agent loop runs directly inside your Go process. No Temporal server, no workers, no external orchestration.
+
+## Enable
+
+Omit all Temporal configuration:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+)
+if err != nil {
+    return err
+}
+defer a.Close()
+
+result, err := a.Run(ctx, "Hello", nil)
+```
+
+See [Quickstart](/getting-started/quickstart) for a complete example.
+
+## How it works
+
+When you call `Run`, `RunAsync`, or `Stream`, the SDK executes the full agent loop in your process:
+
+1. Load conversation history and recalled memory (when configured)
+2. Call the LLM with the merged tool list
+3. Execute tool calls and append results
+4. Repeat until the model finishes or the iteration limit is reached
+5. Return the result or stream events back to your caller
+
+Everything happens in-process — no network hops, no external orchestration.
+
+## Capabilities
+
+All SDK capabilities are available on the in-process runtime:
+
+- LLM providers (OpenAI, Anthropic, Gemini, custom)
+- Tools, MCP, A2A, sub-agents
+- Conversation (in-memory), memory, retrieval (RAG)
+- Streaming, AG-UI events, hooks
+- Human-in-the-loop approvals
+- OpenTelemetry observability
+
+The only capabilities exclusive to Temporal are **durable execution** (crash recovery) and **horizontal worker scaling**.
+
+## Limitations
+
+| Limitation | Detail |
+|---|---|
+| **No crash recovery** | If the process exits mid-run, the run is lost — no replay, no resume |
+| **Single process** | No horizontal worker scaling |
+| **In-memory conversation only** | Redis works technically, but split-process deployments require Temporal |
+| **No split client/worker** | `DisableLocalWorker` and `NewAgentWorker` require the Temporal runtime |
+
+<Note>
+These limits matter for production workloads where runs must survive deploys or scale independently. For those cases, see [Temporal runtime](/runtimes/temporal).
+</Note>
+
+## When to use
+
+| Scenario | In-process fit |
+|---|---|
+| Local development and unit testing | Ideal |
+| CI pipelines and integration tests | Ideal |
+| Simple API or script with short runs | Good |
+| Production chat with crash recovery required | Use Temporal |
+| Multi-process or horizontally scaled execution | Use Temporal |
+
+## Switch to Temporal
+
+Add `WithTemporalConfig` — no other code changes:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithTemporalConfig(&agent.TemporalConfig{
+        Host: "localhost", Port: 7233,
+        Namespace: "default", TaskQueue: "my-app",
+    }),
+    agent.WithLLMClient(llmClient),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+)
+```
+
+A running Temporal server is required. See [Temporal](/runtimes/temporal) and [Prerequisites](/getting-started/prerequisites).
+
+## Examples
+
+<CardGroup cols={2}>
+  <Card title="Simple Agent" icon="play" href="/examples/simple-agent">
+    Minimal in-process agent with Run()
+  </Card>
+  <Card title="Stream" icon="wave-square" href="/examples/stream">
+    Streaming tokens and tool events in-process
+  </Card>
+  <Card title="Runtimes Overview" icon="scale-balanced" href="/runtimes/overview">
+    Compare in-process and Temporal
+  </Card>
+  <Card title="Quickstart" icon="bolt" href="/getting-started/quickstart">
+    Build your first agent
+  </Card>
+</CardGroup>

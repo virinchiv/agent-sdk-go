@@ -1,0 +1,92 @@
+---
+title: "Runtimes Overview"
+sidebarTitle: "Overview"
+description: "Choose between in-process and Temporal runtimes based on your durability and infrastructure requirements"
+---
+
+Agent SDK for Go supports two execution backends. **In-process is the default** — pass no Temporal options. **Temporal is opt-in** — add `WithTemporalConfig` or `WithTemporalClient` when you need durable, production-grade execution.
+
+Your agent code (`NewAgent`, tools, prompts, streaming) stays the same. Only the configuration changes.
+
+## Comparison
+
+| | In-process | Temporal |
+|---|---|---|
+| **Enable** | Default — omit Temporal options | `WithTemporalConfig` or `WithTemporalClient` |
+| **Infrastructure** | None beyond your LLM provider | Running Temporal server or Temporal Cloud |
+| **Where the loop runs** | Inside your Go process | Durable workflow + activities |
+| **Crash recovery** | No — run is lost if the process exits | Yes — workflow history replays from last step |
+| **Horizontal scale** | Single process only | Add workers on task queues |
+| **Split client / worker** | Not applicable | `DisableLocalWorker` + `NewAgentWorker` |
+| **Feature parity** | Full | Full |
+| **Conversation backend** | In-memory (single process) | Redis for split-process deployments |
+
+## When to use in-process
+
+- Developing, testing, or prototyping
+- Short-lived runs where crash recovery is not needed
+- Zero-infrastructure deployments (serverless, scripts, single binary)
+
+See [In-Process](/runtimes/in-process) for details and limitations.
+
+## When to use Temporal
+
+- Agent runs must survive process crashes, deploys, and restarts
+- You need horizontal scaling by adding workers
+- You want to split the agent client and worker across separate processes
+- Long-running agent sessions require durable orchestration
+
+See [Temporal](/runtimes/temporal) for cluster setup and SDK connection.
+
+## How runtime selection works
+
+The SDK selects a backend from your `NewAgent` options. You never instantiate a runtime directly.
+
+```go
+// In-process (default)
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+)
+
+// Temporal
+a, err := agent.NewAgent(
+    agent.WithTemporalConfig(&agent.TemporalConfig{
+        Host: "localhost", Port: 7233,
+        Namespace: "default", TaskQueue: "my-app",
+    }),
+    agent.WithLLMClient(llmClient),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+)
+```
+
+<Warning>
+Provide **either** `WithTemporalConfig` or `WithTemporalClient`, not both. They configure different levels of the Temporal client lifecycle — mixing them is a compile-time option error.
+</Warning>
+
+## Switching runtimes
+
+<Tip>
+Start in-process during development and add Temporal for production with a single config change. The agent code — tools, prompts, streaming, approvals — does not change.
+</Tip>
+
+1. Develop with no Temporal options
+2. Add `WithTemporalConfig` (or `WithTemporalClient`) for production
+3. If you use conversation with a split-process deployment (agent + separate worker), switch from in-memory to Redis. See [Conversation](/features/conversation)
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="In-Process" icon="laptop" href="/runtimes/in-process">
+    Default runtime — zero infrastructure
+  </Card>
+  <Card title="Temporal" icon="server" href="/runtimes/temporal">
+    Durable workflows, workers, and production deployment
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithTemporalConfig, DisableLocalWorker, and all runtime options
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/overview/architecture">
+    How the agent loop maps to each backend
+  </Card>
+</CardGroup>

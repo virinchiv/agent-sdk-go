@@ -1,0 +1,12 @@
+/* Navbar site name (docs.json "name") — Mintlify uses .nav-logo for text too when no logo image. */
+.nav-logo {
+  height: auto !important;
+  font-size: 1.25rem !important; /* ~20px; default is text-2xl/3xl */
+  font-weight: 700 !important;
+  letter-spacing: -0.02em;
+  color: #004C6D !important;
+}
+
+html.dark .nav-logo {
+  color: #f8fafc !important;
+}

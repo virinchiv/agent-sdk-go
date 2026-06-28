@@ -1,0 +1,67 @@
+---
+title: "Tools"
+description: "Register built-in and custom tools with approval handlers, authorizers, and dynamic registry patterns"
+---
+
+The `agent_with_tools` family demonstrates `WithTools`, `WithToolRegistry`, `WithApprovalHandler`, `ToolAuthorizer`, and the dynamic registry API. Each sub-example isolates one aspect of tool configuration so you can see exactly what each API controls.
+
+Source: [`examples/agent_with_tools/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_tools)
+
+## Examples in this group
+
+| Directory | Demonstrates |
+|---|---|
+| `basic` | Built-in tools — echo, calculator, weather, wikipedia, search with auto-approval |
+| `approval` | `WithApprovalHandler` — approve or reject each tool (`Run`) |
+| `authorizer` | `ToolAuthorizer` — programmatic deny before execution |
+| `custom` | Custom tool via `WithTools` |
+| `dynamic_registry` | `ToolRegistry().Register` between runs |
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_tools/basic "What's the weather in Tokyo?"
+go run ./agent_with_tools/approval "What is 15 + 27?"
+go run ./agent_with_tools/authorizer "Get the protected note for roadmap."
+go run ./agent_with_tools/custom "Reverse 'hello world'"
+go run ./agent_with_tools/dynamic_registry
+```
+
+## Expected output
+
+```
+# basic — auto-approval, answer printed directly
+The current weather in Tokyo is 18°C, partly cloudy with light winds.
+
+# approval — prompt appears for each tool call
+Tool call: calculator({"expression":"15+27"})
+Approve? [y/n]: y
+15 + 27 = 42
+
+# authorizer — programmatic deny
+Access denied: you do not have permission to access the protected note.
+
+# custom — custom Reverse tool
+"hello world" reversed is "dlrow olleh"
+
+# dynamic_registry — tool added between runs
+[Run 1] No tools available.
+[Run 2] reversed: "dlrow olleh"
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Registration and execution modes
+  </Card>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    Approval policies and handlers
+  </Card>
+  <Card title="Dynamic Capabilities" icon="rotate" href="/advanced/dynamic-capabilities">
+    Runtime tool registry
+  </Card>
+
+</CardGroup>

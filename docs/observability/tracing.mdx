@@ -1,0 +1,192 @@
+---
+title: "Tracing"
+description: "Enable distributed tracing for agent runs, LLM calls, tool invocations, and memory operations via OTLP"
+---
+
+Agent SDK for Go emits **distributed traces** via OpenTelemetry. Traces are **no-op by default** — no extra imports or init code required until you wire an exporter.
+
+## Default: no-op
+
+Without `WithObservabilityConfig` or `WithTracer`, the agent uses built-in no-op tracers. Zero overhead.
+
+## Wire OTLP (recommended)
+
+Requires a running OpenTelemetry-compatible collector (e.g. [OpenTelemetry Collector](https://opentelemetry.io/docs/collector/) or [Jaeger](https://www.jaegertracing.io)). Quick local setup:
+
+```bash
+docker run --rm -p 4317:4317 -p 16686:16686 jaegertracing/all-in-one:latest
+```
+
+Configure traces, metrics, and logs in one block with [`WithObservabilityConfig`](/getting-started/configuration):
+
+```go
+a, err := agent.NewAgent(
+    agent.WithTemporalConfig(cfg),
+    agent.WithLLMClient(llmClient),
+    agent.WithObservabilityConfig(&agent.ObservabilityConfig{
+        Endpoint: "collector:4317",        // gRPC (default)
+        Protocol: agent.OTLPProtocolGRPC,  // or OTLPProtocolHTTP
+        Insecure: true,                    // dev only — omit for TLS in production
+        // DisableTraces: true,            // opt out of traces only
+    }),
+)
+defer a.Close() // flushes all OTLP exporters — required
+```
+
+<Warning>
+`defer a.Close()` is required to flush buffered OTLP spans before process exit. Without it, spans from the last batch may be silently dropped. Similarly, call `w.Stop()` on `AgentWorker` processes.
+</Warning>
+
+<Note>
+`Insecure: true` disables TLS on the collector connection. Use only in development or trusted internal networks. Omit it (defaults to TLS) for production OTLP endpoints.
+</Note>
+
+| Field | Description |
+|---|---|
+| `Endpoint` | OTLP collector URL — e.g. `collector:4317` (gRPC) or `http://collector:4318` (HTTP) |
+| `Protocol` | `OTLPProtocolGRPC` (default) or `OTLPProtocolHTTP` |
+| `Insecure` | Disable TLS — dev/trusted networks only |
+| `DisableTraces` | Skip trace export while keeping metrics/logs |
+
+Use the **same** `WithObservabilityConfig` on `NewAgent` and [`NewAgentWorker`](/advanced/worker-separation) so worker activity spans reach the same backend.
+
+Observability config participates in the Temporal agent fingerprint — caller and worker must match.
+
+## Bring your own tracer
+
+Use [`WithTracer`](/getting-started/configuration) when you already have an OpenTelemetry provider or need fine-grained control via `pkg/observability`:
+
+```go
+import "github.com/agenticenv/agent-sdk-go/pkg/observability"
+
+tracer, err := observability.NewTracer(
+    observability.WithName("my-service"),
+    observability.WithEndpoint("collector:4317"),
+    observability.WithInsecure(true),
+)
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTracer(tracer),
+)
+```
+
+When `WithObservabilityConfig` enables traces, any `WithTracer` value is **replaced** by the OTLP tracer built from config.
+
+`pkg/observability` exposes additional options not on `ObservabilityConfig` — sampling ratio, batch timeout, export timeout, custom headers, service version, and deployment environment. See [`observability.Config`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/observability#Config).
+
+## Spans
+
+| Span | Emitted by |
+|---|---|
+| `agent.run` | `Agent.Run` |
+| `agent.run.async` | `Agent.RunAsync` |
+| `agent.stream` | `Agent.Stream` (dispatch phase) |
+| `agent.loop` | In-process agent loop (local runtime) |
+| `a2a.execute` | A2A server executor per request |
+| `llm.generate` | Sync LLM call |
+| `llm.stream` | Streaming LLM call |
+| `tool.execute` | Tool execution |
+| `tool.authorize` | Programmatic tool authorization |
+| `retriever.search` | Retriever search (prefetch or agentic) |
+| `conversation.get_messages` | Load conversation history |
+| `conversation.add_messages` | Persist conversation messages |
+| `memory.recall` | Load scoped memories before a run |
+| `memory.store` | Persist one memory record |
+| `memory.store.batch` | Persist multiple records in one call |
+| `memory.dedup` | Semantic dedup lookup before store |
+| `memory.extract` | Run-end memory extraction (`StoreModeAlways`) |
+
+## Common attributes
+
+Spans and metrics share attribute keys where applicable:
+
+| Attribute | When set |
+|---|---|
+| `agent.name` | Agent API spans (`Run`, `Stream`) |
+| `conversation.id` | When conversation options are passed |
+| `input.length` | Run input character count |
+| `model` | LLM spans |
+| `provider` | LLM spans — `openai`, `anthropic`, `gemini` |
+| `tool` | Tool execution spans |
+| `retriever` | Retriever search spans |
+| `memory.kind` | Memory store/recall spans |
+| `memory.dedup` | Dedup lookup spans |
+| `query` | Memory recall spans |
+
+## Temporal workflow traces
+
+On the Temporal runtime, the agent loop runs as a Temporal workflow. The SDK emits its own spans (`agent.loop`, `llm.generate`, `tool.execute`, etc.) as child spans under the workflow execution — visible in any OTLP-connected backend. Temporal's own server-side traces (workflow scheduling, history replay) are separate and require a Temporal-instrumented deployment.
+
+To correlate agent spans with Temporal workflow IDs, use `WithObservabilityConfig` on both the agent and worker process. The `workflow.id` appears as an attribute on the `agent.run` span.
+
+## Example collector config
+
+Minimal `otel-collector-config.yaml` — accepts OTLP gRPC and exports to Jaeger and logging:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+exporters:
+  debug:
+    verbosity: detailed
+  otlp/jaeger:
+    endpoint: "jaeger:4317"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug, otlp/jaeger]
+```
+
+Run with:
+
+```bash
+docker run --rm \
+  -p 4317:4317 -p 4318:4318 \
+  -v $(pwd)/otel-collector-config.yaml:/etc/otelcol/config.yaml \
+  otel/opentelemetry-collector:latest
+```
+
+## Worker shutdown
+
+- **Agent** — `a.Close()` flushes trace exporters
+- **Worker** — `w.Stop()` flushes OTLP on standalone worker processes
+
+Embedded local workers flush via `Agent.Close()`.
+
+Example: [Observability](/examples/observability) · [Hooks](/examples/hooks).
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Observability" icon="play" href="/examples/observability">
+    OTLP traces, metrics, and logs
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Metrics" icon="chart-line" href="/observability/metrics">
+    Counters and histograms alongside traces
+  </Card>
+  <Card title="Logs" icon="file-lines" href="/observability/logs">
+    OTLP log export
+  </Card>
+  <Card title="Telemetry" icon="gauge" href="/observability/telemetry">
+    Run-level behavioral data on results
+  </Card>
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+    Same observability config on agent and worker
+  </Card>
+</CardGroup>

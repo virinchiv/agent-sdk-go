@@ -1,0 +1,144 @@
+---
+title: "Configuration"
+description: "Configure NewAgent options — runtime, LLM, streaming, approvals, timeouts and workers"
+---
+
+Configure agents by passing functional options to [`NewAgent`](/getting-started/quickstart). The same options apply to [`NewAgentWorker`](/advanced/worker-separation) when running a separate worker process.
+
+Key defaults: **in-process runtime** (no Temporal options), **5 max iterations**, **parallel tool execution**, **5-minute timeout** on interactive mode. All options can be overridden at construction time; per-run overrides use [`AgentRunOptions`](#per-run-options).
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithSystemPrompt("You are a helpful assistant."),
+    agent.WithMaxIterations(10),
+    // ... more options
+)
+```
+
+A Temporal connection is **optional**. Omit Temporal options to use the in-process runtime; add `WithTemporalConfig` or `WithTemporalClient` for durable execution. All other options work identically on both runtimes.
+
+## Core options
+
+| Option | Description |
+|---|---|
+| `WithName(name)` | Human-readable agent label — appears on results and events |
+| `WithDescription(desc)` | Agent description — used in A2A agent card |
+| `WithSystemPrompt(prompt)` | System message prepended to every LLM call |
+| `WithLLMClient(client)` | LLM client — **required**. See [LLM Providers](/getting-started/llm-providers) |
+| `WithLLMSampling(s)` | Temperature, max tokens, top-p/top-k, reasoning. See [Reasoning](/features/reasoning) |
+| `WithResponseFormat(rf)` | Text or JSON schema output. See [Response Format](/features/response-format) |
+| `WithLogger(l)` | Custom structured logger |
+| `WithLogLevel(level)` | SDK log level: `debug`, `info`, `warn`, `error` |
+
+## Runtime options
+
+| Option | Description |
+|---|---|
+| `WithTemporalConfig(cfg)` | Simple Temporal connection — host, port, namespace, task queue. Agent manages client lifecycle |
+| `WithTemporalClient(tc, taskQueue)` | Pre-built Temporal client — use for TLS, API keys, Temporal Cloud. You own the client lifecycle. Mutually exclusive with `WithTemporalConfig` |
+| `WithInstanceId(id)` | Distinguish multiple agents on the same base task queue. See [Multiple Agents](/advanced/multiple-agents) |
+| `WithAgentMode(mode)` | `AgentModeInteractive` (default, 5 min timeout, worker precheck) or `AgentModeAutonomous` (60 min timeout, skips worker precheck) |
+| `DisableLocalWorker()` | Agent process does not poll the task queue — pair with `NewAgentWorker` in a separate process |
+| `EnableRemoteWorkers()` | Required with `DisableLocalWorker` when streaming or approvals flow across processes |
+| `WithDisableFingerprintCheck(disable)` | Skip agent config fingerprint check — break-glass option, not for production use |
+
+See [Runtimes](/runtimes/overview) and [Temporal runtime](/runtimes/temporal) for connection details.
+
+### TemporalConfig fields
+
+```go
+agent.WithTemporalConfig(&agent.TemporalConfig{
+    Host:      "localhost",
+    Port:      7233,        // default Temporal gRPC port
+    Namespace: "default",
+    TaskQueue: "my-app",   // must be unique per agent type
+})
+```
+
+<Note>
+`TaskQueue` must be unique per agent type. If you run multiple distinct agents (e.g. a math agent and a research agent), give each its own task queue. For multiple instances of the **same** agent (e.g. scaled pods), use `WithInstanceId` — each instance derives its queue as `{TaskQueue}-{InstanceId}`.
+</Note>
+
+## Execution options
+
+| Option | Description |
+|---|---|
+| `WithStream(enable)` | Enable partial token streaming via `Stream`. See [Streaming](/getting-started/streaming) |
+| `WithMaxIterations(n)` | Max LLM rounds per run (default: 5) |
+| `WithTimeout(d)` | Default run timeout when the context has no deadline |
+| `WithApprovalTimeout(d)` | Max wait per approval — defaults to timeout minus 30s |
+| `WithApprovalHandler(fn)` | Callback for tool and delegation approvals on `Run` and `RunAsync` |
+| `WithAgentToolExecutionMode(mode)` | `Parallel` (default) or `Sequential` per LLM turn |
+
+Context deadlines always take precedence over `WithTimeout`. See [Timeouts & Modes](/advanced/timeouts-and-modes).
+
+## Tools and approval
+
+| Option | Description |
+|---|---|
+| `WithTools(tools...)` | Register tools inline at creation |
+| `WithToolRegistry(reg)` | Attach a tool registry — supports dynamic add/remove after `NewAgent` |
+| `WithToolApprovalPolicy(policy)` | `RequireAllToolApprovalPolicy` (default), `AutoToolApprovalPolicy()`, or custom. See [Approvals](/features/approvals) |
+
+Use the same `WithAgentToolExecutionMode` on `NewAgent`, `NewAgentWorker`, and all sub-agents in a deployment.
+
+## Capabilities
+
+| Option | Guide |
+|---|---|
+| `WithConversation(cfg)` | [Conversation](/features/conversation) |
+| `WithMemory(cfg)` | [Memory](/features/memory) |
+| `WithRetrievers(r...)` + `WithRetrieverMode(mode)` | [Retrieval](/features/retrieval) |
+| `WithMCPConfig(servers)` / `WithMCPClients(clients...)` | [MCP](/features/mcp) |
+| `WithA2AConfig(servers)` / `WithA2AClients(clients...)` | [A2A client](/features/a2a) |
+| `WithA2ADefaultServer()` / `WithA2AServer(cfg)` | [A2A server](/features/a2a) |
+| `WithSubAgents(agents...)` + `WithMaxSubAgentDepth(n)` | [Sub-agents](/features/sub-agents) |
+| `WithHooks(name, hooks)` | [Hooks](/features/hooks) |
+
+## Observability
+
+| Option | Description |
+|---|---|
+| `WithObservabilityConfig(cfg)` | Wire OTLP traces, metrics, and logs in one block |
+| `WithTracer(tracer)` | Bring your own `interfaces.Tracer` |
+| `WithMetrics(metrics)` | Bring your own `interfaces.Metrics` |
+| `WithLogs(logs)` | Bring your own OTLP logs exporter |
+
+See [Tracing](/observability/tracing) and [Observability example](/examples/observability).
+
+## Per-run options
+
+Pass [`AgentRunOptions`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#AgentRunOptions) as the third argument to `Run`, `RunAsync`, and `Stream`:
+
+```go
+opts := &agent.AgentRunOptions{
+    ConversationOptions: &agent.ConversationOptions{
+        ID: "session-1",
+    },
+}
+result, err := a.Run(ctx, "Hello", opts)
+```
+
+When conversation is enabled, pass the same `ID` on every call in a session to share history across turns.
+
+## Runtime registries
+
+After `NewAgent`, mutate capabilities without restarting. Each run picks up the current registry state:
+
+| Accessor | Methods |
+|---|---|
+| `a.ToolRegistry()` | `Register(tool)`, `Unregister(name)` |
+| `a.MCPRegistry()` | `Register(name, config)`, `RegisterClient(cl)`, `Unregister(name)` |
+| `a.A2ARegistry()` | `Register(name, config)`, `RegisterClient(cl)`, `Unregister(name)` |
+| `a.SubAgentRegistry()` | `Register(sub)`, `Unregister(name)` |
+
+See [Dynamic capabilities](/advanced/dynamic-capabilities).
+
+## Agent and worker alignment
+
+When splitting client and worker across processes, `NewAgent` and `NewAgentWorker` must share identical configuration — the SDK validates this with a fingerprint check at activity entry. See [Worker separation](/advanced/worker-separation).
+
+## Token usage
+
+There is no separate token usage option. Read [`LLMUsage`](/features/token-usage) from `AgentRunResult` after `Run`, or from `AgentRunFinishedEvent.Result.LLMUsage` after `Stream`.

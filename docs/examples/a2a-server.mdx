@@ -1,0 +1,67 @@
+---
+title: "A2A Server"
+sidebarTitle: "A2A Server"
+description: "Run an inbound A2A HTTP server with an agent card and JSON-RPC endpoint via RunA2A"
+---
+
+Exposes the agent as an **inbound** [A2A](https://github.com/a2aproject/A2A) server — agent card at `/.well-known/agent-card.json` and JSON-RPC on `POST /` (PascalCase methods such as `SendMessage`, `SendStreamingMessage`).
+
+Source: [`examples/agent_with_a2a_server/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_a2a_server)
+
+## What it demonstrates
+
+- `WithA2ADefaultServer` or `WithA2AServer` with host, port, bearer tokens
+- `RunA2A(ctx)` blocking until shutdown
+- Pair with [A2A Config](/examples/a2a-config) as a client
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_a2a_server
+```
+
+The process prints the **base URL** and **agent card URL** to stderr. **Ctrl+C** to stop.
+
+Defaults: `localhost:9999` — override with `A2A_SERVER_HOST`, `A2A_SERVER_PORT` (see [Configuration](/examples/configuration)).
+
+Optional **`A2A_SERVER_BEARER_TOKENS`** — comma-separated secrets; JSON-RPC calls must send `Authorization: Bearer <token>`. Agent card GET stays unauthenticated.
+
+## Quick checks
+
+```bash
+curl -sS "http://localhost:9999/.well-known/agent-card.json" | head
+```
+
+## Test as a client from this repo
+
+Second terminal, `examples/`:
+
+```bash
+export A2A_URL=http://localhost:9999
+go run ./agent_with_a2a_config "What tools do you have?"
+```
+
+## Test with the `a2a` CLI
+
+```bash
+go install github.com/a2aproject/a2a-go/v2/cmd/a2a@latest
+
+a2a discover http://localhost:9999
+a2a send http://localhost:9999 "Hello, what can you do?"
+```
+
+With bearer tokens configured, see `a2a help send` for auth flags.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="A2A" icon="network-wired" href="/features/a2a">
+    Server and client feature docs
+  </Card>
+  <Card title="A2A Config" icon="arrow-right" href="/examples/a2a-config">
+    Outbound client example
+  </Card>
+
+</CardGroup>

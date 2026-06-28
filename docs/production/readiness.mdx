@@ -1,0 +1,157 @@
+---
+title: "Readiness Checklist"
+sidebarTitle: "Readiness"
+description: "Deploy agents to production with a checklist for timeouts, secrets, LLM fallback, and observability setup"
+---
+
+Use this checklist before deploying agents built with Agent SDK for Go to production. It complements the [Temporal runtime](/runtimes/temporal) and [Worker separation](/advanced/worker-separation) guides.
+
+## Run limits and agent loops
+
+- **Bound run duration** — Set [`WithTimeout`](/advanced/timeouts-and-modes) and/or a context deadline on `Run`, `Stream`, and `RunAsync`. Context deadline always wins over agent timeout.
+- **Approval timeouts** — When tools require approval, set [`WithApprovalTimeout`](/advanced/timeouts-and-modes) less than the run timeout. Default is agent timeout − 30s.
+- **Max iterations** — Set [`WithMaxIterations`](/getting-started/configuration) to cap LLM rounds (default 5). Runs finish with `finish_reason: max_iterations` when hit.
+- **Sub-agent depth** — Set [`WithMaxSubAgentDepth`](/features/sub-agents) when using delegation (default 2).
+- **Agent mode** — Use `AgentModeInteractive` (5 min default) for user-facing apps; `AgentModeAutonomous` (60 min default) for background pipelines. See [Timeouts & Modes](/advanced/timeouts-and-modes).
+
+Activity retry counts inside Temporal workflows are fixed in the SDK — not user-tunable.
+
+## LLM provider fallback strategy
+
+- **No built-in failover** — The SDK calls a single `LLMClient` per agent. Failover is your responsibility at the client layer.
+- **Implement a wrapper** — Wrap multiple provider clients with your own retry and fallback logic, implementing `interfaces.LLMClient`. On `429` or `5xx`, switch to the secondary provider.
+- **Circuit breaker** — Track consecutive LLM errors and open a circuit to avoid hammering a degraded provider. Re-probe after a backoff window.
+- **Sticky provider per session** — For conversation continuity, route the same conversation ID to the same provider. Provider-switching mid-conversation can cause context drift.
+- **Test fallback paths** — Add an integration test that injects a failing LLM client and confirms the agent returns a clean error rather than hanging.
+
+See [LLM Providers](/getting-started/llm-providers) for the `LLMClient` interface and built-in clients.
+
+## Error handling patterns
+
+- **Always check errors** — `Run`, `RunAsync`, and `Stream` all return errors. A `nil` result with a non-nil error means the run did not complete — do not access `result.Content`.
+- **Typed errors** — `context.DeadlineExceeded` means a timeout fired. `ErrMaxIterationsReached` means the agent hit `WithMaxIterations`. Log both with the run context (agent name, conversation ID).
+- **`RunAsync` errors** — Errors arrive on the channel as `AgentRunAsyncResult.Error`. Always select or range on the channel — an unread channel leaks the goroutine.
+- **`Stream` errors** — An `AgentEventTypeRunError` event carries the error message. Drain the channel to completion even after an error event; close from the producing side.
+- **Surface errors to users clearly** — Distinguish timeout errors ("request took too long"), provider errors ("AI service unavailable"), and logic errors ("agent reached its step limit") in your UI layer.
+- **Retries** — Retrying `Run` with the same `ConversationOptions.ID` will continue from the saved conversation history (if conversation is enabled). Beware of idempotency if tools have side effects.
+
+See [Timeouts & Modes](/advanced/timeouts-and-modes) for the full failure behavior table.
+
+## Tool and delegation risk
+
+- **Approval policy** — Choose [`WithToolApprovalPolicy`](/features/approvals) per agent — main and each specialist. Default is require-all; use `AutoToolApprovalPolicy()` only when you fully trust the agent surface.
+- **Human review** — Require approval for dangerous tools, MCP-exposed capabilities, and sub-agent delegation where policy demands it.
+- **Tool authorization** — Implement [`ToolAuthorizer`](/features/tools) for programmatic gates (scopes, tenancy, feature flags) before approval or execution.
+- **Parallel vs sequential tools** — Use [`WithAgentToolExecutionMode`](/features/tools) consistently across `NewAgent`, `NewAgentWorker`, and sub-agents when order or shared state matters.
+
+## MCP and external tools
+
+- **Attack surface** — Remote MCP servers widen what the LLM can invoke. Audit connected servers and use [`ToolFilter`](/features/mcp) to allowlist tools.
+- **TLS** — Prefer TLS for streamable HTTP MCP in production. Avoid `SkipTLSVerify` outside local development.
+- **Secrets** — Protect bearer tokens, OAuth credentials, and custom headers. Never commit them to source control.
+- **Runtime registration** — Dynamic MCP changes on the client do not propagate to remote workers automatically — see [Dynamic Capabilities](/advanced/dynamic-capabilities).
+
+## Split processes and Temporal
+
+- **Worker separation** — When using [`DisableLocalWorker`](/advanced/worker-separation), run [`NewAgentWorker`](/advanced/worker-separation) with **matching configuration** on a separate process.
+- **Remote workers** — Pass [`EnableRemoteWorkers()`](/advanced/worker-separation) when using streaming or approvals across processes.
+- **Distributed conversation** — Use Redis (not in-memory) for conversation when client and worker are split. Same config on both processes.
+- **Config fingerprint** — Keep task queue, tools, MCP/A2A setup, memory, hooks, and observability config aligned. Avoid [`WithDisableFingerprintCheck`](/getting-started/configuration) in production.
+- **Integration tests** — Exercise approval and streaming paths with split processes before deploy.
+- **Workflow replay** — After upgrading the SDK module, confirm existing workflows still replay in your Temporal environment.
+
+## Rate limiting awareness
+
+- **LLM provider rate limits** — Most providers enforce requests-per-minute (RPM) and tokens-per-minute (TPM) limits. A `429` from the provider surfaces as an LLM activity error in Temporal (which retries it) or a run error in-process (which does not retry by default).
+- **Implement exponential backoff** — In your `LLMClient` wrapper, catch `429` responses and back off before retrying. Do not let unbounded retries exhaust your Temporal workflow timeout.
+- **Track token usage** — Monitor `agent.llm.tokens.input` and `agent.llm.tokens.output` OTLP metrics. Set alerts when per-minute token totals approach your provider limit. See [Metrics](/observability/metrics).
+- **Cap concurrent runs** — A burst of concurrent `RunAsync` calls multiplies LLM load. Use a semaphore or rate limiter in your API layer before calling the agent.
+- **Autonomous vs interactive mode** — `AgentModeAutonomous` (60 min timeout) can queue many long-running workflows. Size your Temporal workers and provider quota to match expected concurrency.
+
+## Cost controls
+
+- **Token budget per run** — Set `WithLLMSampling(&LLMSampling{MaxTokens: N})` to cap completion tokens per LLM call. Prevents runaway costs from unexpectedly long responses.
+- **Cap iteration count** — `WithMaxIterations` (default 5) directly caps how many LLM calls a single run makes. Reduce it for cost-sensitive workloads.
+- **Monitor token usage** — Read `result.LLMUsage.TotalTokens` on every run and aggregate by user/tenant. See [Token Usage](/features/token-usage).
+- **OTLP token metrics** — `agent.llm.tokens.input` and `agent.llm.tokens.output` histograms let you alert on token spend in dashboards. See [Metrics](/observability/metrics).
+- **Sub-agent token multiplication** — Each sub-agent delegation triggers its own LLM calls. Monitor sub-agent trees carefully — a 3-level deep tree with 3 tools per level can multiply token spend significantly.
+- **Estimate before production** — Run the [Benchmarks](/testing/benchmarks) harness with real provider clients and `mock_tokens` tuned to your expected prompt size to estimate cost at target load.
+
+## Secrets and data handling
+
+- **Credentials** — Keep LLM API keys and Temporal credentials in environment variables or a secrets manager — not in source control.
+- **Untrusted I/O** — Treat tool arguments and model output as untrusted at your application boundary.
+- **Prompt safety** — Validate and sanitize prompts, tool args, and model output in your integration layer. Consider [Hooks](/features/hooks) for guardrails and PII scrubbing.
+- **Conversation and memory** — You own `Clear` on conversation and memory stores. Scope memory with tenant and user context — see [Memory](/features/memory).
+
+## Observability
+
+- **OTLP wiring** — Use [`WithObservabilityConfig`](/observability/tracing) on **both** `NewAgent` and `NewAgentWorker` so traces, metrics, and logs from worker activities reach your collector.
+- **Collector reachability** — Confirm your OTLP endpoint is reachable before deploying. Use `Insecure: true` only in development.
+- **Run telemetry** — Log [`AgentTelemetry`](/observability/telemetry) from results for operational insight — LLM call count, tool breakdown, finish reason.
+- **Structured logging** — Set [`WithLogLevel`](/observability/logs) appropriately; use [`WithLogger`](/observability/logs) to integrate with your log pipeline.
+- **Temporal UI** — Use workflow history and the Temporal Web UI to debug individual runs.
+
+## Temporal worker scaling
+
+- **Workers are stateless** — Temporal holds all workflow state. Scale workers horizontally by adding replicas; each polls the same task queue and picks up available work.
+- **One task queue per agent type** — The root agent, each sub-agent, and each `NewAgentWorker` must use a unique task queue. Sharing a queue between different agent types causes workflow routing errors.
+- **Scale sub-agent workers independently** — Sub-agents are child workflows on separate task queues. A high-delegation workload may require more sub-agent workers than root agent workers.
+- **Size worker concurrency** — Each worker runs multiple workflow goroutines concurrently. Tune via Temporal worker options (max concurrent workflow tasks, activity tasks). Match to your LLM provider's concurrency quota to avoid throttling.
+- **Worker health checks** — Probe that workers are polling before accepting traffic. `AgentModeInteractive` with `DisableLocalWorker` performs a pre-check automatically — ensure at least one worker is registered on the task queue.
+- **Rolling deploys** — Temporal workflows replay on new workers. After an SDK upgrade, verify workflow replay compatibility in staging before rolling out to production workers.
+
+See [Worker Separation](/advanced/worker-separation) and [Multiple Agents](/advanced/multiple-agents).
+
+## Operations
+
+- **Graceful shutdown** — Call `Agent.Close()` to flush OTLP exporters. Call `AgentWorker.Stop()` on worker processes.
+- **Streaming UX** — Live stream events are not backfilled after disconnect. Design interactive UIs to wait for the current turn — see [Temporal streaming guarantees](/runtimes/temporal#streaming-and-approvals).
+- **Health checks** — Verify Temporal connectivity, worker availability, Redis/Postgres backends, and OTLP collector health in your deployment probes.
+
+## Pre-deploy checklist
+
+| Area | Verify |
+|---|---|
+| LLM fallback | Failover strategy or wrapper in place; fallback path tested |
+| Rate limits | Backoff on 429; token/request quota sized for target concurrency |
+| Cost controls | `MaxTokens`, `MaxIterations` set; token metrics monitored |
+| Error handling | All `Run`/`Stream`/`RunAsync` errors checked and surfaced cleanly |
+| Timeouts | `WithTimeout`, context deadlines, `WithApprovalTimeout` set for your SLA |
+| Iterations | `WithMaxIterations` and `WithMaxSubAgentDepth` bounded |
+| Approvals | Policy matches risk for each agent and specialist |
+| Temporal | Cluster reachable; client/worker config aligned; replay tested |
+| Worker scaling | Task queues unique; worker count sized to LLM quota |
+| Conversation | Redis or distributed store if split processes |
+| Observability | OTLP on agent and worker; collector tested; alerts configured |
+| Secrets | No keys in repo; env/secrets manager in place |
+| SDK upgrade | Workflow replay tested after module bump |
+
+## Validate before deploy
+
+Run these against your target environment to confirm configuration:
+
+| Check | Resource |
+|---|---|
+| Split client/worker and streaming | [Agent Worker](/examples/agent-worker), [Durable Agent](/examples/durable-agent) |
+| OTLP export from agent and worker | [Observability example](/examples/observability) |
+| Behavioral regression | [Eval harness](/testing/eval-harness) |
+| End-to-end HTTP + Temporal + Postgres | [Agent Chat](/reference-apps/agent-chat) |
+| Load and orchestration limits | [Benchmarks](/testing/benchmarks) |
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+    Split client and worker processes
+  </Card>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    Tool and delegation approval flows
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/observability/tracing">
+    Traces, metrics, and logs
+  </Card>
+  <Card title="Agent Chat" icon="comments" href="/reference-apps/agent-chat">
+    Reference app architecture patterns
+  </Card>
+</CardGroup>

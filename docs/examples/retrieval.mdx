@@ -1,0 +1,87 @@
+---
+title: "Retrieval (RAG)"
+description: "Ground agent responses with Weaviate or pgvector using agentic, prefetch, or hybrid retriever modes"
+---
+
+Grounds agent responses with `WithRetrievers`. Pick **one backend** per run.
+
+| Backend | Entrypoint |
+|---|---|
+| Weaviate | `go run ./agent_with_retriever/weaviate` |
+| PostgreSQL + pgvector | `go run ./agent_with_retriever/pgvector` |
+
+Sample KB documents are seeded by Task infra. Edit `docker/weaviate/sample-documents.json` or `docker/pgvector/sample-documents.json` and re-run `up` to change corpus content.
+
+Source: [`examples/agent_with_retriever/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_retriever)
+
+## Retriever modes
+
+Set `RETRIEVER_MODE` in `.env` (default `agentic`):
+
+| Mode | Behavior |
+|---|---|
+| `agentic` | Retriever exposed as a tool; LLM decides when to search |
+| `prefetch` | Search runs once before the first LLM call; context injected into system prompt |
+| `hybrid` | Prefetch and retriever tools |
+
+Prefetch/hybrid embed your **exact user message** — use concrete questions aligned with the sample KB (returns, shipping, warranty, etc.).
+
+## Setup
+
+From `examples/`:
+
+```bash
+task infra:status
+```
+
+**Weaviate:**
+
+```bash
+task infra:weaviate:up
+go run ./agent_with_retriever/weaviate "What is the return policy?"
+task infra:weaviate:down
+```
+
+**pgvector:**
+
+```bash
+task infra:pgvector:up
+go run ./agent_with_retriever/pgvector "What is the return policy?"
+task infra:pgvector:down
+```
+
+## Run examples
+
+```bash
+# Agentic (default)
+go run ./agent_with_retriever/weaviate "What is the return policy?"
+
+# Prefetch — search before first LLM call
+RETRIEVER_MODE=prefetch go run ./agent_with_retriever/weaviate "What are the return and shipping rules?"
+
+# Hybrid
+RETRIEVER_MODE=hybrid go run ./agent_with_retriever/pgvector "Summarize warranty coverage."
+```
+
+Use `SHOW_TELEMETRY=true` to compare prefetch vs agentic search counts.
+
+## Expected output
+
+```
+Our return policy allows returns within 30 days of purchase with a receipt.
+Items must be in their original condition. Sale items are final sale.
+```
+
+The response is grounded in the sample KB documents seeded by `task infra:weaviate:up` / `task infra:pgvector:up`. With `SHOW_TELEMETRY=true` in agentic mode you'll see `total_retriever_searches: 1`.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Retrieval" icon="book-open" href="/features/retrieval">
+    Retriever modes and backends
+  </Card>
+  <Card title="Memory" icon="brain" href="/examples/memory">
+    Long-term memory on same infra
+  </Card>
+
+</CardGroup>

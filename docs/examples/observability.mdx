@@ -1,0 +1,91 @@
+---
+title: "Observability"
+description: "Export OTLP traces, metrics, and logs using WithObservabilityConfig or manually injected clients"
+---
+
+Two entry points export OpenTelemetry signals to an OTLP collector. Pick **one** per run — no `-mode` flag:
+
+| Directory | Command | Pattern |
+|---|---|---|
+| `config/` | `go run ./agent_with_observability/config/` | `WithObservabilityConfig` — SDK builds tracer, metrics, and logs |
+| `objects/` | `go run ./agent_with_observability/objects/` | `observability.NewTracer` / `NewMetrics` / `NewLogs` + `WithTracer` / `WithMetrics` / `WithLogs` |
+
+Do **not** combine `WithObservabilityConfig` with injected `WithTracer` / `WithMetrics` / `WithLogs` for the same signal unless you set `DisableTraces`, `DisableMetrics`, or `DisableLogs` on the observability config — otherwise the SDK replaces injected clients and logs a warning.
+
+Source: [`examples/agent_with_observability/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_observability)
+
+## OTLP environment
+
+OTLP collector accepts gRPC (default) or HTTP/protobuf. Use **host:port only** (no `http://` scheme).
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | yes | e.g. `localhost:4317` (gRPC) or `localhost:4318` (HTTP) |
+| `OTLP_PROTOCOL` | no | `grpc` (default) or `http` — must match your collector |
+| `OTLP_INSECURE` | no | `true` for plaintext (typical local dev) |
+
+| `OTLP_PROTOCOL` | Port (convention) |
+|---|---|
+| `grpc` | **4317** |
+| `http` | **4318** |
+
+## Quick local collector
+
+**Grafana LGTM** (traces, metrics, logs in one stack):
+
+```bash
+cd examples
+task infra:lgtm:up
+# or: docker run -d -p 3000:3000 -p 4317:4317 grafana/otel-lgtm
+```
+
+Export before running either example:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+export OTLP_PROTOCOL=grpc
+export OTLP_INSECURE=true
+```
+
+**Jaeger all-in-one** (traces only):
+
+```bash
+docker run -d -p 16686:16686 -p 4317:4317 jaegertracing/all-in-one:latest
+```
+
+Use the same gRPC exports as above. Only one stack should bind **4317** at a time.
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_observability/config/
+go run ./agent_with_observability/objects/
+```
+
+Call **`Agent.Close()`** before exit so OTLP batches flush.
+
+## Verify in Grafana (LGTM)
+
+1. Open [http://localhost:3000](http://localhost:3000) — default login `admin` / `admin`.
+2. **Traces** — Explore → datasource **Tempo** → query by service or trace. `service.name` follows the agent name (e.g. `observability-example-agent`).
+3. **Metrics** — Explore → **Prometheus**.
+4. **Logs** — Explore → **Loki** → filter by `service_name` aligned with your OTLP resource.
+
+For Jaeger, open [http://localhost:16686](http://localhost:16686), pick your service, click **Find Traces**.
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Tracing" icon="route" href="/observability/tracing">
+    Spans and OTLP setup
+  </Card>
+  <Card title="Metrics" icon="chart-line" href="/observability/metrics">
+    Counters and histograms
+  </Card>
+  <Card title="Logs" icon="file-lines" href="/observability/logs">
+    OTLP log export
+  </Card>
+
+</CardGroup>

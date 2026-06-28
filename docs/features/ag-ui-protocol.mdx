@@ -1,0 +1,68 @@
+---
+title: "AG-UI Protocol"
+sidebarTitle: "AG-UI Protocol"
+description: "Enable AG-UI event streaming for CopilotKit and other AG-UI-compatible web frontends"
+---
+
+Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), making your agents natively compatible with AG-UI frontends — CopilotKit, custom React clients, and other SDKs — without extra integration work.
+
+Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are emitted in the correct AG-UI sequence during every [`Stream`](/getting-started/streaming) call.
+
+## Basic integration
+
+Enable streaming, then forward serialized events to your frontend over SSE, WebSocket, or Redis:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithStream(true),
+)
+
+eventCh, err := a.Stream(ctx, prompt, nil)
+if err != nil {
+    return err
+}
+
+for ev := range eventCh {
+    if ev == nil {
+        continue
+    }
+    jsonBytes, err := ev.ToJSON()
+    if err != nil {
+        continue
+    }
+    // Forward jsonBytes to SSE/WebSocket client
+    _ = jsonBytes
+}
+```
+
+Call `event.ToJSON()` on any [`AgentEvent`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#AgentEvent) to get AG-UI-compatible JSON.
+
+## Reference app
+
+[Agent Chat](/reference-apps/agent-chat) — production-shaped split API/worker app with Postgres, SSE streaming, and CopilotKit UI.
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="AG-UI" icon="play" href="/examples/agui">
+    Go SSE server + CopilotKit UI
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+    Stream API and event types
+  </Card>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    CUSTOM events and OnApproval
+  </Card>
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+    Event fan-in from delegated agents
+  </Card>
+  <Card title="Agent Chat" icon="comments" href="/reference-apps/agent-chat">
+    Full-stack reference application
+  </Card>
+</CardGroup>

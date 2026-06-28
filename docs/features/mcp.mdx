@@ -1,0 +1,136 @@
+---
+title: "MCP"
+sidebarTitle: "MCP"
+description: "Connect Model Context Protocol servers as first-class agent tools over stdio or streamable HTTP"
+---
+
+[MCP](https://modelcontextprotocol.io) servers extend your agent with external tools that work identically to built-in tools across `Run`, `Stream`, `RunAsync`, and approval gates.
+
+At `NewAgent`, the SDK connects to each server, discovers tools, applies any tool filter, and validates the setup — failing fast if a server is unreachable.
+
+<Note>
+MCP tool names use the prefix `mcp_<serverKey>_<toolName>` — for example, a server named `"remote"` with a `search` tool registers as `mcp_remote_search`. This prevents collisions when multiple servers expose tools with the same logical name.
+</Note>
+
+## Register MCP servers
+
+Two equivalent paths. Use one or combine both — server names must be unique across both.
+
+### WithMCPConfig
+
+Declare servers in a map — key is the stable server name:
+
+```go
+import (
+    "time"
+    "github.com/agenticenv/agent-sdk-go/pkg/agent"
+    "github.com/agenticenv/agent-sdk-go/pkg/mcp"
+)
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithMCPConfig(agent.MCPServers{
+        "local": {
+            Transport: mcp.MCPStdio{
+                Command: "node",
+                Args:    []string{"path/to/mcp-server.js"},
+            },
+            Timeout: 60 * time.Second,
+        },
+        "remote": {
+            Transport: mcp.MCPStreamableHTTP{
+                URL:   "https://mcp.example.com/mcp",
+                Token: os.Getenv("MCP_TOKEN"), // bearer token
+            },
+            ToolFilter:    mcp.MCPToolFilter{AllowTools: []string{"search", "wiki"}},
+            Timeout:       30 * time.Second,
+            RetryAttempts: 3,
+        },
+    }),
+)
+```
+
+### WithMCPClients
+
+Build clients with `pkg/mcp/client` for custom transport or pre-connected clients:
+
+```go
+import mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
+
+cl, err := mcpclient.NewClient("local",
+    mcp.MCPStdio{Command: "node", Args: []string{"path/to/mcp-server.js"}},
+    mcpclient.WithTimeout(60*time.Second),
+    mcpclient.WithToolFilter(mcp.MCPToolFilter{AllowTools: []string{"search"}}),
+)
+if err != nil {
+    return err
+}
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithMCPClients(cl),
+)
+```
+
+The packaged client is built on the official [Go MCP SDK](https://github.com/modelcontextprotocol/go-sdk).
+
+## Transports
+
+| Transport | Type | Use case |
+|---|---|---|
+| Stdio | `mcp.MCPStdio` | Local subprocess — requires Node or another runtime for the MCP server process |
+| Streamable HTTP | `mcp.MCPStreamableHTTP` | Remote server — supports `Token`, `OAuthClientCreds`, custom `Headers`, `SkipTLSVerify` |
+
+**Stdio prerequisite:** the MCP server runs as a subprocess. You need the server's runtime installed (e.g. Node for npm-based servers, Python for uv/pip-based servers). The SDK launches and manages the subprocess — you only provide `Command` and `Args`.
+
+<Warning>
+Remote MCP servers widen the tool surface available to your LLM. In production:
+- Prefer TLS for streamable HTTP — **avoid `SkipTLSVerify` outside local development**
+- Store bearer tokens, OAuth credentials, and custom headers in environment variables or a secrets manager
+- Use `ToolFilter` to allowlist only the tools your agent actually needs
+</Warning>
+
+## MCPConfig fields
+
+| Field | Description |
+|---|---|
+| `Transport` | Stdio or streamable HTTP config from `pkg/mcp` |
+| `ToolFilter` | `AllowTools` or `BlockTools` — applied at tool discovery |
+| `Timeout` | Per-call timeout — zero uses client default |
+| `RetryAttempts` | Retry count for transient failures |
+
+## Runtime changes
+
+Add or remove MCP servers after `NewAgent` via [`a.MCPRegistry()`](/advanced/dynamic-capabilities) — the next run picks up the current registry state.
+
+<Warning>
+Dynamic registry changes on the **agent client process** do not automatically propagate to a remote **worker process**. For split client/worker deployments, register matching MCP servers on both `NewAgent` and `NewAgentWorker`, or ensure workers see the same registry state before runs execute.
+</Warning>
+
+## Examples
+
+<CardGroup cols={2}>
+  <Card title="MCP Config" icon="play" href="/examples/mcp-config">
+    WithMCPConfig from environment
+  </Card>
+  <Card title="MCP Client" icon="play" href="/examples/mcp-client">
+    WithMCPClients with explicit clients
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Native and custom tool registration
+  </Card>
+  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+    MCP tools follow the same approval policy
+  </Card>
+  <Card title="Dynamic Capabilities" icon="rotate" href="/advanced/dynamic-capabilities">
+    Register MCP servers at runtime
+  </Card>
+  <Card title="Production Readiness" icon="shield" href="/production/readiness">
+    MCP security checklist
+  </Card>
+</CardGroup>

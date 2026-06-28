@@ -1,0 +1,153 @@
+---
+title: "Approvals"
+description: "Configure human-in-the-loop approval for tool calls, MCP invocations, and sub-agent delegation"
+---
+
+Before registry tools, MCP tools, or sub-agent delegation execute, the SDK can pause and wait for **human approval**. One agent-level policy governs all three paths.
+
+## Policies
+
+Set with [`WithToolApprovalPolicy`](/getting-started/configuration):
+
+| Policy | Behavior |
+|---|---|
+| `RequireAllToolApprovalPolicy{}` (default) | Every tool call, MCP call, and sub-agent delegation requires approval |
+| `AutoToolApprovalPolicy()` | Nothing requires approval — use only when you fully trust the agent |
+| `AllowlistToolApprovalPolicy(config)` | Listed tools/skills/sub-agents skip approval; everything else still requires it |
+
+<Warning>
+When you omit `WithToolApprovalPolicy`, the default is **require-all**. If your agent has tools registered, every run will pause for approval unless you set a policy. For automated or trusted agents, use `AutoToolApprovalPolicy()`.
+</Warning>
+
+```go
+approvalPol, err := agent.AllowlistToolApprovalPolicy(agent.AllowlistToolApprovalConfig{
+    ToolNames:     []string{"calculator"},
+    SubAgentNames: []string{"MathSpecialist"},
+    MCPTools:      map[string][]string{"remote": {"search"}}, // optional
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+a, err := agent.NewAgent(
+    agent.WithToolApprovalPolicy(approvalPol),
+    agent.WithApprovalHandler(approvalHandler),
+    agent.WithLLMClient(llmClient),
+)
+```
+
+Custom tools may implement [`ToolApproval`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#ToolApproval) — the configured agent policy overrides tool-level hints when set.
+
+Implement [`AgentToolApprovalPolicy`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#AgentToolApprovalPolicy) for fully custom policy logic.
+
+## Run and RunAsync
+
+Set [`WithApprovalHandler`](/getting-started/configuration) whenever approvals can occur:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithApprovalHandler(func(ctx context.Context, req *agent.ApprovalRequest) {
+        // Prompt the user, then:
+        _ = req.Respond(agent.ApprovalStatusApproved) // or ApprovalStatusRejected
+    }),
+    agent.WithToolApprovalPolicy(agent.RequireAllToolApprovalPolicy{}),
+    agent.WithLLMClient(llmClient),
+)
+
+result, err := a.Run(ctx, prompt, nil)
+```
+
+For **RunAsync**, use the same handler — `resultCh` delivers the final result after all approvals complete:
+
+```go
+resultCh, err := a.RunAsync(ctx, prompt, nil)
+res := <-resultCh
+if res.Error != nil { /* handle */ }
+fmt.Println(res.Result.Content)
+```
+
+### Approval request types
+
+| `ApprovalRequest.Name` | Parse with | Fields |
+|---|---|---|
+| Tool approval | `ParseToolApproval(req)` | `ToolName`, `AgentName` |
+| Sub-agent delegation | `ParseDelegationApproval(req)` | `SubAgentName`, `AgentName` |
+
+## Stream
+
+Approval and delegation requests arrive as `AgentEventTypeCustom` events on the stream — **not** via `WithApprovalHandler`. Parse and respond with [`OnApproval`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#Agent.OnApproval):
+
+```go
+for ev := range eventCh {
+    if ev == nil || ev.Type() != agent.AgentEventTypeCustom {
+        continue
+    }
+    ce, ok := ev.(*agent.AgentCustomEvent)
+    if !ok {
+        continue
+    }
+    if v, err := agent.ParseCustomEventApproval(ce); err == nil {
+        _ = a.OnApproval(ctx, v.ApprovalToken, agent.ApprovalStatusApproved)
+    } else if d, err := agent.ParseCustomEventDelegation(ce); err == nil {
+        _ = a.OnApproval(ctx, d.ApprovalToken, agent.ApprovalStatusApproved)
+    }
+}
+```
+
+<Warning>
+For `Run` and `RunAsync`, use `req.Respond()` inside `WithApprovalHandler`. For `Stream`, use `OnApproval` with `ApprovalToken` from the parsed event — these are two separate paths and cannot be mixed.
+</Warning>
+
+## Sub-agent approval
+
+Parent and specialist agents have **independent** policies:
+
+```text
+Main agent:  RequireAll  → delegate to MathSpecialist → user approval on main stream
+Math agent:  Auto        → calculator inside specialist → no approval
+Math agent:  RequireAll  → calculator inside specialist → approval (fan-in on main stream)
+```
+
+<Note>
+The main agent's policy governs whether delegation itself requires approval. The specialist's policy governs tool calls **inside** the specialist. Set each independently.
+</Note>
+
+## Approval timeout
+
+[`WithApprovalTimeout`](/advanced/timeouts-and-modes) (default: agent timeout − 30s) limits how long the user has to respond. If they do not respond in time:
+
+| Method | On timeout |
+|---|---|
+| `Run` | Returns error |
+| `Stream` | Emits `AgentEventTypeRunError` on the channel |
+| `RunAsync` | `resultCh` receives `AgentRunAsyncResult` with `Error` set |
+
+Approval timeout must be **less than** the agent timeout. See [Timeouts & Modes](/advanced/timeouts-and-modes).
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="play" href="/examples/tools">
+    approval and authorizer sub-examples
+  </Card>
+  <Card title="RunAsync" icon="play" href="/examples/run-async">
+    Non-blocking run with approval handler
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    ToolAuthorizer for programmatic gates before approval
+  </Card>
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+    Delegation approval flow
+  </Card>
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+    CUSTOM events and OnApproval
+  </Card>
+  <Card title="Timeouts" icon="clock" href="/advanced/timeouts-and-modes">
+    WithTimeout and WithApprovalTimeout
+  </Card>
+</CardGroup>

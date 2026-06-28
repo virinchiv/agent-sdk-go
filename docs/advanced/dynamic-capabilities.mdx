@@ -1,0 +1,126 @@
+---
+title: "Dynamic Capabilities"
+description: "Add or remove tools, MCP servers, A2A agents, and sub-agents at runtime via registries"
+---
+
+**The problem:** You configured your agent with a fixed tool set at startup, but different users, tenants, or sessions need different capabilities — and you can't restart the process for each change.
+
+**The solution:** All capabilities are resolved from registries at execution time. Each `Run`, `Stream`, or `RunAsync` picks up the current registry state — no restart needed. Add tools for a premium user, remove them on logout, swap MCP servers per tenant, or register a specialist sub-agent when a feature is enabled.
+
+Combine with static setup (`WithTools`, `WithMCPConfig`, etc.) by passing initial capabilities at `NewAgent`, then mutating registries as context changes.
+
+## Registry accessors
+
+| Capability | Accessor | Methods |
+|---|---|---|
+| Native / custom tools | `a.ToolRegistry()` | `Register(tool)` · `Unregister(name)` |
+| MCP servers | `a.MCPRegistry()` | `Register(name, config)` · `RegisterClient(cl)` · `Unregister(name)` |
+| A2A remote agents | `a.A2ARegistry()` | `Register(name, config)` · `RegisterClient(cl)` · `Unregister(name)` |
+| Sub-agents | `a.SubAgentRegistry()` | `Register(sub)` · `Unregister(name)` |
+
+All registries are safe for concurrent use. Name uniqueness is enforced — `Register` on an existing name returns `agent.ErrRegistryDuplicate`. To update an entry, call `Unregister` first, then `Register` with the new configuration.
+
+## Tools
+
+```go
+reg := agent.NewToolRegistry()
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithToolRegistry(reg),
+)
+
+// First run — only tools already in the registry
+result, _ := a.Run(ctx, "What is 17 * 23?", nil)
+
+// Add a tool before the next run
+_ = a.ToolRegistry().Register(calculator.New())
+result, _ = a.Run(ctx, "What is 17 * 23?", nil)
+
+// Remove it again
+_ = a.ToolRegistry().Unregister("calculator")
+```
+
+Helper: [`agent.RegisterTools(reg, tools...)`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#RegisterTools) registers multiple tools in one call.
+
+See [Tools](/features/tools) for custom tool implementation.
+
+## MCP servers
+
+```go
+import mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
+
+mcpReg := a.MCPRegistry()
+cl, _ := mcpclient.NewClient("extra-server",
+    mcp.MCPStreamableHTTP{URL: "https://mcp.example.com/mcp"},
+)
+_ = mcpReg.RegisterClient(cl)
+// Next run includes tools from extra-server
+result, _ := a.Run(ctx, prompt, nil)
+```
+
+MCP tools are discovered on each run. A unreachable server fails at run time when tools are resolved. See [MCP](/features/mcp).
+
+## A2A agents
+
+```go
+import a2aclient "github.com/agenticenv/agent-sdk-go/pkg/a2a/client"
+
+cl, _ := a2aclient.NewClient("researcher", "https://researcher.example.com")
+_ = a.A2ARegistry().RegisterClient(cl)
+```
+
+Skills are re-discovered on each run. See [A2A](/features/a2a).
+
+## Sub-agents
+
+```go
+math, _ := agent.NewAgent(
+    agent.WithName("Math"),
+    agent.WithTemporalConfig(cfg),
+    agent.WithLLMClient(llmClient),
+)
+_ = a.SubAgentRegistry().Register(math)
+
+result, _ := a.Run(ctx, "What is 144 / 12?", nil)
+
+_ = a.SubAgentRegistry().Unregister("Math")
+```
+
+Sub-agent registration validates depth and cycles at build and on each run. See [Sub-agents](/features/sub-agents).
+
+## Static vs dynamic
+
+| Approach | When |
+|---|---|
+| **Static** — `WithTools`, `WithMCPConfig`, `WithSubAgents`, etc. | Fixed configuration known at startup — simplest path |
+| **Dynamic** — registry methods after `NewAgent` | Capability set varies by tenant, session, or runtime flags |
+| **Combined** | Initial tools via `WithToolRegistry` at creation, then add/remove via registry |
+
+## Temporal note
+
+<Warning>
+Dynamic registry changes on the **agent client process** do not propagate to a remote **worker's** in-memory registries. For split client/worker deployments, register matching capabilities on both `NewAgent` and `NewAgentWorker`, or ensure workers see the same registry state before runs execute.
+
+For tenant-specific capability sets (different tools per tenant), design your worker to register all possible capabilities at startup and use `BeforeToolHook` or `ToolAuthorizer` for runtime gating — rather than dynamically mutating worker-side registries.
+</Warning>
+
+## Example
+
+Register tools between runs via [`examples/agent_with_tools/dynamic_registry`](/examples/tools) — see the **dynamic_registry** sub-example.
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/features/tools">
+    Tool registration and execution modes
+  </Card>
+  <Card title="MCP" icon="plug" href="/features/mcp">
+    MCP server configuration
+  </Card>
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+    Specialist delegation
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
+    WithToolRegistry and related options
+  </Card>
+</CardGroup>
