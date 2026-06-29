@@ -5,6 +5,8 @@ description: "Persist message history across turns in the same session using in-
 
 Conversation lets agents **carry message history across turns** — user messages, assistant replies, and tool results — so multi-step chats stay coherent without resending the full thread.
 
+Without conversation, each `Run` call is stateless — the agent has no memory of previous turns.
+
 Use it for chat UIs, support bots, or any agent where the user sends several prompts in one session.
 
 ## Enable
@@ -32,10 +34,14 @@ a, err := agent.NewAgent(
 | Field | Description |
 |---|---|
 | `Conversation` | Backend implementing [`interfaces.Conversation`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#Conversation) |
-| `Size` | Max past messages loaded for the LLM — defaults to **20** when zero |
+| `Size` | Max past messages loaded for the LLM — defaults to **20** when zero. Increase for long sessions; decrease to control token usage. |
 | `SaveOnIteration` | Persist after each tool round — useful when external consumers need live updates during multi-step runs |
 
 Use `conversation.DefaultConfig(conv)` for SDK defaults with no overrides.
+
+<Note>
+Conversation history is prepended to every LLM call. Token usage grows with each turn — keep `Size` as low as your task allows and call `Clear` at session end.
+</Note>
 
 ## Conversation ID
 
@@ -100,10 +106,10 @@ Set `IsDistributed()` to `true` for any backend that can be shared across proces
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Conversation" icon="play" href="/examples/conversation">
+  <Card title="Conversation" icon="play" href="/examples/conversation" horizontal>
     Redis-backed multi-turn history
   </Card>
-  <Card title="Stream + Conversation" icon="play" href="/examples/stream-conversation">
+  <Card title="Stream + Conversation" icon="play" href="/examples/stream-conversation" horizontal>
     Streaming with persisted history
   </Card>
 </CardGroup>
@@ -111,16 +117,12 @@ Set `IsDistributed()` to `true` for any backend that can be shared across proces
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Memory" icon="brain" href="/features/memory">
+
+  <Card title="Memory" icon="brain" href="/features/memory" horizontal>
     Long-term facts across separate runs
   </Card>
-  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation" horizontal>
     Redis conversation with remote workers
-  </Card>
-  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
-    Stream with conversation options
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithConversation reference
   </Card>
 </CardGroup>

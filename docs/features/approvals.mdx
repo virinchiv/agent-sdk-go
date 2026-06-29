@@ -5,6 +5,8 @@ description: "Configure human-in-the-loop approval for tool calls, MCP invocatio
 
 Before registry tools, MCP tools, or sub-agent delegation execute, the SDK can pause and wait for **human approval**. One agent-level policy governs all three paths.
 
+When an approval is required, the run **pauses at that tool call** and delivers an `ApprovalRequest` to your handler (or a `CUSTOM` event on the stream). The run resumes only after `req.Respond()` or `OnApproval()` is called with `Approved` or `Rejected`. If rejected, the tool call is skipped and the LLM receives a clear refusal message, then continues generating a response without that tool result. The overall run does not fail on rejection — only on timeout.
+
 ## Policies
 
 Set with [`WithToolApprovalPolicy`](/getting-started/configuration):
@@ -127,10 +129,10 @@ Approval timeout must be **less than** the agent timeout. See [Timeouts & Modes]
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Tools" icon="play" href="/examples/tools">
+  <Card title="Tools" icon="play" href="/examples/tools" horizontal>
     approval and authorizer sub-examples
   </Card>
-  <Card title="RunAsync" icon="play" href="/examples/run-async">
+  <Card title="RunAsync" icon="play" href="/examples/run-async" horizontal>
     Non-blocking run with approval handler
   </Card>
 </CardGroup>
@@ -138,16 +140,12 @@ Approval timeout must be **less than** the agent timeout. See [Timeouts & Modes]
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Tools" icon="wrench" href="/features/tools">
+
+  <Card title="Tools" icon="wrench" href="/features/tools" horizontal>
     ToolAuthorizer for programmatic gates before approval
   </Card>
-  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents" horizontal>
     Delegation approval flow
-  </Card>
-  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
-    CUSTOM events and OnApproval
-  </Card>
-  <Card title="Timeouts" icon="clock" href="/advanced/timeouts-and-modes">
-    WithTimeout and WithApprovalTimeout
   </Card>
 </CardGroup>

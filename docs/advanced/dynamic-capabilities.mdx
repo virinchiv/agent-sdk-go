@@ -5,7 +5,7 @@ description: "Add or remove tools, MCP servers, A2A agents, and sub-agents at ru
 
 **The problem:** You configured your agent with a fixed tool set at startup, but different users, tenants, or sessions need different capabilities — and you can't restart the process for each change.
 
-**The solution:** All capabilities are resolved from registries at execution time. Each `Run`, `Stream`, or `RunAsync` picks up the current registry state — no restart needed. Add tools for a premium user, remove them on logout, swap MCP servers per tenant, or register a specialist sub-agent when a feature is enabled.
+**The solution:** All capabilities are resolved from registries at execution time. Each `Run`, `Stream`, or `RunAsync` picks up the current registry state — no restart needed. Add tools for a premium user, remove them on logout, swap MCP servers per tenant, or register a specialist sub-agent when a feature flag is enabled.
 
 Combine with static setup (`WithTools`, `WithMCPConfig`, etc.) by passing initial capabilities at `NewAgent`, then mutating registries as context changes.
 
@@ -46,6 +46,8 @@ See [Tools](/features/tools) for custom tool implementation.
 
 ## MCP servers
 
+Static config (`WithMCPConfig` / `WithMCPClients`) connects and discovers tools **at `NewAgent`**. Dynamic additions via `MCPRegistry` are **discovered on each run** — the registry state at call time is what the LLM sees.
+
 ```go
 import mcpclient "github.com/agenticenv/agent-sdk-go/pkg/mcp/client"
 
@@ -58,7 +60,7 @@ _ = mcpReg.RegisterClient(cl)
 result, _ := a.Run(ctx, prompt, nil)
 ```
 
-MCP tools are discovered on each run. A unreachable server fails at run time when tools are resolved. See [MCP](/features/mcp).
+An unreachable server fails at run time when tools are resolved. See [MCP](/features/mcp).
 
 ## A2A agents
 
@@ -101,7 +103,7 @@ Sub-agent registration validates depth and cycles at build and on each run. See 
 <Warning>
 Dynamic registry changes on the **agent client process** do not propagate to a remote **worker's** in-memory registries. For split client/worker deployments, register matching capabilities on both `NewAgent` and `NewAgentWorker`, or ensure workers see the same registry state before runs execute.
 
-For tenant-specific capability sets (different tools per tenant), design your worker to register all possible capabilities at startup and use `BeforeToolHook` or `ToolAuthorizer` for runtime gating — rather than dynamically mutating worker-side registries.
+For tenant-specific capability sets (different tools per tenant), design your worker to register all possible tools at startup and use `BeforeToolHook` or `ToolAuthorizer` for runtime gating — rather than dynamically mutating worker-side registries.
 </Warning>
 
 ## Example
@@ -111,16 +113,12 @@ Register tools between runs via [`examples/agent_with_tools/dynamic_registry`](/
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Tools" icon="wrench" href="/features/tools">
+
+  <Card title="Tools" icon="wrench" href="/features/tools" horizontal>
     Tool registration and execution modes
   </Card>
-  <Card title="MCP" icon="plug" href="/features/mcp">
+
+  <Card title="MCP" icon="plug" href="/features/mcp" horizontal>
     MCP server configuration
-  </Card>
-  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
-    Specialist delegation
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithToolRegistry and related options
   </Card>
 </CardGroup>

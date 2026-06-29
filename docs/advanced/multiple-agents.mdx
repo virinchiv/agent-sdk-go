@@ -37,6 +37,10 @@ Register specialists on the main agent with [`WithSubAgents`](/features/sub-agen
 
 When multiple agents share a **base task queue name** — for example scaled pods running the same agent definition — use [`WithInstanceId`](/getting-started/configuration) so each instance gets a unique derived queue: `{TaskQueue}-{InstanceId}`.
 
+<Note>
+`WithInstanceId` applies to the **Temporal runtime** only. On the local runtime, agents run in-process with no task queue requirement and instance IDs have no effect.
+</Note>
+
 ```go
 cfg := &agent.TemporalConfig{
     Host: "localhost", Port: 7233, Namespace: "default",
@@ -139,10 +143,10 @@ See [In-Process runtime](/runtimes/in-process).
 ## Examples
 
 <CardGroup cols={2}>
-  <Card title="Concurrent Runs" icon="bolt" href="/examples/concurrent-runs">
+  <Card title="Concurrent Runs" icon="bolt" href="/examples/concurrent-runs" horizontal>
     Fan-out on a single Agent instance
   </Card>
-  <Card title="Multiple Agents" icon="play" href="/examples/multiple-agents">
+  <Card title="Multiple Agents" icon="play" href="/examples/multiple-agents" horizontal>
     Instance IDs and task queue patterns
   </Card>
 </CardGroup>
@@ -150,16 +154,12 @@ See [In-Process runtime](/runtimes/in-process).
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents" horizontal>
     Orchestrator + specialist pattern
   </Card>
-  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation" horizontal>
     One worker per task queue
-  </Card>
-  <Card title="Temporal Runtime" icon="clock-rotate-left" href="/runtimes/temporal">
-    Task queues and child workflows
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithInstanceId and WithTemporalConfig
   </Card>
 </CardGroup>

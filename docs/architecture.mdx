@@ -28,6 +28,7 @@ flowchart LR
 
     App -->|"Run / RunAsync / Stream"| Agent
     Agent -->|"dispatches to"| Runtime
+    Runtime <-->|"fire"| Hooks
     Runtime <-->|"generate"| LLM
     Runtime <-->|"execute"| Tools
     Runtime <-->|"call"| MCP
@@ -54,15 +55,19 @@ What happens from the moment your code calls `a.Run(ctx, prompt, nil)`:
 flowchart TD
     A["1. Run called on Agent"]
     B["2. Runtime prepares context\n(conversation history · memory recall · retriever prefetch)"]
+    BH["BeforeLLM hook"]
     C["3. LLM called with\nsystem prompt + history + tool list"]
+    CH["AfterLLM hook"]
     D{LLM response?}
+    EH["BeforeTool hook"]
     E["4. Tools executed\n(native · MCP · A2A)"]
+    EH2["AfterTool hook"]
     F["5. Results appended to history"]
     G["6. Runtime finalizes\n(persist conversation · store memory)"]
     H["7. Result returned to caller"]
 
-    A --> B --> C --> D
-    D -->|"tool calls"| E --> F --> C
+    A --> B --> BH --> C --> CH --> D
+    D -->|"tool calls"| EH --> E --> EH2 --> F --> BH
     D -->|"final answer"| G --> H
 ```
 
@@ -87,7 +92,7 @@ Add `WithTemporalConfig` or `WithTemporalClient` to switch. Everything else stay
 With Temporal, client and worker are separate concerns — the client starts workflows, the worker runs the loop:
 
 ```mermaid
-flowchart LR
+flowchart TD
     subgraph client["Client process"]
         App2["NewAgent + Run / Stream"]
     end
@@ -112,16 +117,10 @@ By default `NewAgent` embeds a local worker in the same process — no separate 
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Runtimes" icon="server" href="/runtimes/overview">
+  <Card title="Runtimes" icon="server" href="/runtimes/overview" horizontal>
     In-process vs Temporal — full comparison
   </Card>
-  <Card title="Quickstart" icon="bolt" href="/getting-started/quickstart">
+  <Card title="Quickstart" icon="bolt" href="/getting-started/quickstart" horizontal>
     Build and run your first agent
-  </Card>
-  <Card title="Features" icon="puzzle-piece" href="/features/tools">
-    Tools, memory, MCP, A2A, and more
-  </Card>
-  <Card title="Worker separation" icon="arrows-split-up-and-left" href="/advanced/worker-separation">
-    Split client and worker processes
   </Card>
 </CardGroup>

@@ -6,6 +6,10 @@ description: "Expose agents as A2A HTTP servers or connect to remote A2A agents 
 
 [A2A (Agent-to-Agent)](https://github.com/a2aproject/A2A) lets you expose an agent as a standards-compliant HTTP server or connect remote A2A agents as tool providers for your LLM.
 
+**A2A vs sub-agents:** sub-agents are in-process Go agents registered at build time — they share the same deployment and runtime. A2A connects agents that run in **separate services**, possibly in different languages or owned by different teams. The integration boundary is an HTTP JSON-RPC call, not a Go function call.
+
+When you connect a remote A2A agent, the SDK fetches its agent card at `NewAgent`, discovers its published skills, and registers each skill as a tool named `a2a_<server>_<skillId>`. The LLM sees these tools identically to native tools and can invoke them in any run.
+
 ## A2A server
 
 Any agent can be exposed as an A2A HTTP server. Call `RunA2A(ctx)` after `NewAgent` — the server blocks until the context is cancelled, then shuts down gracefully.
@@ -68,7 +72,7 @@ See [A2A Server example](/examples/a2a-server).
 
 ## A2A client
 
-Remote A2A agents connect as tool providers. The SDK resolves the agent card, discovers skills, and registers each skill as a tool (`a2a_<server>_<skillId>`). Failing fast if a server is unreachable at `NewAgent`.
+Remote A2A agents connect as tool providers. The SDK resolves the agent card at `NewAgent`, discovers published skills, applies any `SkillFilter`, and registers each as a tool named `a2a_<server>_<skillId>`. Setup fails fast if a server is unreachable.
 
 ### WithA2AConfig
 
@@ -117,18 +121,18 @@ a, err := agent.NewAgent(
 
 ## Runtime changes
 
-Add or remove A2A agents after `NewAgent` via [`a.A2ARegistry()`](/advanced/dynamic-capabilities) — skills are re-discovered on each run.
+Add or remove A2A agents after `NewAgent` via [`a.A2ARegistry()`](/advanced/dynamic-capabilities) — skills are re-discovered on each run using the current registry state, with no restart required.
 
 ## Examples
 
 <CardGroup cols={2}>
-  <Card title="A2A Server" icon="play" href="/examples/a2a-server">
+  <Card title="A2A Server" icon="play" href="/examples/a2a-server" horizontal>
     Inbound agent card and JSON-RPC
   </Card>
-  <Card title="A2A Config" icon="play" href="/examples/a2a-config">
+  <Card title="A2A Config" icon="play" href="/examples/a2a-config" horizontal>
     Outbound WithA2AConfig
   </Card>
-  <Card title="A2A Client" icon="play" href="/examples/a2a-client">
+  <Card title="A2A Client" icon="play" href="/examples/a2a-client" horizontal>
     Outbound WithA2AClients
   </Card>
 </CardGroup>
@@ -136,16 +140,12 @@ Add or remove A2A agents after `NewAgent` via [`a.A2ARegistry()`](/advanced/dyna
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
+
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents" horizontal>
     In-process specialist delegation
   </Card>
-  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+
+  <Card title="Approvals" icon="shield-check" href="/features/approvals" horizontal>
     A2A skills follow the same approval policy
-  </Card>
-  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
-    A2A streaming via SendStreamingMessage
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithA2AConfig, WithA2AServer, WithA2AClients
   </Card>
 </CardGroup>

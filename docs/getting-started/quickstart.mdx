@@ -97,7 +97,7 @@ Expected output includes the agent name, model, and assistant reply in `result.C
 
 ## Switch to Temporal (optional)
 
-Add `WithTemporalConfig` to run the same agent durably. A running Temporal cluster is required — see [Prerequisites](/getting-started/prerequisites#temporal-optional).
+Add `WithTemporalConfig` to run the same agent durably. A running Temporal cluster is required — see [Temporal runtime](/runtimes/temporal).
 
 ```go
 a, err := agent.NewAgent(
@@ -131,19 +131,12 @@ See [Running Examples](/examples/running-examples) for environment variable deta
 ## What's next
 
 <CardGroup cols={2}>
-  <Card title="LLM Providers" icon="brain" href="/getting-started/llm-providers">
+
+  <Card title="LLM Providers" icon="brain" href="/getting-started/llm-providers" horizontal>
     Configure OpenAI, Anthropic, Gemini, or a custom client
   </Card>
-  <Card title="Streaming" icon="wave-square" href="/getting-started/streaming">
+
+  <Card title="Streaming" icon="wave-square" href="/getting-started/streaming" horizontal>
     Stream partial tokens and lifecycle events
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    All agent options and defaults
-  </Card>
-  <Card title="Tools" icon="wrench" href="/features/tools">
-    Add built-in or custom tools to your agent
-  </Card>
-  <Card title="Examples" icon="play" href="/examples/running-examples">
-    Runnable examples index
   </Card>
 </CardGroup>

@@ -68,7 +68,9 @@ a, _ := agent.NewAgent(
 
 Agent mode is included in the Temporal agent fingerprint — caller and worker must agree.
 
-Worker-check and queueing behavior apply primarily to the **Temporal runtime**. In-process agents use the same default timeouts but do not perform worker pre-checks.
+**Interactive worker check:** in `AgentModeInteractive` with `DisableLocalWorker`, the agent checks for available workers before submitting the workflow. If no worker is ready within the check window, the call returns a clear error immediately — so a user waiting at a chat prompt gets an error rather than a frozen spinner. In `AgentModeAutonomous`, this check is skipped; Temporal queues the workflow and waits for a worker naturally, which is correct for background jobs.
+
+Worker-check and queueing behavior apply to the **Temporal runtime** only. In-process agents use the same default timeouts but do not perform worker pre-checks.
 
 ## Approval timeout
 
@@ -106,7 +108,29 @@ See [Approvals](/features/approvals).
 
 ## Max iterations
 
-[`WithMaxIterations`](/getting-started/configuration) caps LLM rounds (default **5**). When reached, the run finishes with finish reason `max_iterations` on telemetry. Separate from wall-clock timeout — a run can hit max iterations before the timeout fires.
+[`WithMaxIterations`](/getting-started/configuration) caps **LLM rounds** per run (default **5**). Each round is one LLM call — the model generates either a final answer or tool calls, tools execute, and then the next round begins with those results. Separate from wall-clock timeout — a run can hit `max_iterations` before any timeout fires.
+
+When the limit is reached the run returns normally with `FinishReason: max_iterations` on [`AgentRunResult.Telemetry`](/observability/telemetry) — it is not an error. Use `ErrMaxIterationsReached` if you need to detect it programmatically.
+
+**When to increase from the default of 5:**
+
+| Agent type | Rough starting point |
+|---|---|
+| Simple Q&A, one or two tools | 5 (default) |
+| Multi-tool research or coding agents | 10–15 |
+| Agents with sub-agent delegation | add ~2 per expected delegation hop |
+| Long autonomous background pipelines | 20+ (combine with `AgentModeAutonomous`) |
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithMaxIterations(15),
+)
+```
+
+<Tip>
+If `finish_reason: max_iterations` appears in telemetry but the task wasn't complete, increase `WithMaxIterations`. If you see it frequently on simple tasks, your system prompt or tools may not be guiding the model to terminate — review your prompt before just raising the limit.
+</Tip>
 
 ## Behavior under failure
 
@@ -159,16 +183,12 @@ result, err := a.Run(ctx, quickPrompt, nil) // 30s cap regardless of agent timeo
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+
+  <Card title="Approvals" icon="shield-check" href="/features/approvals" horizontal>
     Approval handler and OnApproval flows
   </Card>
-  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation">
+
+  <Card title="Worker Separation" icon="server" href="/advanced/worker-separation" horizontal>
     Interactive worker pre-check with DisableLocalWorker
-  </Card>
-  <Card title="Temporal Runtime" icon="clock-rotate-left" href="/runtimes/temporal">
-    Agent mode on Temporal
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithTimeout, WithApprovalTimeout, WithAgentMode
   </Card>
 </CardGroup>

@@ -29,8 +29,8 @@
           {
             "group": "Overview",
             "pages": [
-              "overview/introduction",
-              "overview/architecture"
+              "introduction", 
+              "architecture"
             ]
           },
           {
@@ -55,17 +55,17 @@
             "group": "Features",
             "pages": [
               "features/tools",
-              "features/conversation",
-              "features/memory",
-              "features/retrieval",
               "features/mcp",
               "features/a2a",
               "features/sub-agents",
               "features/approvals",
-              "features/hooks",
+              "features/conversation",
+              "features/memory",
+              "features/retrieval",
               "features/response-format",
               "features/token-usage",
               "features/reasoning",
+              "features/hooks",
               "features/ag-ui-protocol"
             ]
           },

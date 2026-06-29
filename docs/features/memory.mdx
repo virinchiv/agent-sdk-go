@@ -5,6 +5,8 @@ description: "Store and recall long-term memories scoped by user or tenant using
 
 Memory lets agents **remember facts and preferences across separate runs** — scoped per user, tenant, or custom tags — without relying on conversation history alone.
 
+At the start of each run, the SDK performs a semantic search against the memory store using the incoming prompt as a query. Matching memories are **injected as context** into the LLM request — ahead of the system prompt — so the model can reference past facts without the caller having to pass them explicitly. The agent also stores new memories during or after the run depending on the store mode.
+
 Use it when users return across sessions, when preferences should persist beyond a single conversation, or when you need tenant- or project-scoped memory separate from chat history.
 
 ## Enable
@@ -80,8 +82,8 @@ memCfg.ScopeConfig = memory.ScopeConfig{
 
 | Mode | Behavior |
 |---|---|
-| **On-demand** (default) | The LLM calls the `save_memory` tool during the run when it decides to persist something |
-| **Always** | Memories are saved automatically when the run finishes |
+| **On-demand** (default) | The SDK exposes a `save_memory` tool. The LLM calls it during the run when it decides something is worth remembering |
+| **Always** | At run end, the SDK runs an extraction step (LLM call or your `Extract` function) and saves the results automatically |
 
 ```go
 memCfg := memory.DefaultConfig(store)
@@ -89,7 +91,21 @@ memCfg.Store.Mode = memory.StoreModeOnDemand  // default
 // memCfg.Store.Mode = memory.StoreModeAlways
 ```
 
-Use **on-demand** when the model should decide what to persist. Use **always** when every run should be saved without relying on tool calls.
+Use **on-demand** when the model should decide what to persist. Use **always** when every run should be saved without relying on tool calls — useful for pipelines and batch agents where you want comprehensive memory without explicit tool calls.
+
+## Memory kinds
+
+Memories are tagged with a `Kind` that controls TTL defaults and filtering:
+
+| Kind | Meaning | Default TTL |
+|---|---|---|
+| `fact` | Objective fact about the user or domain | No expiry |
+| `preference` | User preference or style setting | No expiry |
+| `instruction` | Standing instruction for the agent | No expiry |
+| `note` | Short-term note from a recent session | 48 hours |
+| `decision` | Decision made during a run | 7 days |
+
+Set `memCfg.Recall.Kinds` to filter which kinds are recalled for a given agent.
 
 <Warning>
 With `StoreModeAlways` and no custom `Extract`, the worker needs `WithLLMClient` when using remote workers — the SDK runs an LLM call at run-end to extract memories. Set `memCfg.Store.Extract` to a custom function if you want to avoid this extra LLM call.
@@ -108,17 +124,7 @@ memCfg.Recall = memory.RecallConfig{
 
 ## TTL and dedup
 
-Default TTL per memory kind:
-
-| Kind | Default TTL |
-|---|---|
-| `decision` | 7 days |
-| `note` | 48 hours |
-| `fact` | No expiry |
-| `preference` | No expiry |
-| `instruction` | No expiry |
-
-Override with `memCfg.TTLPolicy`:
+Override default TTLs with `memCfg.TTLPolicy`:
 
 ```go
 memCfg.TTLPolicy = memory.TTLPolicy{
@@ -154,7 +160,7 @@ Pass to `memory.DefaultConfig(yourStore)` and use with `agent.WithMemory`.
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Memory" icon="play" href="/examples/memory">
+  <Card title="Memory" icon="play" href="/examples/memory" horizontal>
     Weaviate and pgvector store/recall demos
   </Card>
 </CardGroup>
@@ -162,16 +168,12 @@ Pass to `memory.DefaultConfig(yourStore)` and use with `agent.WithMemory`.
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Conversation" icon="messages" href="/features/conversation">
+
+  <Card title="Conversation" icon="messages" href="/features/conversation" horizontal>
     Session history within a single chat
   </Card>
-  <Card title="Retrieval" icon="book-open" href="/features/retrieval">
+
+  <Card title="Retrieval" icon="book-open" href="/features/retrieval" horizontal>
     RAG from external document stores
-  </Card>
-  <Card title="Hooks" icon="code-branch" href="/features/hooks">
-    BeforeMemoryLoad and BeforeMemoryStore hooks
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithMemory reference
   </Card>
 </CardGroup>
