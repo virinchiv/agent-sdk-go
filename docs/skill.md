@@ -1,0 +1,96 @@
+---
+name: agent-sdk-go
+description: Build production AI agents in Go with Agent SDK for Go. Use when configuring agents, tools, MCP, A2A, Temporal runtimes, streaming, memory, RAG, approvals, observability, or running examples from this documentation site.
+version: "1.0"
+compatibility: Go 1.26+. LLM API key required (OpenAI, Anthropic, or Gemini). Temporal optional for durable execution.
+---
+
+# Agent SDK for Go
+
+Go library for building production AI agents — LLM calls, tools, multi-turn conversation, memory, RAG, MCP and A2A integrations, human-in-the-loop approvals, and sub-agent delegation.
+
+Full documentation index: [llms.txt](https://docs.agenticenv.ai/llms.txt)
+
+## Capabilities
+
+- Create and configure agents with `NewAgent` and functional options
+- Run agents with `Run`, `RunAsync`, or `Stream`
+- Register built-in, custom, MCP, and A2A tools
+- Persist conversation history (in-memory or Redis)
+- Store and recall long-term memory (Weaviate, pgvector)
+- Add RAG retrievers (agentic, prefetch, hybrid modes)
+- Require human approval for tools and sub-agent delegation
+- Attach middleware hooks at LLM, tool, retrieval, and memory lifecycle points
+- Export OpenTelemetry traces, metrics, and logs
+- Execute in-process or on Temporal for durable workflows
+
+## Workflows
+
+### Create a minimal agent
+
+1. Read [Quickstart](https://docs.agenticenv.ai/getting-started/quickstart.md)
+2. Configure an LLM client — [LLM Providers](https://docs.agenticenv.ai/getting-started/llm-providers.md)
+3. Call `NewAgent` with `WithLLMClient` and `WithSystemPrompt`
+4. Call `Run(ctx, prompt, nil)` and read `AgentRunResult`
+5. Always call `defer a.Close()` — required to flush OTLP exporters on shutdown
+
+Example: [Simple Agent](https://docs.agenticenv.ai/examples/simple-agent.md)
+
+### Add tools
+
+1. Read [Tools](https://docs.agenticenv.ai/features/tools.md)
+2. Register tools with `WithTools` or `WithToolRegistry`
+3. Set `WithToolApprovalPolicy(AutoToolApprovalPolicy())` for trusted automation
+4. Run: [Tools example](https://docs.agenticenv.ai/examples/tools.md)
+
+### Stream to a UI
+
+1. Read [Streaming](https://docs.agenticenv.ai/getting-started/streaming.md)
+2. Pass `WithStream(true)` at agent creation
+3. Call `Stream` and consume `<-chan AgentEvent`
+4. Check for `nil` events; handle `RUN_FINISHED` for final result and token usage
+5. Example: [Stream](https://docs.agenticenv.ai/examples/stream.md) · [AG-UI](https://docs.agenticenv.ai/examples/agui.md)
+
+### Switch to Temporal (durable execution)
+
+1. Read [Temporal runtime](https://docs.agenticenv.ai/runtimes/temporal.md)
+2. Add `WithTemporalConfig` or `WithTemporalClient` — never both
+3. For production, split client and worker — [Worker separation](https://docs.agenticenv.ai/advanced/worker-separation.md)
+4. Align agent and worker configuration (fingerprint) — same name, LLM, tools, hooks group names, approval policy
+5. Examples: [Temporal Client](https://docs.agenticenv.ai/examples/temporal-client.md) · [Agent Worker](https://docs.agenticenv.ai/examples/agent-worker.md) · [Durable Agent](https://docs.agenticenv.ai/examples/durable-agent.md)
+
+## Integration
+
+| Component | Documentation |
+|---|---|
+| LLM providers | [LLM Providers](https://docs.agenticenv.ai/getting-started/llm-providers.md) |
+| All agent options | [Configuration](https://docs.agenticenv.ai/getting-started/configuration.md) |
+| In-process runtime | [In-Process](https://docs.agenticenv.ai/runtimes/in-process.md) |
+| Temporal runtime | [Temporal](https://docs.agenticenv.ai/runtimes/temporal.md) |
+| MCP servers | [MCP](https://docs.agenticenv.ai/features/mcp.md) |
+| A2A remote agents | [A2A](https://docs.agenticenv.ai/features/a2a.md) |
+| Observability | [Telemetry](https://docs.agenticenv.ai/observability/telemetry.md) |
+| Runnable examples | [Running Examples](https://docs.agenticenv.ai/examples/running-examples.md) |
+| Go API reference | https://pkg.go.dev/github.com/agenticenv/agent-sdk-go |
+
+## Context
+
+- Architecture: [Architecture](https://docs.agenticenv.ai/architecture.md)
+- Agent loop: prepare context → call LLM → execute tools (iterate) → finalize
+- Capabilities resolve at call time from registries — tools, MCP, A2A, and sub-agents can change between runs
+- Feature pages explain concepts; example pages show run commands and expected output under `examples/`
+- Default tool approval policy is **require-all** — set `AutoToolApprovalPolicy()` for unattended runs
+- With `DisableLocalWorker()` and streaming, you must also call `EnableRemoteWorkers()`
+- Hook group **names** participate in the Temporal agent fingerprint — register the same names on client and worker
+
+## Documentation map
+
+| Section | Entry point |
+|---|---|
+| Overview | [Introduction](https://docs.agenticenv.ai/introduction.md) |
+| Getting started | [Quickstart](https://docs.agenticenv.ai/getting-started/quickstart.md) |
+| Features | [Tools](https://docs.agenticenv.ai/features/tools.md) |
+| Advanced | [Worker separation](https://docs.agenticenv.ai/advanced/worker-separation.md) |
+| Observability | [Telemetry](https://docs.agenticenv.ai/observability/telemetry.md) |
+| Examples | [Running Examples](https://docs.agenticenv.ai/examples/running-examples.md) |
+| Production | [Readiness](https://docs.agenticenv.ai/production/readiness.md) |

@@ -5,6 +5,8 @@ description: "Aggregate prompt, completion, and reasoning token counts across LL
 
 Each LLM completion can report token counts via [`interfaces.LLMUsage`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMUsage) on [`LLMResponse.Usage`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMResponse). OpenAI, Anthropic, and Gemini clients populate the fields when the provider returns them.
 
+An agent run can involve **multiple LLM calls** — the initial generation, then one more per tool round as the model processes tool results and decides next steps. `AgentRunResult.LLMUsage` is the **sum across all rounds**, giving you a single number for the full cost of a run.
+
 ## Usage fields
 
 | Field | Description |
@@ -61,12 +63,25 @@ Token usage is on the final `AgentRunAsyncResult` when the run completes — sam
 
 ## Per-request usage
 
-For per-LLM-call breakdowns, use [`AfterLLMHook`](/features/hooks) and inspect `in.Response.Usage` on each iteration.
+For per-LLM-call breakdowns — to log each round individually, enforce mid-run budgets, or build cost dashboards — use [`AfterLLMHook`](/features/hooks) and inspect `in.Response.Usage` on each iteration:
+
+```go
+agent.WithHooks("cost", agent.AgentHooks{
+    AfterLLM: []agent.AfterLLMHook{
+        func(ctx context.Context, in agent.AfterLLMHookInput) (agent.AfterLLMHookOutput, error) {
+            if in.Response.Usage != nil {
+                log.Printf("iter=%d tokens=%d", in.RunMeta.Iteration, in.Response.Usage.TotalTokens)
+            }
+            return agent.AfterLLMHookOutput{Response: in.Response}, nil
+        },
+    },
+})
+```
 
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Simple Agent" icon="play" href="/examples/simple-agent">
+  <Card title="Simple Agent" icon="play" href="/examples/simple-agent" horizontal>
     SHOW_LLM_USAGE footer
   </Card>
 </CardGroup>
@@ -74,16 +89,12 @@ For per-LLM-call breakdowns, use [`AfterLLMHook`](/features/hooks) and inspect `
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Reasoning" icon="lightbulb" href="/features/reasoning">
+
+  <Card title="Reasoning" icon="lightbulb" href="/features/reasoning" horizontal>
     ReasoningTokens from extended thinking
   </Card>
-  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming" horizontal>
     Usage on RUN_FINISHED events
-  </Card>
-  <Card title="LLM Providers" icon="robot" href="/getting-started/llm-providers">
-    Provider-specific usage reporting
-  </Card>
-  <Card title="Observability" icon="chart-line" href="/observability/metrics">
-    Export usage as metrics
   </Card>
 </CardGroup>

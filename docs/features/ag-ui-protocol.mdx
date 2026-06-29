@@ -1,14 +1,25 @@
 ---
-title: "AG-UI Protocol"
-sidebarTitle: "AG-UI Protocol"
+title: "AG-UI"
+sidebarTitle: "AG-UI"
 description: "Enable AG-UI event streaming for CopilotKit and other AG-UI-compatible web frontends"
 ---
 
-Agent stream events follow the [AG-UI open protocol](https://docs.ag-ui.com), making your agents natively compatible with AG-UI frontends — CopilotKit, custom React clients, and other SDKs — without extra integration work.
+The [AG-UI protocol](https://docs.ag-ui.com) is an open standard for streaming agent events to frontend clients. It defines a structured event sequence — run lifecycle, text deltas, tool calls, reasoning content — so any AG-UI-compatible frontend can consume agent output without custom integration code.
 
-Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are emitted in the correct AG-UI sequence during every [`Stream`](/getting-started/streaming) call.
+This SDK emits every `Stream` call as a properly sequenced AG-UI event stream. Events like `RUN_STARTED`, `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, and `REASONING_MESSAGE_CONTENT` are produced in the correct order during every [`Stream`](/getting-started/streaming) call. Any frontend built on the AG-UI client SDK — including [CopilotKit](https://copilotkit.ai) and custom React clients — works out of the box.
+
+Serialize any event with `event.ToJSON()` and forward it over **SSE, WebSocket, or Redis** to your frontend. The receiving client handles rendering, tool display, and state — your Go server just forwards bytes.
 
 ## Basic integration
+
+When using conversation, pass the session ID in `AgentRunOptions` — the AG-UI client uses it to thread messages correctly across turns:
+
+```go
+opts := &agent.AgentRunOptions{
+    ConversationOptions: &agent.ConversationOptions{ID: sessionID},
+}
+eventCh, err := a.Stream(ctx, prompt, opts)
+```
 
 Enable streaming, then forward serialized events to your frontend over SSE, WebSocket, or Redis:
 
@@ -45,7 +56,7 @@ Call `event.ToJSON()` on any [`AgentEvent`](https://pkg.go.dev/github.com/agenti
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="AG-UI" icon="play" href="/examples/agui">
+  <Card title="AG-UI" icon="play" href="/examples/agui" horizontal>
     Go SSE server + CopilotKit UI
   </Card>
 </CardGroup>
@@ -53,16 +64,12 @@ Call `event.ToJSON()` on any [`AgentEvent`](https://pkg.go.dev/github.com/agenti
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming" horizontal>
     Stream API and event types
   </Card>
-  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+
+  <Card title="Approvals" icon="shield-check" href="/features/approvals" horizontal>
     CUSTOM events and OnApproval
-  </Card>
-  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents">
-    Event fan-in from delegated agents
-  </Card>
-  <Card title="Agent Chat" icon="comments" href="/reference-apps/agent-chat">
-    Full-stack reference application
   </Card>
 </CardGroup>

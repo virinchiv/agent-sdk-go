@@ -5,6 +5,8 @@ description: "Connect agents to external knowledge bases with agentic, prefetch,
 
 Retrieval-Augmented Generation (RAG) lets agents query external knowledge bases and ground responses in up-to-date or domain-specific content — without hardcoding it into the prompt.
 
+When a retrieval fires, the SDK calls `Search(ctx, query)` on your retriever, collects the returned `[]Document`, and **injects the document content into the LLM request** — either as context prepended to the system message (prefetch) or as a tool result the model requested (agentic). The LLM then sees the retrieved text alongside the user prompt when generating its response.
+
 Built-in retriever implementations are in `pkg/retriever/weaviate` and `pkg/retriever/pgvector`. Bring your own by implementing [`interfaces.Retriever`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#Retriever).
 
 **Infrastructure setup (local dev):**
@@ -59,8 +61,10 @@ agent.WithRetrieverMode(agent.RetrieverModePrefetch)
 agent.WithRetrieverMode(agent.RetrieverModeHybrid)
 ```
 
+**Choosing a mode:** use `Agentic` when retrieval is optional — the model decides when to search. Use `Prefetch` when every LLM call must be grounded (Q&A bots, customer support). Use `Hybrid` when you want a baseline of context on every turn but also want the model to be able to search deeper on-demand.
+
 <Note>
-In agentic and hybrid modes, each retriever is registered as a tool the LLM can invoke. Its name must be unique across all tool sources.
+In agentic and hybrid modes, each retriever is registered as a tool the LLM can invoke. Its name must be unique across all tool sources. Use `BeforeRetrieveHook` to rewrite the query and `AfterRetrieveHook` to filter or re-rank results — see [Hooks](/features/hooks).
 </Note>
 
 ## Backends
@@ -100,12 +104,12 @@ type Retriever interface {
 }
 ```
 
-Register with `WithRetrievers`. In agentic and hybrid modes, the retriever becomes a callable tool — `Name()` is the tool name the LLM uses.
+`Name()` doubles as the tool name in agentic and hybrid modes — keep it short and descriptive since the LLM uses it to decide when to call. `Search` receives the raw query string and returns documents whose `Content` field is injected into the prompt. Register with `WithRetrievers`.
 
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Retrieval" icon="play" href="/examples/retrieval">
+  <Card title="Retrieval" icon="play" href="/examples/retrieval" horizontal>
     Agentic, prefetch, and hybrid RAG
   </Card>
 </CardGroup>
@@ -113,16 +117,12 @@ Register with `WithRetrievers`. In agentic and hybrid modes, the retriever becom
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Memory" icon="brain" href="/features/memory">
+
+  <Card title="Memory" icon="brain" href="/features/memory" horizontal>
     User-scoped long-term memory
   </Card>
-  <Card title="Hooks" icon="code-branch" href="/features/hooks">
+
+  <Card title="Hooks" icon="code-branch" href="/features/hooks" horizontal>
     Query rewriting and document filtering
-  </Card>
-  <Card title="Tools" icon="wrench" href="/features/tools">
-    How retriever tools merge with other tools
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithRetrievers and WithRetrieverMode
   </Card>
 </CardGroup>

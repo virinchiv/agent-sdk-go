@@ -3,9 +3,15 @@ title: "Reasoning"
 description: "Configure extended thinking per provider via WithLLMSampling and LLMReasoning"
 ---
 
-Reasoning (extended thinking) lets supported models spend additional compute on internal reasoning before producing a final answer. Configure it per agent with [`WithLLMSampling`](/getting-started/configuration) and [`LLMReasoning`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMReasoning).
+Reasoning (extended thinking) lets supported models spend additional compute on **hidden scratch-pad reasoning** before producing a final answer. The model works through the problem internally — planning, considering alternatives, checking its work — before writing the visible response. This typically improves accuracy on multi-step problems, logical reasoning, and complex coding tasks.
 
-Fields are **provider-agnostic** — each LLM client maps them to its native API.
+The internal reasoning is not surfaced in `result.Content`. When streaming, you can observe thinking deltas via `AgentEventTypeReasoningMessageContent` events if you want to display the reasoning process to users.
+
+<Note>
+Reasoning tokens incur additional cost on top of normal output tokens. Use `BudgetTokens` to cap how much thinking the model does per call, and check `result.LLMUsage.ReasoningTokens` to track spend.
+</Note>
+
+Configure it per agent with [`WithLLMSampling`](/getting-started/configuration) and [`LLMReasoning`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMReasoning). Fields are **provider-agnostic** — each LLM client maps them to its native API.
 
 ## Configure
 
@@ -57,7 +63,7 @@ Reasoning tokens appear in [`LLMUsage.ReasoningTokens`](/features/token-usage) w
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Reasoning" icon="play" href="/examples/reasoning">
+  <Card title="Reasoning" icon="play" href="/examples/reasoning" horizontal>
     Extended thinking on supported models
   </Card>
 </CardGroup>
@@ -65,16 +71,12 @@ Reasoning tokens appear in [`LLMUsage.ReasoningTokens`](/features/token-usage) w
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="LLM Providers" icon="robot" href="/getting-started/llm-providers">
+
+  <Card title="LLM Providers" icon="robot" href="/getting-started/llm-providers" horizontal>
     Provider clients and model selection
   </Card>
-  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming">
+
+  <Card title="Streaming" icon="wave-pulse" href="/getting-started/streaming" horizontal>
     Reasoning stream events
-  </Card>
-  <Card title="Token Usage" icon="coins" href="/features/token-usage">
-    ReasoningTokens in usage reports
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithLLMSampling reference
   </Card>
 </CardGroup>

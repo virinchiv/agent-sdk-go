@@ -65,7 +65,7 @@ agent.WithTemporalConfig(&agent.TemporalConfig{
 | Option | Description |
 |---|---|
 | `WithStream(enable)` | Enable partial token streaming via `Stream`. See [Streaming](/getting-started/streaming) |
-| `WithMaxIterations(n)` | Max LLM rounds per run (default: 5) |
+| `WithMaxIterations(n)` | Max LLM rounds per run (default: **5**). Each round is one LLM call; tool execution doesn't count separately. Increase for complex agents, multi-tool sequences, or runs with sub-agent delegation. See [Timeouts & Modes](/advanced/timeouts-and-modes) |
 | `WithTimeout(d)` | Default run timeout when the context has no deadline |
 | `WithApprovalTimeout(d)` | Max wait per approval — defaults to timeout minus 30s |
 | `WithApprovalHandler(fn)` | Callback for tool and delegation approvals on `Run` and `RunAsync` |
@@ -83,7 +83,7 @@ Context deadlines always take precedence over `WithTimeout`. See [Timeouts & Mod
 
 Use the same `WithAgentToolExecutionMode` on `NewAgent`, `NewAgentWorker`, and all sub-agents in a deployment.
 
-## Capabilities
+## Features
 
 | Option | Guide |
 |---|---|
@@ -124,7 +124,7 @@ When conversation is enabled, pass the same `ID` on every call in a session to s
 
 ## Runtime registries
 
-After `NewAgent`, mutate capabilities without restarting. Each run picks up the current registry state:
+After `NewAgent`, mutate registered capabilities without restarting. Each run picks up the current registry state:
 
 | Accessor | Methods |
 |---|---|

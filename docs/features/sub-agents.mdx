@@ -5,7 +5,9 @@ description: "Register specialist sub-agents and configure delegation depth, app
 
 Sub-agents let a **main agent** delegate work to **specialist agents** — each with its own LLM, tools, prompts, and Temporal task queue. The main agent sees each specialist as a delegation tool the LLM can invoke.
 
-Use sub-agents for domain specialists (math, research, coding) without concentrating every capability into one prompt and tool list.
+When delegation fires, the runtime determines how it runs. On **Temporal**, the specialist runs as a **child workflow** on its own task queue — it can be scheduled on different workers and survives restarts independently. On the **local runtime**, it executes in-process. In both cases, the sub-agent result is fed back as a tool result to the main agent's LLM for the next round.
+
+Use sub-agents for domain specialists (math, research, coding) without concentrating every capability into one prompt and tool list. Sub-agents also let you apply different models, system prompts, and tool policies per domain.
 
 ## Setup
 
@@ -54,6 +56,10 @@ result, err := mainAgent.Run(ctx, "What is 144 divided by 12?", nil)
 
 Each specialist needs a **unique** `TaskQueue` when using Temporal. Use clear `WithName` and `WithDescription` values — they appear in the delegation tool schema the LLM sees for routing decisions.
 
+<Note>
+Each delegation is a tool round on the **main agent** — it consumes one iteration from `WithMaxIterations`. An orchestrator that delegates twice and then generates a final answer uses at least 3 iterations. With the default of 5, headroom is tight. Increase `WithMaxIterations` on the main agent to match your expected delegation depth: a good starting point is `2 × expected delegations + 2`.
+</Note>
+
 ## Behavior
 
 - **Conversation isolation** — sub-agents do not inherit the main agent's conversation ID. They run without session history from the parent.
@@ -65,14 +71,28 @@ Each specialist needs a **unique** `TaskQueue` when using Temporal. Use clear `W
 Sub-agents do **not** share the parent's conversation history. If you need the specialist to have context from the parent session, include it in the delegation prompt or tool call arguments.
 </Warning>
 
-## Streaming
+## Streaming and STEP events
 
-When streaming, events from all delegated sub-agents fan in to the main agent's stream, bracketed by `STEP_STARTED` and `STEP_FINISHED`. See [Streaming](/getting-started/streaming) for the full event reference and approval handling patterns.
+Subscribe once on the main agent — sub-agent events fan in to the same channel. When the specialist actually runs, the parent stream emits `STEP_STARTED` and `STEP_FINISHED` events with `StepName` set to the specialist's `WithName` value. `STEP_FINISHED` fires whether the child run succeeded or failed.
+
+Tool events, approval requests, and `RUN_FINISHED` from each level all appear on the main stream. See [Streaming](/getting-started/streaming) for the full event reference and approval handling patterns.
+
+## Dynamic registration
+
+Add or remove specialists from a running agent via [`a.SubAgentRegistry()`](/advanced/dynamic-capabilities) — the next call picks up the updated set with no restart:
+
+```go
+math, _ := agent.NewAgent(agent.WithName("Math"), ...)
+_ = a.SubAgentRegistry().Register(math)
+
+// revoke later
+_ = a.SubAgentRegistry().Unregister("Math")
+```
 
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Sub-agents" icon="play" href="/examples/subagents">
+  <Card title="Sub-agents" icon="play" href="/examples/subagents" horizontal>
     Orchestrator delegating to a math specialist
   </Card>
 </CardGroup>
@@ -80,16 +100,12 @@ When streaming, events from all delegated sub-agents fan in to the main agent's 
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="A2A" icon="network-wired" href="/features/a2a">
+
+  <Card title="A2A" icon="network-wired" href="/features/a2a" horizontal>
     Remote agents over the A2A protocol
   </Card>
-  <Card title="Approvals" icon="shield-check" href="/features/approvals">
+
+  <Card title="Approvals" icon="shield-check" href="/features/approvals" horizontal>
     Parent vs specialist approval policies
-  </Card>
-  <Card title="Dynamic Capabilities" icon="rotate" href="/advanced/dynamic-capabilities">
-    Register sub-agents after NewAgent
-  </Card>
-  <Card title="Multiple Agents" icon="layer-group" href="/advanced/multiple-agents">
-    Instance IDs and task queue patterns
   </Card>
 </CardGroup>

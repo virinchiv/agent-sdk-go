@@ -245,7 +245,7 @@ agent.WithHooks("retrieval", agent.AgentHooks{
 ## Example
 
 <CardGroup cols={2}>
-  <Card title="Hooks" icon="play" href="/examples/hooks">
+  <Card title="Hooks" icon="play" href="/examples/hooks" horizontal>
     PII scrubbing, retrieval filtering, memory tenant isolation — every hook point registered
   </Card>
 </CardGroup>
@@ -253,16 +253,12 @@ agent.WithHooks("retrieval", agent.AgentHooks{
 ## Related
 
 <CardGroup cols={2}>
-  <Card title="Memory" icon="brain" href="/features/memory">
+
+  <Card title="Memory" icon="brain" href="/features/memory" horizontal>
     BeforeMemoryLoad and BeforeMemoryStore hooks
   </Card>
-  <Card title="Retrieval" icon="book-open" href="/features/retrieval">
+
+  <Card title="Retrieval" icon="book-open" href="/features/retrieval" horizontal>
     BeforeRetrieve and AfterRetrieve hooks
-  </Card>
-  <Card title="Observability" icon="chart-line" href="/observability/telemetry">
-    OTLP traces and metrics alongside hooks
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/getting-started/configuration">
-    WithHooks reference
   </Card>
 </CardGroup>
