@@ -75,7 +75,7 @@ func main() {
 		log.Fatalf("mcp config: %v", err)
 	}
 
-	conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+	conv := inmem.NewConversation(inmem.WithMaxSize(100))
 
 	// Single stdin reader: avoids conflict between main loop and approval handler after timeout
 	lineCh := make(chan string)

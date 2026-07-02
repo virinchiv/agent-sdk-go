@@ -14,7 +14,7 @@ func newTestConversation(t *testing.T, opts ...Option) (*RedisConversation, *min
 	t.Helper()
 	s := miniredis.RunT(t)
 	base := []Option{WithAddr(s.Addr())}
-	c, err := NewRedisConversation(append(base, opts...)...)
+	c, err := NewConversation(append(base, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,19 +22,19 @@ func newTestConversation(t *testing.T, opts ...Option) (*RedisConversation, *min
 	return c, s
 }
 
-func TestNewRedisConversation_RequiresAddr(t *testing.T) {
-	_, err := NewRedisConversation()
+func TestNewConversation_RequiresAddr(t *testing.T) {
+	_, err := NewConversation()
 	if err == nil || err.Error() != "addr is required when not using WithClient" {
 		t.Fatalf("got %v", err)
 	}
 }
 
-func TestNewRedisConversation_WithClient_CloseDoesNotOwn(t *testing.T) {
+func TestNewConversation_WithClient_CloseDoesNotOwn(t *testing.T) {
 	s := miniredis.RunT(t)
 	rdb := goredis.NewClient(&goredis.Options{Addr: s.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
 
-	c, err := NewRedisConversation(WithClient(rdb))
+	c, err := NewConversation(WithClient(rdb))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestRedisConversation_WithKeyPrefix(t *testing.T) {
 	s := miniredis.RunT(t)
 	rdb := goredis.NewClient(&goredis.Options{Addr: s.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
-	c, err := NewRedisConversation(WithAddr(s.Addr()), WithKeyPrefix("myapp"))
+	c, err := NewConversation(WithAddr(s.Addr()), WithKeyPrefix("myapp"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestRedisConversation_ListMessages_UnmarshalError(t *testing.T) {
 	s := miniredis.RunT(t)
 	rdb := goredis.NewClient(&goredis.Options{Addr: s.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
-	c, err := NewRedisConversation(WithClient(rdb))
+	c, err := NewConversation(WithClient(rdb))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestRedisConversation_ListMessages_UnmarshalError(t *testing.T) {
 
 func TestRedisConversation_WithMaxSizeZeroUsesDefault(t *testing.T) {
 	s := miniredis.RunT(t)
-	c, err := NewRedisConversation(WithAddr(s.Addr()), WithMaxSize(0))
+	c, err := NewConversation(WithAddr(s.Addr()), WithMaxSize(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestRoleIn(t *testing.T) {
 
 func TestRedisConversation_TTLExpiresKey(t *testing.T) {
 	s := miniredis.RunT(t)
-	c, err := NewRedisConversation(WithAddr(s.Addr()), WithTTL(10*time.Minute))
+	c, err := NewConversation(WithAddr(s.Addr()), WithTTL(10*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

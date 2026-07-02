@@ -75,10 +75,10 @@ func (c *RedisConversation) getKey(id string) string {
 	return fmt.Sprintf("%s:%s:messages", p, id)
 }
 
-// NewRedisConversation creates a Redis-backed conversation from options.
+// NewConversation creates a Redis-backed conversation from options.
 // Use WithClient to provide your own client; otherwise addr is required to create a client.
 // Call Close() when done if you did not use WithClient.
-func NewRedisConversation(opts ...Option) (*RedisConversation, error) {
+func NewConversation(opts ...Option) (*RedisConversation, error) {
 	c := &RedisConversation{maxSize: 100}
 	for _, opt := range opts {
 		opt(c)
@@ -104,6 +104,11 @@ func NewRedisConversation(opts ...Option) (*RedisConversation, error) {
 		c.ownClient = true
 	}
 	return c, nil
+}
+
+// Deprecated: use NewConversation instead.
+func NewRedisConversation(opts ...Option) (*RedisConversation, error) {
+	return NewConversation(opts...)
 }
 
 // Close releases the Redis connection only when we own it (not using WithClient).

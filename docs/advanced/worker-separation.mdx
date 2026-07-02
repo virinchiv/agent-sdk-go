@@ -121,7 +121,7 @@ This starts Temporal's remote event path for out-of-process event delivery.
 In-memory conversation **fails at build time** with remote workers. Use Redis or another distributed backend on both processes:
 
 ```go
-conv, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
+conv, _ := redis.NewConversation(redis.WithAddr("localhost:6379"))
 convCfg := conversation.Config{Conversation: conv, Size: 20, SaveOnIteration: true}
 
 w, _ := agent.NewAgentWorker(/* ... */, agent.WithConversation(convCfg))

@@ -26,6 +26,8 @@ pnpm-debug.log*
 
 .DS_Store
 
+.a2a-server.pid
+
 # Python / DeepEval (eval-harness/deepeval)
 eval-harness/deepeval/.venv/
 eval-harness/deepeval/.pytest_cache/
