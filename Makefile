@@ -58,7 +58,7 @@ test-coverage:
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "==> Coverage report: coverage.html"
 
-# Format all Go files (gofmt with simplify; same as Go Report Card / many style checks)
+# Format all Go files (gofmt with simplify; same as many style checks)
 fmt:
 	@echo "==> gofmt -s -w"
 	gofmt -s -w .

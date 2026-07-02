@@ -12,7 +12,7 @@ Before contributing, ensure you have:
 | **Temporal server** | Required only for Temporal runtime examples, CLI, and Temporal-specific tests — see [Temporal setup](temporal-setup.md). Unit tests and in-process runtime examples run without it. |
 | **golangci-lint** | Required for `make lint` — install **v2** with Go **≥** the `go` line in `go.mod`: `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 | **gofmt** | `make lint` runs `gofmt -s` check first; run `make fmt` to apply `gofmt -s -w` project-wide |
-| **misspell** | `make spell` or `make lint` — typos via `misspell` (similar to Go Report Card) |
+| **misspell** | `make spell` or `make lint` — typos via `misspell` |
 
 ## Temporal setup
 
