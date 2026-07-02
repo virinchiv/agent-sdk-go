@@ -38,7 +38,7 @@ func (c Config) Validate() error {
 // ValidateDistributed returns an error when conv is not distributed but remote workers require it.
 func ValidateDistributed(conv interfaces.Conversation, remoteWorkers bool) error {
 	if remoteWorkers && conv != nil && !conv.IsDistributed() {
-		return errors.New("in-memory conversation cannot be used with remote workers: use distributed storage such as redis.NewRedisConversation")
+		return errors.New("in-memory conversation cannot be used with remote workers: use distributed storage such as redis.NewConversation")
 	}
 	return nil
 }

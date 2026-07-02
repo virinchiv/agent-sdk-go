@@ -452,8 +452,8 @@ func WithDisableFingerprintCheck(disable bool) Option {
 // Pass [conversation.DefaultConfig] for SDK defaults or a custom [conversation.Config].
 //
 // Choose implementation based on deployment:
-//   - Single process: use inmem.NewInMemoryConversation
-//   - Remote workers: use redis.NewRedisConversation (in-memory cannot be used across processes)
+//   - Single process: use inmem.NewConversation
+//   - Remote workers: use redis.NewConversation (in-memory cannot be used across processes)
 //
 // The application owns Clear on the conversation when required; the agent runtime does not call Clear.
 // Agent and worker must use the same conversation config and ID when using remote workers.

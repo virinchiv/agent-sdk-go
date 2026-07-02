@@ -390,7 +390,7 @@ import (
     "github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
 )
 
-conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+conv := inmem.NewConversation(inmem.WithMaxSize(100))
 a, _ := agent.NewAgent(
     agent.WithTemporalConfig(...),
     agent.WithLLMClient(...),
@@ -415,13 +415,13 @@ a.Run(ctx, "What's my name?", opts)
 **Remote workers** — configure Redis on both processes; set `SaveOnIteration: true` on the worker when live updates are needed:
 
 ```go
-convW, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
+convW, _ := redis.NewConversation(redis.WithAddr("localhost:6379"))
 w, _ := agent.NewAgentWorker(
     agent.WithTemporalConfig(...),
     agent.WithConversation(conversation.Config{Conversation: convW, Size: 20, SaveOnIteration: true}),
 )
 
-convA, _ := redis.NewRedisConversation(redis.WithAddr("localhost:6379"))
+convA, _ := redis.NewConversation(redis.WithAddr("localhost:6379"))
 a, _ := agent.NewAgent(
     agent.WithTemporalConfig(...),
     agent.DisableLocalWorker(),

@@ -26,7 +26,7 @@ func main() {
 	}
 
 	// Redis conversation (start with task infra:redis:up or docker compose redis service).
-	conv, err := redis.NewRedisConversation(
+	conv, err := redis.NewConversation(
 		redis.WithAddr(redisAddrFromEnv()),
 		redis.WithMaxSize(100),
 	)

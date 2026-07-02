@@ -167,7 +167,7 @@ Handle tool approvals with [`WithApprovalHandler`](/features/approvals) — the 
 Pass `ConversationOptions` to share history across turns while streaming. The same session ID links messages across calls:
 
 ```go
-conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+conv := inmem.NewConversation(inmem.WithMaxSize(100))
 
 a, err := agent.NewAgent(
     agent.WithLLMClient(llmClient),

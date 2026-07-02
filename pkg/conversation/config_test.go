@@ -10,7 +10,7 @@ import (
 )
 
 func TestDefaultConfig(t *testing.T) {
-	conv := inmem.NewInMemoryConversation()
+	conv := inmem.NewConversation()
 	cfg := conversation.DefaultConfig(conv)
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
@@ -21,7 +21,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestConfig_WithDefaults(t *testing.T) {
-	cfg := (conversation.Config{Conversation: inmem.NewInMemoryConversation()}).WithDefaults()
+	cfg := (conversation.Config{Conversation: inmem.NewConversation()}).WithDefaults()
 	if cfg.Size != conversation.DefaultSize {
 		t.Fatalf("size = %d", cfg.Size)
 	}
@@ -34,7 +34,7 @@ func TestConfig_Validate_missingConversation(t *testing.T) {
 }
 
 func TestConfig_ListOptions(t *testing.T) {
-	cfg := conversation.DefaultConfig(inmem.NewInMemoryConversation())
+	cfg := conversation.DefaultConfig(inmem.NewConversation())
 	opts := cfg.ListOptions()
 	if len(opts) != 1 {
 		t.Fatalf("opts len = %d", len(opts))
@@ -42,7 +42,7 @@ func TestConfig_ListOptions(t *testing.T) {
 }
 
 func TestValidateDistributed_inmemRemoteWorkers(t *testing.T) {
-	conv := inmem.NewInMemoryConversation()
+	conv := inmem.NewConversation()
 	if err := conversation.ValidateDistributed(conv, true); err == nil {
 		t.Fatal("expected distributed error")
 	}

@@ -8,25 +8,25 @@ import (
 )
 
 func TestInMemoryConversation_IsDistributed(t *testing.T) {
-	c := NewInMemoryConversation()
+	c := NewConversation()
 	if c.IsDistributed() {
 		t.Error("in-memory should not be distributed")
 	}
 }
 
-func TestNewInMemoryConversation_MaxSizeDefault(t *testing.T) {
-	c := NewInMemoryConversation(WithMaxSize(0))
+func TestNewConversation_MaxSizeDefault(t *testing.T) {
+	c := NewConversation(WithMaxSize(0))
 	if c.maxSize != 100 {
 		t.Fatalf("maxSize = %d, want 100", c.maxSize)
 	}
-	c2 := NewInMemoryConversation(WithMaxSize(-1))
+	c2 := NewConversation(WithMaxSize(-1))
 	if c2.maxSize != 100 {
 		t.Fatalf("maxSize = %d, want 100", c2.maxSize)
 	}
 }
 
 func TestInMemoryConversation_AddMessage_EmptyID(t *testing.T) {
-	c := NewInMemoryConversation()
+	c := NewConversation()
 	ctx := context.Background()
 	if err := c.AddMessage(ctx, "", interfaces.Message{Role: interfaces.MessageRoleUser, Content: "x"}); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestInMemoryConversation_AddMessage_EmptyID(t *testing.T) {
 }
 
 func TestInMemoryConversation_ListMessages_EmptyID(t *testing.T) {
-	c := NewInMemoryConversation()
+	c := NewConversation()
 	msgs, err := c.ListMessages(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestInMemoryConversation_ListMessages_EmptyID(t *testing.T) {
 }
 
 func TestInMemoryConversation_TrimToMaxSize(t *testing.T) {
-	c := NewInMemoryConversation(WithMaxSize(3))
+	c := NewConversation(WithMaxSize(3))
 	ctx := context.Background()
 	id := "conv-1"
 	for i := 0; i < 5; i++ {
@@ -73,7 +73,7 @@ func TestInMemoryConversation_TrimToMaxSize(t *testing.T) {
 }
 
 func TestInMemoryConversation_ListMessages_LimitOffset(t *testing.T) {
-	c := NewInMemoryConversation()
+	c := NewConversation()
 	ctx := context.Background()
 	id := "c"
 	for _, ch := range []string{"a", "b", "c", "d", "e"} {
@@ -100,7 +100,7 @@ func TestInMemoryConversation_ListMessages_LimitOffset(t *testing.T) {
 }
 
 func TestInMemoryConversation_ListMessages_RoleFilter(t *testing.T) {
-	c := NewInMemoryConversation()
+	c := NewConversation()
 	ctx := context.Background()
 	id := "c"
 	if err := c.AddMessage(ctx, id, interfaces.Message{Role: interfaces.MessageRoleSystem, Content: "sys"}); err != nil {
@@ -119,7 +119,7 @@ func TestInMemoryConversation_ListMessages_RoleFilter(t *testing.T) {
 }
 
 func TestInMemoryConversation_Clear(t *testing.T) {
-	c := NewInMemoryConversation()
+	c := NewConversation()
 	ctx := context.Background()
 	id := "x"
 	if err := c.AddMessage(ctx, id, interfaces.Message{Role: interfaces.MessageRoleUser, Content: "1"}); err != nil {
@@ -138,7 +138,7 @@ func TestInMemoryConversation_Clear(t *testing.T) {
 }
 
 func TestInMemoryConversation_Clear_EmptyID(t *testing.T) {
-	c := NewInMemoryConversation()
+	c := NewConversation()
 	if err := c.Clear(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}

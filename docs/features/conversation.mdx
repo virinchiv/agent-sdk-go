@@ -20,7 +20,7 @@ import (
     "github.com/agenticenv/agent-sdk-go/pkg/conversation/inmem"
 )
 
-conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+conv := inmem.NewConversation(inmem.WithMaxSize(100))
 
 a, err := agent.NewAgent(
     agent.WithLLMClient(llmClient),

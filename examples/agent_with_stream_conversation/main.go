@@ -27,7 +27,7 @@ func main() {
 		log.Fatalf("failed to create LLM client: %v", err)
 	}
 
-	conv := inmem.NewInMemoryConversation(inmem.WithMaxSize(100))
+	conv := inmem.NewConversation(inmem.WithMaxSize(100))
 
 	reg := agent.NewToolRegistry()
 	if err := agent.RegisterTools(reg,

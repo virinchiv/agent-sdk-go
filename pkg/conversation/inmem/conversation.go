@@ -15,18 +15,24 @@ type InMemoryConversation struct {
 	mu       sync.RWMutex
 }
 
-func NewInMemoryConversation(options ...Option) *InMemoryConversation {
+// NewConversation creates a new in-memory conversation store.
+func NewConversation(opts ...Option) *InMemoryConversation {
 	c := &InMemoryConversation{
 		messages: make(map[string][]interfaces.Message),
 		maxSize:  100,
 	}
-	for _, option := range options {
+	for _, option := range opts {
 		option(c)
 	}
 	if c.maxSize <= 0 {
 		c.maxSize = 100
 	}
 	return c
+}
+
+// Deprecated: use NewConversation instead.
+func NewInMemoryConversation(opts ...Option) *InMemoryConversation {
+	return NewConversation(opts...)
 }
 
 type Option func(*InMemoryConversation)
