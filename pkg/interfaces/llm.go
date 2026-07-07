@@ -14,6 +14,7 @@ const (
 	LLMProviderOpenAI    LLMProvider = "openai"
 	LLMProviderAnthropic LLMProvider = "anthropic"
 	LLMProviderGemini    LLMProvider = "gemini"
+	LLMProviderDeepSeek  LLMProvider = "deepseek"
 )
 
 type LLMClient interface {
