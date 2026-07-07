@@ -1,0 +1,75 @@
+---
+title: "Execution Config"
+description: "Override timeout and max attempts per operation — LLM, tools, and sub-agents."
+---
+
+Shows how to use `With*ExecutionConfig` options to give each agent loop operation its own timeout and max attempts instead of relying on the SDK defaults.
+
+Source: [`examples/agent_with_execution_config/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_execution_config)
+
+## What it demonstrates
+
+- `WithLLMExecutionConfig` — tighter LLM timeout, up to 3 attempts
+- `WithToolExecutionConfig` — short tool deadline, single attempt
+- `WithSubAgentExecutionConfig` — explicit sub-agent ceiling of agent run timeout
+- Zero fields fall back to SDK defaults — only set what you want to change
+
+## Run
+
+From `examples/`:
+
+```bash
+go run ./agent_with_execution_config
+go run ./agent_with_execution_config "What is 99 times 77?"
+AGENT_RUNTIME=temporal go run ./agent_with_execution_config
+```
+
+## Key code
+
+```go
+a, err := agent.NewAgent(
+    agent.WithName("exec-config-agent"),
+    agent.WithLLMClient(llmClient),
+    agent.WithTools(calculator.New(), currenttime.New()),
+    agent.WithToolApprovalPolicy(agent.AutoToolApprovalPolicy()),
+
+    // LLM: tighter timeout for a chat agent; up to 3 attempts for transient errors.
+    agent.WithLLMExecutionConfig(agent.ExecutionConfig{
+        Timeout:     10 * time.Minute,
+        MaxAttempts: 3,
+    }),
+
+    // ToolExecute: fast tools — short deadline, one attempt.
+    agent.WithToolExecutionConfig(agent.ExecutionConfig{
+        Timeout:     2 * time.Minute,
+        MaxAttempts: 1,
+    }),
+
+    // SubAgent: explicit ceiling — delegates must finish within 5 minutes.
+    agent.WithSubAgentExecutionConfig(agent.ExecutionConfig{
+        Timeout: 5 * time.Minute,
+    }),
+)
+```
+
+## Expected output
+
+```
+user: What is 123 multiplied by 456? Also, what time is it right now?
+
+assistant: 123 × 456 = 56,088. The current time is 14:32 UTC.
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+
+  <Card title="Execution Config" icon="sliders" href="/features/execution-config" horizontal>
+    Full feature docs — defaults table, retry backoff, runtime behavior
+  </Card>
+
+  <Card title="Timeouts & Modes" icon="clock" href="/advanced/timeouts-and-modes" horizontal>
+    Agent run timeout, approval timeout, and agent modes
+  </Card>
+
+</CardGroup>

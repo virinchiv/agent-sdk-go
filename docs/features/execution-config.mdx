@@ -1,0 +1,135 @@
+---
+title: "Execution Config"
+description: "Set timeout and max attempts per operation — LLM calls, tools, MCP, sub-agents, memory, and more."
+---
+
+The agent loop runs several operations in sequence: an LLM call, optional tool executions, memory reads/writes, conversation persistence, and sub-agent delegation. By default, each operation uses a conservative SDK-wide timeout and attempt limit. Execution config lets you tune these per operation without changing the global agent timeout.
+
+## How it works
+
+Provide an `ExecutionConfig` for one or more operations via `With*ExecutionConfig` options when creating the agent. Zero fields keep the SDK default — only set what you want to change.
+
+```go
+type ExecutionConfig struct {
+    Timeout     time.Duration // 0 = keep SDK default
+    MaxAttempts int           // 0 = keep SDK default; 1 = single attempt
+}
+```
+
+At runtime the SDK merges your overrides onto the defaults and produces a fully resolved policy — including exponential backoff — that the runtime enforces on each attempt.
+
+## SDK defaults
+
+| Operation | Option | Default Timeout | Default MaxAttempts |
+|-----------|--------|-----------------|---------------------|
+| LLM generate / stream | `WithLLMExecutionConfig` | 30 min | 3 |
+| Tool authorization | `WithToolAuthExecutionConfig` | 30 min | 1 |
+| Tool execution | `WithToolExecutionConfig` | 30 min | 3 |
+| MCP | `WithMCPExecutionConfig` | 30 min | 3 |
+| A2A | `WithA2AExecutionConfig` | 30 min | 3 |
+| Retriever prefetch | `WithRetrieverExecutionConfig` | 5 min | 3 |
+| Memory recall / store | `WithMemoryExecutionConfig` | 5 min | 3 |
+| Conversation persist | `WithConversationExecutionConfig` | 30 s | 1 |
+| Sub-agent delegation | `WithSubAgentExecutionConfig` | *(agent run timeout)* | 1 |
+
+Sub-agent timeout has no fixed SDK default — when no override is set and the resolved timeout is still zero, the **agent run timeout** (`WithTimeout`) is used as the ceiling.
+
+## Retry backoff
+
+When `MaxAttempts` is greater than 1, failed attempts use exponential backoff with SDK defaults:
+
+| Parameter | Value |
+|-----------|-------|
+| Initial interval | 1 s |
+| Backoff coefficient | 2× |
+| Maximum interval | 10 min |
+
+`MaxAttempts: 1` runs the operation once with no retry. Backoff is not user-configurable today.
+
+## Usage
+
+Override only the operations you want to tune:
+
+```go
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+
+    // LLM: tighter timeout for a chat agent; up to 3 attempts for transient errors.
+    agent.WithLLMExecutionConfig(agent.ExecutionConfig{
+        Timeout:     10 * time.Minute,
+        MaxAttempts: 3,
+    }),
+
+    // Tools: fast operations — short deadline, single attempt.
+    agent.WithToolExecutionConfig(agent.ExecutionConfig{
+        Timeout:     2 * time.Minute,
+        MaxAttempts: 1,
+    }),
+
+    // Sub-agents: explicit ceiling of the agent run timeout.
+    agent.WithSubAgentExecutionConfig(agent.ExecutionConfig{
+        Timeout: 5 * time.Minute,
+    }),
+)
+```
+
+### Override a single field
+
+Zero fields fall through to the SDK default:
+
+```go
+// Extend LLM timeout only — MaxAttempts stays at SDK default (3).
+agent.WithLLMExecutionConfig(agent.ExecutionConfig{
+    Timeout: 45 * time.Minute,
+})
+
+// Reduce max attempts only — Timeout stays at SDK default (30m).
+agent.WithToolAuthExecutionConfig(agent.ExecutionConfig{
+    MaxAttempts: 2,
+})
+```
+
+## Relationship to agent run timeout
+
+`ExecutionConfig` controls individual operation attempts. The agent run timeout (`WithTimeout` or context deadline) is a ceiling on the **entire run** — if it fires, the run ends regardless of where the current operation is.
+
+| Timeout type | Scope | Set via |
+|---|---|---|
+| Agent run timeout | Entire `Run` / `Stream` / `RunAsync` call | `WithTimeout` or context deadline |
+| Per-operation timeout | Single attempt of one operation | `With*ExecutionConfig` |
+
+A single LLM call timing out after `Timeout` does not end the run — it counts as a failed attempt and may be retried until `MaxAttempts` is exhausted. The run ends only if the agent run timeout fires or all attempts are exhausted.
+
+## Works with both runtimes
+
+Execution config applies to both the in-process and Temporal runtimes with the same semantics.
+
+## Example
+
+<CardGroup cols={2}>
+  <Card title="Execution Config" icon="play" href="/examples/execution-config" horizontal>
+    LLM, tool, and sub-agent overrides with calculator and time tools
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+
+  <Card title="Timeouts & Modes" icon="clock" href="/advanced/timeouts-and-modes" horizontal>
+    Agent run timeout, approval timeout, and agent modes
+  </Card>
+
+  <Card title="Approvals" icon="shield-check" href="/features/approvals" horizontal>
+    Per-tool approval timeout and approval handler
+  </Card>
+
+  <Card title="Sub-agents" icon="sitemap" href="/features/sub-agents" horizontal>
+    Sub-agent delegation and depth limits
+  </Card>
+
+  <Card title="MCP" icon="plug" href="/features/mcp" horizontal>
+    MCP integration
+  </Card>
+
+</CardGroup>

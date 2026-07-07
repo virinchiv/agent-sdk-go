@@ -482,6 +482,65 @@ func TestBuildAgentConfig_approvalTimeoutValidatedWithoutApprovalTools(t *testin
 	}
 }
 
+func TestBuildAgentConfig_executionConfigsMappedToRuntime(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("exec"),
+		WithLLMClient(stubLLM{}),
+		WithLLMExecutionConfig(ExecutionConfig{Timeout: 45 * time.Minute, MaxAttempts: 4}),
+		WithToolAuthExecutionConfig(ExecutionConfig{MaxAttempts: 2}),
+		WithToolExecutionConfig(ExecutionConfig{Timeout: 25 * time.Minute}),
+		WithMCPExecutionConfig(ExecutionConfig{Timeout: 20 * time.Minute, MaxAttempts: 2}),
+		WithA2AExecutionConfig(ExecutionConfig{MaxAttempts: 5}),
+		WithRetrieverExecutionConfig(ExecutionConfig{Timeout: 3 * time.Minute}),
+		WithMemoryExecutionConfig(ExecutionConfig{MaxAttempts: 4}),
+		WithConversationExecutionConfig(ExecutionConfig{Timeout: 45 * time.Second}),
+		WithSubAgentExecutionConfig(ExecutionConfig{MaxAttempts: 2}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rtCfg := cfg.runtimeAgentConfig()
+	if rtCfg.ExecutionConfigs.LLM != (ExecutionConfig{Timeout: 45 * time.Minute, MaxAttempts: 4}) {
+		t.Fatalf("LLM exec = %+v", rtCfg.ExecutionConfigs.LLM)
+	}
+	if rtCfg.ExecutionConfigs.ToolAuth != (ExecutionConfig{MaxAttempts: 2}) {
+		t.Fatalf("ToolAuth exec = %+v", rtCfg.ExecutionConfigs.ToolAuth)
+	}
+	if rtCfg.ExecutionConfigs.ToolExecute != (ExecutionConfig{Timeout: 25 * time.Minute}) {
+		t.Fatalf("ToolExecute exec = %+v", rtCfg.ExecutionConfigs.ToolExecute)
+	}
+	if rtCfg.ExecutionConfigs.MCP != (ExecutionConfig{Timeout: 20 * time.Minute, MaxAttempts: 2}) {
+		t.Fatalf("MCP exec = %+v", rtCfg.ExecutionConfigs.MCP)
+	}
+	if rtCfg.ExecutionConfigs.A2A != (ExecutionConfig{MaxAttempts: 5}) {
+		t.Fatalf("A2A exec = %+v", rtCfg.ExecutionConfigs.A2A)
+	}
+	if rtCfg.ExecutionConfigs.Retriever != (ExecutionConfig{Timeout: 3 * time.Minute}) {
+		t.Fatalf("Retriever exec = %+v", rtCfg.ExecutionConfigs.Retriever)
+	}
+	if rtCfg.ExecutionConfigs.Memory != (ExecutionConfig{MaxAttempts: 4}) {
+		t.Fatalf("Memory exec = %+v", rtCfg.ExecutionConfigs.Memory)
+	}
+	if rtCfg.ExecutionConfigs.Conversation != (ExecutionConfig{Timeout: 45 * time.Second}) {
+		t.Fatalf("Conversation exec = %+v", rtCfg.ExecutionConfigs.Conversation)
+	}
+	if rtCfg.ExecutionConfigs.SubAgent != (ExecutionConfig{MaxAttempts: 2}) {
+		t.Fatalf("SubAgent exec = %+v", rtCfg.ExecutionConfigs.SubAgent)
+	}
+
+	resolved := runtime.ResolveExecutionPolicies(rtCfg.ExecutionConfigs)
+	if resolved.LLM.Timeout != 45*time.Minute || resolved.LLM.MaxAttempts != 4 {
+		t.Fatalf("resolved LLM = %+v", resolved.LLM)
+	}
+	if resolved.ToolAuth.Timeout != 30*time.Minute || resolved.ToolAuth.MaxAttempts != 2 {
+		t.Fatalf("resolved ToolAuth = %+v", resolved.ToolAuth)
+	}
+	if resolved.SubAgent.MaxAttempts != 2 {
+		t.Fatalf("resolved SubAgent = %+v", resolved.SubAgent)
+	}
+}
+
 type mockRegistry struct {
 	tools []interfaces.Tool
 }

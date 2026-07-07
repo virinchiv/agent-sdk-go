@@ -93,7 +93,7 @@ type AgentSpec struct {
 	ResponseFormat *interfaces.ResponseFormat
 }
 
-// AgentConfig is static agent wiring on the runtime at construction: LLM client, tool approval policy, session, limits, retriever config, and hooks.
+// AgentConfig is static agent wiring on the runtime at construction: LLM client, tool approval policy, session, limits, retriever config, exec overrides, and hooks.
 type AgentConfig struct {
 	LLM                AgentLLM
 	ToolApprovalPolicy interfaces.AgentToolApprovalPolicy
@@ -101,6 +101,7 @@ type AgentConfig struct {
 	Session            AgentSession
 	Memory             AgentMemory
 	Limits             AgentLimits
+	ExecutionConfigs   ExecutionConfigs
 	Hooks              []hooks.HookGroup
 }
 
@@ -158,4 +159,147 @@ type ExecuteRequest struct {
 	Tools []interfaces.Tool `json:"-"`
 
 	ApprovalHandler types.ApprovalHandler `json:"approval_handler"`
+}
+
+// ExecutionPolicy is the resolved runtime shape for one agent loop operation (local [executeWithPolicy] or Temporal activity).
+type ExecutionPolicy struct {
+	Timeout     time.Duration
+	MaxAttempts int
+	Retry       RetryPolicy
+}
+
+// RetryPolicy controls backoff between retry attempts on a resolved [ExecutionPolicy].
+type RetryPolicy struct {
+	InitialInterval    time.Duration
+	BackoffCoefficient float64
+	MaximumInterval    time.Duration
+}
+
+// ExecutionPolicies holds resolved policies for every loop operation.
+type ExecutionPolicies struct {
+	LLM          ExecutionPolicy
+	ToolAuth     ExecutionPolicy
+	ToolExecute  ExecutionPolicy
+	MCP          ExecutionPolicy
+	A2A          ExecutionPolicy
+	Retriever    ExecutionPolicy
+	Memory       ExecutionPolicy
+	Conversation ExecutionPolicy
+	SubAgent     ExecutionPolicy
+}
+
+// ExecutionConfig is a partial override for timeout and retry budget on one agent loop operation.
+// Zero Timeout or Retries mean "use SDK default" at resolve time; see [ResolveExecPolicy].
+type ExecutionConfig struct {
+	Timeout     time.Duration
+	MaxAttempts int
+}
+
+// ExecutionConfigs holds per-operation execution overrides. Used as agent-level overrides on [AgentConfig]
+// and as the SDK default bundle from [defaultExecutionConfigs].
+type ExecutionConfigs struct {
+	LLM          ExecutionConfig
+	ToolAuth     ExecutionConfig
+	ToolExecute  ExecutionConfig
+	MCP          ExecutionConfig
+	A2A          ExecutionConfig
+	Retriever    ExecutionConfig
+	Memory       ExecutionConfig
+	Conversation ExecutionConfig
+	SubAgent     ExecutionConfig
+}
+
+const (
+	defaultLLMExecTimeout          = 30 * time.Minute
+	defaultLLMMaxAttempts          = 3
+	defaultToolAuthExecTimeout     = 30 * time.Minute
+	defaultToolAuthMaxAttempts     = 1
+	defaultToolExecuteExecTimeout  = 30 * time.Minute
+	defaultToolExecuteMaxAttempts  = 3
+	defaultMCPExecTimeout          = 30 * time.Minute
+	defaultMCPMaxAttempts          = 3
+	defaultA2AExecTimeout          = 30 * time.Minute
+	defaultA2AMaxAttempts          = 3
+	defaultRetrieverExecTimeout    = 5 * time.Minute
+	defaultRetrieverMaxAttempts    = 3
+	defaultMemoryExecTimeout       = 5 * time.Minute
+	defaultMemoryMaxAttempts       = 3
+	defaultConversationExecTimeout = 30 * time.Second
+	defaultConversationMaxAttempts = 1
+	defaultSubAgentMaxAttempts     = 1
+
+	defaultRetryInitialInterval    = time.Second
+	defaultRetryBackoffCoefficient = 2.0
+	defaultRetryMaximumInterval    = 10 * time.Minute
+)
+
+// defaultExecutionConfigs returns SDK defaults for every loop operation. SubAgent.Timeout is zero;
+// runtimes apply the agent run timeout as a fallback when resolving the sub-agent policy.
+func defaultExecutionConfigs() ExecutionConfigs {
+	return ExecutionConfigs{
+		LLM:          ExecutionConfig{Timeout: defaultLLMExecTimeout, MaxAttempts: defaultLLMMaxAttempts},
+		ToolAuth:     ExecutionConfig{Timeout: defaultToolAuthExecTimeout, MaxAttempts: defaultToolAuthMaxAttempts},
+		ToolExecute:  ExecutionConfig{Timeout: defaultToolExecuteExecTimeout, MaxAttempts: defaultToolExecuteMaxAttempts},
+		MCP:          ExecutionConfig{Timeout: defaultMCPExecTimeout, MaxAttempts: defaultMCPMaxAttempts},
+		A2A:          ExecutionConfig{Timeout: defaultA2AExecTimeout, MaxAttempts: defaultA2AMaxAttempts},
+		Retriever:    ExecutionConfig{Timeout: defaultRetrieverExecTimeout, MaxAttempts: defaultRetrieverMaxAttempts},
+		Memory:       ExecutionConfig{Timeout: defaultMemoryExecTimeout, MaxAttempts: defaultMemoryMaxAttempts},
+		Conversation: ExecutionConfig{Timeout: defaultConversationExecTimeout, MaxAttempts: defaultConversationMaxAttempts},
+		SubAgent:     ExecutionConfig{MaxAttempts: defaultSubAgentMaxAttempts},
+	}
+}
+
+// resolveExecutionConfig merges an agent override onto an SDK default. Non-zero agent Timeout or
+// MaxAttempts replace the corresponding SDK value; zero fields leave the SDK value unchanged.
+func resolveExecutionConfig(agent, sdk ExecutionConfig) ExecutionConfig {
+	out := sdk
+	if agent.Timeout > 0 {
+		out.Timeout = agent.Timeout
+	}
+	if agent.MaxAttempts > 0 {
+		out.MaxAttempts = agent.MaxAttempts
+	}
+	return out
+}
+
+// DefaultRetryPolicy returns the SDK backoff defaults applied by [ExecutionConfig.ToPolicy].
+func DefaultRetryPolicy() RetryPolicy {
+	return RetryPolicy{
+		InitialInterval:    defaultRetryInitialInterval,
+		BackoffCoefficient: defaultRetryBackoffCoefficient,
+		MaximumInterval:    defaultRetryMaximumInterval,
+	}
+}
+
+// ToPolicy converts a merged [ExecutionConfig] into a fully populated [ExecutionPolicy].
+// MaxAttempts below 1 is clamped to 1 so the operation always runs at least once.
+// Backoff is always [DefaultRetryPolicy]; user-facing [ExecutionConfig] does not expose backoff today.
+func (c ExecutionConfig) ToPolicy() ExecutionPolicy {
+	attempts := c.MaxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+	return ExecutionPolicy{
+		Timeout:     c.Timeout,
+		MaxAttempts: attempts,
+		Retry:       DefaultRetryPolicy(),
+	}
+}
+
+// ResolveExecutionPolicies merges agent per-operation overrides onto SDK defaults and converts
+// each operation to a fully populated [ExecutionPolicy]. This is the primary entry point used
+// by runtimes at the start of each agent run.
+func ResolveExecutionPolicies(execConfigs ExecutionConfigs) ExecutionPolicies {
+	defaultConfigs := defaultExecutionConfigs()
+	return ExecutionPolicies{
+		LLM:          resolveExecutionConfig(execConfigs.LLM, defaultConfigs.LLM).ToPolicy(),
+		ToolAuth:     resolveExecutionConfig(execConfigs.ToolAuth, defaultConfigs.ToolAuth).ToPolicy(),
+		ToolExecute:  resolveExecutionConfig(execConfigs.ToolExecute, defaultConfigs.ToolExecute).ToPolicy(),
+		MCP:          resolveExecutionConfig(execConfigs.MCP, defaultConfigs.MCP).ToPolicy(),
+		A2A:          resolveExecutionConfig(execConfigs.A2A, defaultConfigs.A2A).ToPolicy(),
+		Retriever:    resolveExecutionConfig(execConfigs.Retriever, defaultConfigs.Retriever).ToPolicy(),
+		Memory:       resolveExecutionConfig(execConfigs.Memory, defaultConfigs.Memory).ToPolicy(),
+		Conversation: resolveExecutionConfig(execConfigs.Conversation, defaultConfigs.Conversation).ToPolicy(),
+		SubAgent:     resolveExecutionConfig(execConfigs.SubAgent, defaultConfigs.SubAgent).ToPolicy(),
+	}
 }
