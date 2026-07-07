@@ -1,6 +1,6 @@
 ---
 title: "LLM Providers"
-description: "Configure OpenAI, Anthropic, or Gemini — or bring your own LLM client"
+description: "Configure OpenAI, Anthropic, Gemini, or DeepSeek — or bring your own LLM client"
 ---
 
 Every agent requires an [`interfaces.LLMClient`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#LLMClient). Pass it to [`NewAgent`](/getting-started/quickstart) with [`WithLLMClient`](/getting-started/configuration).
@@ -18,8 +18,9 @@ import "github.com/agenticenv/agent-sdk-go/pkg/llm"
 | OpenAI | `pkg/llm/openai` | `openai` |
 | Anthropic | `pkg/llm/anthropic` | `anthropic` |
 | Gemini | `pkg/llm/gemini` | `gemini` |
+| DeepSeek | `pkg/llm/deepseek` | `deepseek` |
 
-All three implement the same interface:
+They all implement the same interface:
 
 ```go
 type LLMClient interface {
@@ -85,6 +86,28 @@ llmClient, err := gemini.NewClient(
 `llm.WithAPIKey` takes precedence. If you omit it, the Gemini client falls back to the `GOOGLE_API_KEY` environment variable automatically.
 </Note>
 
+## DeepSeek
+
+DeepSeek exposes an OpenAI-compatible API. The base URL defaults to `https://api.deepseek.com`, so `WithBaseURL` is optional.
+
+```go
+import (
+    "github.com/agenticenv/agent-sdk-go/pkg/llm"
+    "github.com/agenticenv/agent-sdk-go/pkg/llm/deepseek"
+)
+
+llmClient, err := deepseek.NewClient(
+    llm.WithAPIKey(os.Getenv("DEEPSEEK_API_KEY")),
+    llm.WithModel("deepseek-chat"), // or "deepseek-reasoner"
+)
+```
+
+Common models: `deepseek-chat` and `deepseek-reasoner`. Reasoning is not configured via the `Reasoning` field — `deepseek-reasoner` reasons automatically, and its trace surfaces via the streaming `LLMStreamChunk.ThinkingDelta` and, for non-streaming responses, `LLMResponse.Metadata["reasoning_content"]`.
+
+<Note>
+DeepSeek supports only plain JSON mode, not schema-constrained output. A [response format](/features/response-format) with `Type: ResponseFormatJSON` maps to DeepSeek's `json_object`; any `Schema` is ignored (not enforced by the API), so prompt the model for the shape you want, and include the word "json" in the conversation.
+</Note>
+
 ## Shared LLM options
 
 All built-in clients accept functional options from `pkg/llm`:
@@ -112,13 +135,13 @@ a, err := agent.NewAgent(
 
 Field support varies by provider:
 
-| Field | OpenAI | Anthropic | Gemini |
-|---|---|---|---|
-| `Temperature` | ✓ | ✓ | ✓ |
-| `MaxTokens` | ✓ | ✓ | ✓ |
-| `TopP` | ✓ | — | ✓ |
-| `TopK` | — | ✓ | — |
-| `Reasoning` | Partial | ✓ | ✓ |
+| Field | OpenAI | Anthropic | Gemini | DeepSeek |
+|---|---|---|---|---|
+| `Temperature` | ✓ | ✓ | ✓ | ✓ |
+| `MaxTokens` | ✓ | ✓ | ✓ | ✓ |
+| `TopP` | ✓ | — | ✓ | ✓ |
+| `TopK` | — | ✓ | — | — |
+| `Reasoning` | Partial | ✓ | ✓ | — |
 
 See [Reasoning](/features/reasoning) for extended thinking configuration per provider.
 

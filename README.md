@@ -74,7 +74,7 @@ fmt.Println(result.Content)
 
 ## Features
 
-- **LLM providers** — OpenAI, Anthropic, Gemini + custom via `interfaces.LLMClient`
+- **LLM providers** — OpenAI, Anthropic, Gemini, DeepSeek + custom via `interfaces.LLMClient`
 - **Tools & MCP** — built-in and custom tools; MCP servers over stdio or streamable HTTP
 - **A2A** — expose agents as A2A servers or connect remote A2A agents as tools
 - **Sub-agents** — delegate to specialist agents with independent LLMs, tools, and task queues
@@ -82,7 +82,7 @@ fmt.Println(result.Content)
 - **Conversation history** — multi-turn sessions via in-memory or Redis backends
 - **Memory & RAG** — long-term scoped memory and retrieval-augmented generation
 - **Streaming & AG-UI** — partial token streaming; AG-UI protocol for frontend integration
-- **Reasoning** — extended thinking on Anthropic, Gemini, and OpenAI reasoning models
+- **Reasoning** — extended thinking on Anthropic, Gemini, DeepSeek, and OpenAI reasoning models
 - **Token usage** — aggregate prompt, completion, and reasoning token counts per run
 - **Hooks & guardrails** — middleware at LLM, tool, retrieval, and memory lifecycle points
 - **Execution config** — per-operation timeouts and max attempts via `With*ExecutionConfig`
