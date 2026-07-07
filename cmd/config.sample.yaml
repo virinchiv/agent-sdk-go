@@ -22,12 +22,12 @@ temporal:
   namespace: default     # Temporal namespace
   taskQueue: agent-sdk-go   # Task queue for agent workflows
 
-# LLM provider (OpenAI, Anthropic, or Gemini)
+# LLM provider (OpenAI, Anthropic, Gemini, or DeepSeek)
 llm:
-  provider: openai      # openai | anthropic | gemini
+  provider: openai      # openai | anthropic | gemini | deepseek
   apiKey: ""            # Set here or via AGENT_LLM_APIKEY (preferred for secrets)
-  model: gpt-4o         # Model name, e.g. gpt-4o, gpt-4o-mini, claude-haiku-4-5, gemini-2.5-flash
-  baseURL: https://api.openai.com/v1   # Optional; used for OpenAI-compatible proxies
+  model: gpt-4o         # Model name, e.g. gpt-4o, claude-haiku-4-5, gemini-2.5-flash, deepseek-chat
+  baseURL: https://api.openai.com/v1   # Optional; OpenAI-compatible proxies. For deepseek, leave unset to use https://api.deepseek.com
 
 # Logger: file by default (JSON + caller). Prompts/responses use fmt in main, not this logger.
 logger:

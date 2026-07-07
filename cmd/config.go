@@ -12,6 +12,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm/anthropic"
+	"github.com/agenticenv/agent-sdk-go/pkg/llm/deepseek"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm/gemini"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm/openai"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
@@ -204,7 +205,8 @@ type LLMConfig struct {
 	Provider string `mapstructure:"provider"`
 	APIKey   string `mapstructure:"apiKey"`
 	Model    string `mapstructure:"model"`
-	// BaseURL is optional; only used when provider is openai (custom/Azure-compatible API).
+	// BaseURL is optional; used by openai and deepseek providers to override the API endpoint
+	// (custom/Azure-compatible proxies). For deepseek, leave empty to use its default endpoint.
 	BaseURL string `mapstructure:"baseURL"`
 }
 
@@ -315,6 +317,11 @@ func NewLLMClient(cfg *Config, lgr logger.Logger) (interfaces.LLMClient, error) 
 		return openai.NewClient(opts...)
 	case interfaces.LLMProviderGemini:
 		return gemini.NewClient(opts...)
+	case interfaces.LLMProviderDeepSeek:
+		if cfg.LLM.BaseURL != "" {
+			opts = append(opts, llm.WithBaseURL(cfg.LLM.BaseURL))
+		}
+		return deepseek.NewClient(opts...)
 	default:
 		if cfg.LLM.BaseURL != "" {
 			opts = append(opts, llm.WithBaseURL(cfg.LLM.BaseURL))
