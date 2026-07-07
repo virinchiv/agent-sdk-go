@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
+	sdkruntime "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
@@ -93,13 +94,14 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 	agentName := rt.AgentSpec.Name
 	model := rt.AgentConfig.LLM.Client.GetModel()
 
-	ctx, sp := rt.Tracer.StartSpan(ctx, "agent.loop",
+	ctx, span := rt.Tracer.StartSpan(ctx, "agent.loop",
 		interfaces.Attribute{Key: "agent.name", Value: agentName},
 		interfaces.Attribute{Key: "model", Value: model},
 	)
-	defer sp.End()
+	defer span.End()
 
 	tools := input.Tools
+	policies := rt.executionPolicies()
 
 	maxIter := rt.AgentConfig.Limits.MaxIterations
 	if maxIter <= 0 {
@@ -140,12 +142,14 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 	memoryContext := ""
 	if rt.MemoryConfigured() && rt.RecallEnabled() {
 		log.Debug(ctx, "local: memory recall started", slog.String("scope", "loop"))
-		res, err := rt.ExecuteMemoryRecall(ctx, base.ExecuteMemoryRecallInput{
-			Logger:    log,
-			RunID:     input.RunID,
-			Iteration: 0,
-			Scope:     input.MemoryScope,
-			Query:     input.UserPrompt,
+		res, err := executeWithPolicy(ctx, policies.Memory, func(attemptCtx context.Context) (*base.MemoryResult, error) {
+			return rt.ExecuteMemoryRecall(attemptCtx, base.ExecuteMemoryRecallInput{
+				Logger:    log,
+				RunID:     input.RunID,
+				Iteration: 0,
+				Scope:     input.MemoryScope,
+				Query:     input.UserPrompt,
+			})
 		})
 		if err != nil {
 			return nil, fmt.Errorf("memory recall: %w", err)
@@ -167,11 +171,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 			slog.String("scope", "loop"),
 			slog.String("mode", string(retrieverMode)),
 			slog.Int("retrieverCount", len(rt.AgentConfig.Retrievers.Retrievers)))
-		res, err := rt.ExecuteRetrievers(ctx, base.ExecuteRetrieversInput{
-			Logger:    log,
-			RunID:     input.RunID,
-			Iteration: 0,
-			Query:     input.UserPrompt,
+		res, err := executeWithPolicy(ctx, policies.Retriever, func(attemptCtx context.Context) (*base.RetrieverResult, error) {
+			return rt.ExecuteRetrievers(attemptCtx, base.ExecuteRetrieversInput{
+				Logger:    log,
+				RunID:     input.RunID,
+				Iteration: 0,
+				Query:     input.UserPrompt,
+			})
 		})
 		if err != nil {
 			return nil, fmt.Errorf("retriever prefetch: %w", err)
@@ -211,9 +217,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 			Emit:             emit,
 		}
 		if input.StreamingEnabled {
-			llmResult, err = rt.ExecuteLLMStream(ctx, executeLLMInput)
+			llmResult, err = executeWithPolicy(ctx, policies.LLM, func(attemptCtx context.Context) (*base.LLMResult, error) {
+				return rt.ExecuteLLMStream(attemptCtx, executeLLMInput)
+			})
 		} else {
-			llmResult, err = rt.ExecuteLLM(ctx, executeLLMInput)
+			llmResult, err = executeWithPolicy(ctx, policies.LLM, func(attemptCtx context.Context) (*base.LLMResult, error) {
+				return rt.ExecuteLLM(attemptCtx, executeLLMInput)
+			})
 		}
 		if err != nil {
 			return nil, fmt.Errorf("llm call (iter %d): %w", iter, err)
@@ -252,9 +262,13 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 				Emit:             emit,
 			}
 			if input.StreamingEnabled {
-				llmResult, err = rt.ExecuteLLMStream(ctx, executeLLMInput)
+				llmResult, err = executeWithPolicy(ctx, policies.LLM, func(attemptCtx context.Context) (*base.LLMResult, error) {
+					return rt.ExecuteLLMStream(attemptCtx, executeLLMInput)
+				})
 			} else {
-				llmResult, err = rt.ExecuteLLM(ctx, executeLLMInput)
+				llmResult, err = executeWithPolicy(ctx, policies.LLM, func(attemptCtx context.Context) (*base.LLMResult, error) {
+					return rt.ExecuteLLM(attemptCtx, executeLLMInput)
+				})
 			}
 			if err != nil {
 				return nil, fmt.Errorf("llm final call (iter %d): %w", iter, err)
@@ -289,9 +303,9 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 		var toolResults []toolResult
 		switch toolExecMode {
 		case types.AgentToolExecutionModeParallel:
-			toolResults, err = rt.executeToolsParallel(ctx, input, messageID, iter, llmResult.ToolCalls, emit)
+			toolResults, err = rt.executeToolsParallel(ctx, input, messageID, iter, llmResult.ToolCalls, policies, emit)
 		case types.AgentToolExecutionModeSequential:
-			toolResults, err = rt.executeToolsSequential(ctx, input, messageID, iter, llmResult.ToolCalls, emit)
+			toolResults, err = rt.executeToolsSequential(ctx, input, messageID, iter, llmResult.ToolCalls, policies, emit)
 		default:
 			return nil, fmt.Errorf("invalid tool execution mode %q: use %q or %q",
 				toolExecMode,
@@ -336,12 +350,14 @@ func (rt *LocalRuntime) RunAgentLoop(ctx context.Context, input AgentLoopInput) 
 	}
 
 	if rt.RunEndMemoryStoreEnabled() {
-		if err := rt.ExecuteMemoryStore(ctx, base.ExecuteMemoryStoreInput{
-			Logger:    log,
-			RunID:     input.RunID,
-			Iteration: 0,
-			Scope:     input.MemoryScope,
-			Messages:  messages,
+		if err := executeWithPolicyErr(ctx, policies.Memory, func(attemptCtx context.Context) error {
+			return rt.ExecuteMemoryStore(attemptCtx, base.ExecuteMemoryStoreInput{
+				Logger:    log,
+				RunID:     input.RunID,
+				Iteration: 0,
+				Scope:     input.MemoryScope,
+				Messages:  messages,
+			})
 		}); err != nil {
 			log.Warn(ctx, "local: memory store failed", slog.String("scope", "loop"), slog.Any("error", err))
 			telemetry.Storage.FailedMemoryStores++
@@ -378,6 +394,7 @@ func (rt *LocalRuntime) executeToolsParallel(
 	messageID string,
 	iteration int,
 	toolCalls []base.ToolCallRequest,
+	policies sdkruntime.ExecutionPolicies,
 	emit func(events.AgentEvent),
 ) ([]toolResult, error) {
 	rt.logger.Info(ctx, "local: tool execution (parallel)",
@@ -391,7 +408,7 @@ func (rt *LocalRuntime) executeToolsParallel(
 		wg.Add(1)
 		go func(idx int, tc base.ToolCallRequest) {
 			defer wg.Done()
-			result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, emit)
+			result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, policies, emit)
 			if err != nil {
 				rt.logger.Info(ctx, "local: parallel tool failed",
 					slog.String("scope", "loop"),
@@ -422,6 +439,7 @@ func (rt *LocalRuntime) executeToolsSequential(
 	messageID string,
 	iteration int,
 	toolCalls []base.ToolCallRequest,
+	policies sdkruntime.ExecutionPolicies,
 	emit func(events.AgentEvent),
 ) ([]toolResult, error) {
 	rt.logger.Info(ctx, "local: tool execution (sequential)",
@@ -430,7 +448,7 @@ func (rt *LocalRuntime) executeToolsSequential(
 
 	results := make([]toolResult, len(toolCalls))
 	for idx, tc := range toolCalls {
-		result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, emit)
+		result, err := rt.executeSingleTool(ctx, input, messageID, iteration, tc, policies, emit)
 		if err != nil {
 			rt.logger.Info(ctx, "local: sequential tool failed",
 				slog.String("scope", "loop"),
@@ -453,12 +471,14 @@ func (rt *LocalRuntime) executeToolsSequential(
 
 // executeSingleTool runs the full lifecycle for one tool call:
 // authorize → approval (if needed) → execute, emitting TOOL_CALL_* events throughout.
+// The caller must pass the already-resolved execution policies to avoid recomputing them per tool call.
 func (rt *LocalRuntime) executeSingleTool(
 	ctx context.Context,
 	input AgentLoopInput,
 	messageID string,
 	iteration int,
 	tc base.ToolCallRequest,
+	policies sdkruntime.ExecutionPolicies,
 	emit func(events.AgentEvent),
 ) (toolResult, error) {
 	log := rt.logger
@@ -481,7 +501,9 @@ func (rt *LocalRuntime) executeSingleTool(
 	}
 
 	// Authorization check.
-	authResult, err := rt.AuthorizeTool(ctx, log, tools, tc.ToolName, tc.Args)
+	authResult, err := executeWithPolicy(ctx, policies.ToolAuth, func(attemptCtx context.Context) (base.AuthorizeResult, error) {
+		return rt.AuthorizeTool(attemptCtx, log, tools, tc.ToolName, tc.Args)
+	})
 	if err != nil {
 		return toolResult{
 			message: interfaces.Message{},
@@ -519,6 +541,10 @@ func (rt *LocalRuntime) executeSingleTool(
 		if input.ChannelName == "" && input.ApprovalHandler == nil {
 			approvalStatus = types.ApprovalStatusUnavailable
 		} else {
+			approvalTimeout := rt.approvalTaskTimeout()
+			approvalTimer := time.NewTimer(approvalTimeout)
+			defer approvalTimer.Stop()
+
 			// Generate a token and register a resolve channel so either path can unblock:
 			//   - Streaming: caller receives CUSTOM event with token, calls rt.Approve(token, status)
 			//   - Non-streaming with handler: handler calls approvalReq.Respond(status) directly
@@ -526,6 +552,8 @@ func (rt *LocalRuntime) executeSingleTool(
 			resultCh := make(chan types.ApprovalStatus, 1)
 			rt.pendingApprovals.Store(token, resultCh)
 			defer rt.pendingApprovals.Delete(token)
+
+			respond := func(status types.ApprovalStatus) error { resultCh <- status; return nil }
 
 			if isSubAgent {
 				approvalReq := &types.ApprovalRequest{
@@ -536,7 +564,7 @@ func (rt *LocalRuntime) executeSingleTool(
 						Args:          tc.Args,
 						ApprovalToken: token,
 					},
-					Respond: func(status types.ApprovalStatus) error { resultCh <- status; return nil },
+					Respond: respond,
 				}
 				emit(events.NewAgentCustomEvent(string(events.AgentCustomEventNameSubAgentDelegation),
 					events.AgentCustomEventDelegationValue{
@@ -546,7 +574,9 @@ func (rt *LocalRuntime) executeSingleTool(
 						ApprovalToken: token,
 					}))
 				if input.ApprovalHandler != nil {
-					input.ApprovalHandler(ctx, approvalReq)
+					approvalCtx, approvalCancel := context.WithTimeout(ctx, approvalTimeout)
+					input.ApprovalHandler(approvalCtx, approvalReq)
+					approvalCancel()
 				}
 			} else {
 				approvalReq := &types.ApprovalRequest{
@@ -559,7 +589,7 @@ func (rt *LocalRuntime) executeSingleTool(
 						Args:            tc.Args,
 						ApprovalToken:   token,
 					},
-					Respond: func(status types.ApprovalStatus) error { resultCh <- status; return nil },
+					Respond: respond,
 				}
 				emit(events.NewAgentCustomEvent(string(events.AgentCustomEventNameToolApproval),
 					events.AgentCustomEventApprovalValue{
@@ -571,7 +601,9 @@ func (rt *LocalRuntime) executeSingleTool(
 						ApprovalToken:   token,
 					}))
 				if input.ApprovalHandler != nil {
-					input.ApprovalHandler(ctx, approvalReq)
+					approvalCtx, approvalCancel := context.WithTimeout(ctx, approvalTimeout)
+					input.ApprovalHandler(approvalCtx, approvalReq)
+					approvalCancel()
 				}
 			}
 			// Streaming path: handler is nil; caller calls rt.Approve(token, status) → resultCh.
@@ -584,6 +616,11 @@ func (rt *LocalRuntime) executeSingleTool(
 					message: interfaces.Message{},
 					failed:  true,
 				}, ctx.Err()
+			case <-approvalTimer.C:
+				return toolResult{
+					message: interfaces.Message{},
+					failed:  true,
+				}, fmt.Errorf("tool approval timed out after %v", approvalTimeout)
 			}
 		}
 	}
@@ -593,9 +630,9 @@ func (rt *LocalRuntime) executeSingleTool(
 	switch approvalStatus {
 	case types.ApprovalStatusApproved:
 		if isSubAgent {
-			stepName := strings.TrimSpace(subAgentRoute.name)
-			if stepName == "" {
-				stepName = tc.ToolName
+			delegationName := strings.TrimSpace(subAgentRoute.name)
+			if delegationName == "" {
+				delegationName = tc.ToolName
 			}
 			if input.SubAgentDepth >= input.MaxSubAgentDepth {
 				log.Warn(ctx, "local: sub-agent delegation refused (max depth)",
@@ -609,22 +646,24 @@ func (rt *LocalRuntime) executeSingleTool(
 				log.Info(ctx, "local: delegating to sub-agent",
 					slog.String("scope", "loop"),
 					slog.String("toolName", tc.ToolName),
-					slog.String("stepName", stepName),
+					slog.String("delegationName", delegationName),
 					slog.Int("depth", input.SubAgentDepth+1))
-				emit(events.NewAgentStepStartedEvent(stepName))
-				subResult, execErr := subAgentRoute.runtime.RunAgentLoop(ctx, AgentLoopInput{
-					UserPrompt:       query,
-					RunID:            uuid.New().String(),
-					StreamingEnabled: input.StreamingEnabled,
-					ChannelName:      input.ChannelName,
-					ApprovalHandler:  input.ApprovalHandler,
-					MemoryScope:      base.SubAgentScope(input.MemoryScope, stepName),
-					SubAgentRoutes:   subAgentRoute.children,
-					SubAgentDepth:    input.SubAgentDepth + 1,
-					MaxSubAgentDepth: input.MaxSubAgentDepth,
-					Tools:            subAgentRoute.tools,
+				emit(events.NewAgentStepStartedEvent(delegationName))
+				subResult, execErr := executeWithPolicy(ctx, rt.subAgentExecutionPolicy(), func(attemptCtx context.Context) (*AgentLoopResult, error) {
+					return subAgentRoute.runtime.RunAgentLoop(attemptCtx, AgentLoopInput{
+						UserPrompt:       query,
+						RunID:            uuid.New().String(),
+						StreamingEnabled: input.StreamingEnabled,
+						ChannelName:      input.ChannelName,
+						ApprovalHandler:  input.ApprovalHandler,
+						MemoryScope:      base.SubAgentScope(input.MemoryScope, delegationName),
+						SubAgentRoutes:   subAgentRoute.children,
+						SubAgentDepth:    input.SubAgentDepth + 1,
+						MaxSubAgentDepth: input.MaxSubAgentDepth,
+						Tools:            subAgentRoute.tools,
+					})
 				})
-				emit(events.NewAgentStepFinishedEvent(stepName))
+				emit(events.NewAgentStepFinishedEvent(delegationName))
 				if execErr != nil {
 					content = "Sub-agent execution failed: " + execErr.Error()
 				} else {
@@ -638,15 +677,18 @@ func (rt *LocalRuntime) executeSingleTool(
 				slog.String("scope", "loop"),
 				slog.String("tool", tc.ToolName),
 				slog.String("toolCallID", tc.ToolCallID))
-			result, execErr := rt.ExecuteTool(ctx, base.ExecuteToolInput{
-				Logger:     log,
-				Tools:      tools,
-				ToolName:   tc.ToolName,
-				Args:       tc.Args,
-				ToolCallID: tc.ToolCallID,
-				RunID:      input.RunID,
-				Iteration:  iteration,
-			}, input.MemoryScope)
+			toolPolicy := rt.toolExecutionPolicy(tc.ToolKind, policies)
+			result, execErr := executeWithPolicy(ctx, toolPolicy, func(attemptCtx context.Context) (string, error) {
+				return rt.ExecuteTool(attemptCtx, base.ExecuteToolInput{
+					Logger:     log,
+					Tools:      tools,
+					ToolName:   tc.ToolName,
+					Args:       tc.Args,
+					ToolCallID: tc.ToolCallID,
+					RunID:      input.RunID,
+					Iteration:  iteration,
+				}, input.MemoryScope)
+			})
 			if execErr != nil {
 				content = "Tool execution failed: " + execErr.Error()
 				failed = true
@@ -685,23 +727,134 @@ func (rt *LocalRuntime) persistConversationMessages(ctx context.Context, convers
 		return
 	}
 
-	ctx, sp := rt.Tracer.StartSpan(ctx, "conversation.add_messages",
+	ctx, span := rt.Tracer.StartSpan(ctx, "conversation.add_messages",
 		interfaces.Attribute{Key: "conversation.id", Value: conversationID},
 		interfaces.Attribute{Key: "message.count", Value: len(messages)},
 	)
-	defer sp.End()
+	defer span.End()
 
 	failCount := 0
-	for _, msg := range messages {
-		if err := conv.AddMessage(ctx, conversationID, msg); err != nil {
-			failCount++
-			rt.logger.Warn(ctx, "local: add conversation message failed",
-				slog.String("scope", "loop"),
-				slog.String("conversationID", conversationID),
-				slog.Any("error", err))
+	conversationPolicy := rt.executionPolicies().Conversation
+	_ = executeWithPolicyErr(ctx, conversationPolicy, func(attemptCtx context.Context) error {
+		for _, msg := range messages {
+			if err := conv.AddMessage(attemptCtx, conversationID, msg); err != nil {
+				failCount++
+				rt.logger.Warn(ctx, "local: add conversation message failed",
+					slog.String("scope", "loop"),
+					slog.String("conversationID", conversationID),
+					slog.Any("error", err))
+			}
+		}
+		return nil
+	})
+	if failCount > 0 {
+		span.SetAttribute("failed.count", failCount)
+	}
+}
+
+// executeWithPolicy runs the given operation under the rules of the supplied [ExecutionPolicy],
+// mirroring Temporal activity semantics locally. Each attempt gets a child context whose deadline
+// is policy.Timeout; the parent context cancelling short-circuits the loop immediately.
+// Between attempts the function waits with exponential backoff (InitialInterval, BackoffCoefficient,
+// MaximumInterval from policy.Retry). The last error is returned when all attempts are exhausted.
+func executeWithPolicy[T any](ctx context.Context, policy sdkruntime.ExecutionPolicy, operation func(ctx context.Context) (T, error)) (T, error) {
+	var zero T
+	attempts := policy.MaxAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	backoff := policy.Retry.InitialInterval
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		attemptCtx := ctx
+		var cancel context.CancelFunc
+		if policy.Timeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, policy.Timeout)
+		}
+
+		result, err := operation(attemptCtx)
+		if cancel != nil {
+			cancel()
+		}
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+
+		if ctx.Err() != nil {
+			return zero, ctx.Err()
+		}
+
+		if attempt >= attempts {
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case <-time.After(backoff):
+		}
+
+		next := time.Duration(float64(backoff) * policy.Retry.BackoffCoefficient)
+		if next > policy.Retry.MaximumInterval {
+			backoff = policy.Retry.MaximumInterval
+		} else {
+			backoff = next
 		}
 	}
-	if failCount > 0 {
-		sp.SetAttribute("failed.count", failCount)
+	return zero, lastErr
+}
+
+// executeWithPolicyErr is a convenience wrapper around [executeWithPolicy] for operations that return only an error.
+// Use this instead of executeWithPolicy when there is no meaningful return value.
+func executeWithPolicyErr(ctx context.Context, policy sdkruntime.ExecutionPolicy, operation func(ctx context.Context) error) error {
+	_, err := executeWithPolicy(ctx, policy, func(ctx context.Context) (struct{}, error) {
+		return struct{}{}, operation(ctx)
+	})
+	return err
+}
+
+// executionPolicies merges the agent's ExecutionConfig overrides onto SDK defaults and converts them to
+// fully populated [ExecutionPolicy] values for every agent loop operation.
+func (rt *LocalRuntime) executionPolicies() sdkruntime.ExecutionPolicies {
+	return sdkruntime.ResolveExecutionPolicies(rt.AgentConfig.ExecutionConfigs)
+}
+
+// toolExecutionPolicy returns the execution policy for a tool execution operation based on tool kind.
+// MCP and A2A tools use their dedicated policies; all other tools use the generic ToolExecute policy.
+func (rt *LocalRuntime) toolExecutionPolicy(kind types.ToolKind, policies sdkruntime.ExecutionPolicies) sdkruntime.ExecutionPolicy {
+	switch kind {
+	case types.ToolKindMCP:
+		return policies.MCP
+	case types.ToolKindA2A:
+		return policies.A2A
+	default:
+		return policies.ToolExecute
 	}
+}
+
+// approvalTaskTimeout returns the effective approval deadline, clamped to [types.MaxApprovalTimeout].
+// When ApprovalTimeout is not configured it defaults to MaxApprovalTimeout.
+func (rt *LocalRuntime) approvalTaskTimeout() time.Duration {
+	timeout := rt.AgentConfig.Limits.ApprovalTimeout
+	if timeout == 0 {
+		timeout = types.MaxApprovalTimeout
+	}
+	if timeout > types.MaxApprovalTimeout {
+		timeout = types.MaxApprovalTimeout
+	}
+	return timeout
+}
+
+// subAgentExecutionPolicy returns the execution policy for a sub-agent delegation operation.
+// The sub-agent policy is derived from the already-resolved execution policies; when its timeout
+// is still zero (no agent or SDK override set one), the agent run timeout is used as the ceiling.
+func (rt *LocalRuntime) subAgentExecutionPolicy() sdkruntime.ExecutionPolicy {
+	policy := rt.executionPolicies().SubAgent
+	if policy.Timeout == 0 && rt.AgentConfig.Limits.Timeout > 0 {
+		policy.Timeout = rt.AgentConfig.Limits.Timeout
+	}
+	return policy
 }

@@ -180,9 +180,34 @@ defer cancel()
 result, err := a.Run(ctx, quickPrompt, nil) // 30s cap regardless of agent timeout
 ```
 
+## Execution config
+
+`WithTimeout` sets a ceiling on the **entire run**. For finer control — giving the LLM call a different deadline from tool execution, or tuning retry budgets per operation — use `With*ExecutionConfig`:
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithTimeout(15 * time.Minute),          // ceiling on entire run
+
+    agent.WithLLMExecutionConfig(agent.ExecutionConfig{
+        Timeout:     10 * time.Minute,            // per LLM attempt
+        MaxAttempts: 3,
+    }),
+    agent.WithToolExecutionConfig(agent.ExecutionConfig{
+        Timeout:     2 * time.Minute,             // per tool attempt
+        MaxAttempts: 1,
+    }),
+)
+```
+
+See [Execution config](/features/execution-config) for the full defaults table and usage guide.
+
 ## Related
 
 <CardGroup cols={2}>
+
+  <Card title="Execution config" icon="sliders" href="/features/execution-config" horizontal>
+    Timeout and retry budget per operation
+  </Card>
 
   <Card title="Approvals" icon="shield-check" href="/features/approvals" horizontal>
     Approval handler and OnApproval flows

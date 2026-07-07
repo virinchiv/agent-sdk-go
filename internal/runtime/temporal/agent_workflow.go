@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
+	agentrt "github.com/agenticenv/agent-sdk-go/internal/runtime"
 	"github.com/agenticenv/agent-sdk-go/internal/runtime/base"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
@@ -23,28 +24,14 @@ import (
 )
 
 var (
-	agentLLMActivityTaskTimeout time.Duration = 30 * time.Minute
-	agentLLMActivityMaxAttempts int32         = 3
 	// Heartbeat for long LLM stream / tool execute: fail stuck attempts soon after worker loss (<< StartToClose).
 	agentLongActivityHeartbeatTimeout  time.Duration = 30 * time.Second
 	agentLongActivityHeartbeatInterval time.Duration = 10 * time.Second
 
 	agentToolApprovalActivityMaxAttempts int32 = 1
 
-	agentToolAuthorizeActivityTaskTimeout time.Duration = 30 * time.Minute
-	agentToolAuthorizeActivityMaxAttempts int32         = 1
-
-	agentToolExecuteActivityTaskTimeout time.Duration = 30 * time.Minute
-	agentToolExecuteActivityMaxAttempts int32         = 3
-
-	agentRetrieverActivityTaskTimeout time.Duration = 5 * time.Minute
-	agentRetrieverActivityMaxAttempts int32         = 3
-
 	sendEventActivityTaskTimeout time.Duration = 15 * time.Second
 	sendEventActivityMaxAttempts int32         = 1
-
-	conversationActivityTaskTimeout time.Duration = 30 * time.Second
-	conversationActivityMaxAttempts int32         = 1
 
 	// updateWorkflowEventRPCTimeout caps UpdateWorkflow for normal events (Accepted). When the event worker
 	// or process is gone, fail fast instead of blocking until sendEventActivityTaskTimeout. Must be < sendEventActivityTaskTimeout.
@@ -244,14 +231,15 @@ type ToolCallRequest struct {
 // agentToolCallInput bundles the workflow handle, per-iteration activity contexts, and emit plumbing for tool execution.
 // Built once per sequential LLM tool round, or once per parallel branch (unique parallelSlot activity IDs).
 type agentToolCallInput struct {
-	wfCtx        workflow.Context
-	input        AgentWorkflowInput
-	messageID    string
-	iteration    int
-	emitEvent    func(events.AgentEvent) error
-	authorizeCtx workflow.Context
-	approvalCtx  workflow.Context
-	execCtx      workflow.Context
+	wfCtx         workflow.Context
+	input         AgentWorkflowInput
+	messageID     string
+	iteration     int
+	emitEvent     func(events.AgentEvent) error
+	authorizeCtx  workflow.Context
+	approvalCtx   workflow.Context
+	activityScope string
+	policies      agentrt.ExecutionPolicies
 }
 
 // agentToolCallOutput is the output of executeAgentToolCall.
@@ -340,6 +328,7 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 	model := rt.AgentConfig.LLM.Client.GetModel()
 
 	maxIter := rt.AgentConfig.Limits.MaxIterations
+	policies := rt.executionPolicies()
 
 	var activityIDSuffix string
 	err := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
@@ -349,38 +338,17 @@ func (rt *TemporalRuntime) AgentWorkflow(ctx workflow.Context, input AgentWorkfl
 		return nil, err
 	}
 
-	llmActCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "AgentLLMActivity_" + activityIDSuffix,
-		StartToCloseTimeout: agentLLMActivityTaskTimeout,
-		RetryPolicy:         retryPolicy(agentLLMActivityMaxAttempts),
-	})
-	streamActCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "AgentLLMStreamActivity_" + activityIDSuffix,
-		StartToCloseTimeout: agentLLMActivityTaskTimeout,
-		HeartbeatTimeout:    agentLongActivityHeartbeatTimeout,
-		RetryPolicy:         retryPolicy(agentLLMActivityMaxAttempts),
-	})
+	llmActCtx := workflow.WithActivityOptions(ctx, execActivityOptions(policies.LLM, "AgentLLMActivity_"+activityIDSuffix, false))
+	streamActCtx := workflow.WithActivityOptions(ctx, execActivityOptions(policies.LLM, "AgentLLMStreamActivity_"+activityIDSuffix, true))
 
 	sendEventCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		ActivityID:          "SendAgentEventUpdateActivity_" + activityIDSuffix,
 		StartToCloseTimeout: sendEventActivityTaskTimeout,
 		RetryPolicy:         retryPolicy(sendEventActivityMaxAttempts),
 	})
-	convCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "ConversationActivity_" + activityIDSuffix,
-		StartToCloseTimeout: conversationActivityTaskTimeout,
-		RetryPolicy:         retryPolicy(conversationActivityMaxAttempts),
-	})
-	retrieverActCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "AgentRetrieverActivity_" + activityIDSuffix,
-		StartToCloseTimeout: agentRetrieverActivityTaskTimeout,
-		RetryPolicy:         retryPolicy(agentRetrieverActivityMaxAttempts),
-	})
-	memoryActCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		ActivityID:          "AgentMemoryActivity_" + activityIDSuffix,
-		StartToCloseTimeout: agentRetrieverActivityTaskTimeout,
-		RetryPolicy:         retryPolicy(agentRetrieverActivityMaxAttempts),
-	})
+	convCtx := workflow.WithActivityOptions(ctx, execActivityOptions(policies.Conversation, "ConversationActivity_"+activityIDSuffix, false))
+	retrieverActCtx := workflow.WithActivityOptions(ctx, execActivityOptions(policies.Retriever, "AgentRetrieverActivity_"+activityIDSuffix, false))
+	memoryActCtx := workflow.WithActivityOptions(ctx, execActivityOptions(policies.Memory, "AgentMemoryActivity_"+activityIDSuffix, false))
 
 	var streamingUnavailable bool
 	// emitAgentEvent must use wfCtx (the coroutine that calls Get) for ExecuteActivity().Get — not the root
@@ -857,6 +825,7 @@ func (rt *TemporalRuntime) newAgentToolCallInput(
 	if parallelSlot != "" {
 		activityScope = activityIDSuffix + "_" + parallelSlot
 	}
+	policies := rt.executionPolicies()
 	return agentToolCallInput{
 		wfCtx:     wfCtx,
 		input:     input,
@@ -865,22 +834,15 @@ func (rt *TemporalRuntime) newAgentToolCallInput(
 		emitEvent: func(ev events.AgentEvent) error {
 			return emitAgentEvent(wfCtx, ev)
 		},
-		authorizeCtx: workflow.WithActivityOptions(wfCtx, workflow.ActivityOptions{
-			ActivityID:          "AgentToolAuthorizeActivity_" + activityScope,
-			StartToCloseTimeout: agentToolAuthorizeActivityTaskTimeout,
-			RetryPolicy:         retryPolicy(agentToolAuthorizeActivityMaxAttempts),
-		}),
+		authorizeCtx: workflow.WithActivityOptions(wfCtx, execActivityOptions(
+			policies.ToolAuth, "AgentToolAuthorizeActivity_"+activityScope, false)),
 		approvalCtx: workflow.WithActivityOptions(wfCtx, workflow.ActivityOptions{
 			ActivityID:          "AgentToolApprovalActivity_" + activityScope,
 			StartToCloseTimeout: approvalTaskTimeout,
 			RetryPolicy:         retryPolicy(agentToolApprovalActivityMaxAttempts),
 		}),
-		execCtx: workflow.WithActivityOptions(wfCtx, workflow.ActivityOptions{
-			ActivityID:          "AgentToolExecuteActivity_" + activityScope,
-			StartToCloseTimeout: agentToolExecuteActivityTaskTimeout,
-			HeartbeatTimeout:    agentLongActivityHeartbeatTimeout,
-			RetryPolicy:         retryPolicy(agentToolExecuteActivityMaxAttempts),
-		}),
+		activityScope: activityScope,
+		policies:      policies,
 	}
 }
 
@@ -1007,7 +969,10 @@ func (rt *TemporalRuntime) executeAgentToolCall(input agentToolCallInput, tc Too
 				AgentFingerprint: input.input.AgentFingerprint,
 				MemoryScope:      input.input.MemoryScope,
 			}
-			errExec := workflow.ExecuteActivity(input.execCtx, rt.AgentToolExecuteActivity, execInput).Get(input.execCtx, &result)
+			toolPolicy := rt.toolExecutionPolicy(tc.ToolKind, input.policies)
+			execCtx := workflow.WithActivityOptions(input.wfCtx, execActivityOptions(
+				toolPolicy, "AgentToolExecuteActivity_"+input.activityScope, true))
+			errExec := workflow.ExecuteActivity(execCtx, rt.AgentToolExecuteActivity, execInput).Get(execCtx, &result)
 			if errExec != nil {
 				content = "Tool execution failed: " + errExec.Error()
 				failed = true
@@ -1507,12 +1472,12 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 		WaitForCancellation:      true,
 	})
 
-	stepName := strings.TrimSpace(route.Name)
-	if stepName == "" {
-		stepName = tc.ToolName
+	delegationName := strings.TrimSpace(route.Name)
+	if delegationName == "" {
+		delegationName = tc.ToolName
 	}
 
-	if emitErr := emitEvent(events.NewAgentStepStartedEvent(stepName)); emitErr != nil {
+	if emitErr := emitEvent(events.NewAgentStepStartedEvent(delegationName)); emitErr != nil {
 		return "", emitErr
 	}
 
@@ -1526,7 +1491,7 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 		return "Sub-agent workflow failed: " + err.Error(), nil
 	}
 
-	if emitErr := emitEvent(events.NewAgentStepFinishedEvent(stepName)); emitErr != nil {
+	if emitErr := emitEvent(events.NewAgentStepFinishedEvent(delegationName)); emitErr != nil {
 		return "", emitErr
 	}
 
@@ -1540,17 +1505,70 @@ func (rt *TemporalRuntime) delegateToSubAgent(ctx workflow.Context, input AgentW
 }
 
 // subAgentChildWorkflowTimeout caps how long the main agent waits on a delegated sub-agent run.
-// Uses the main agent worker's agent timeout (same package as delegateToSubAgent); sub-agent workers may define
-// their own limits separately, but this bounds the child execution from the main agent's perspective.
+// Derived from the resolved sub-agent execution policy; falls back to the agent run timeout when
+// no explicit timeout override was configured.
 func (rt *TemporalRuntime) subAgentChildWorkflowTimeout() time.Duration {
-	return rt.AgentConfig.Limits.Timeout
+	timeout := rt.executionPolicies().SubAgent.Timeout
+	if timeout == 0 && rt.AgentConfig.Limits.Timeout > 0 {
+		return rt.AgentConfig.Limits.Timeout
+	}
+	return timeout
 }
 
+// executionPolicies merges the agent's ExecutionConfig overrides onto SDK defaults and converts them to
+// fully populated ExecutionPolicy values for every agent loop operation.
+func (rt *TemporalRuntime) executionPolicies() agentrt.ExecutionPolicies {
+	return agentrt.ResolveExecutionPolicies(rt.AgentConfig.ExecutionConfigs)
+}
+
+// toolExecutionPolicy returns the execution policy for a tool execution operation based on tool kind.
+// MCP and A2A tools use their dedicated policies; all other tools use the generic ToolExecute policy.
+func (rt *TemporalRuntime) toolExecutionPolicy(kind types.ToolKind, policies agentrt.ExecutionPolicies) agentrt.ExecutionPolicy {
+	switch kind {
+	case types.ToolKindMCP:
+		return policies.MCP
+	case types.ToolKindA2A:
+		return policies.A2A
+	default:
+		return policies.ToolExecute
+	}
+}
+
+// execActivityOptions builds Temporal ActivityOptions from a resolved ExecutionPolicy.
+// The StartToCloseTimeout is set to the policy Timeout; retries follow the policy's own backoff.
+// When withHeartbeat is true, a HeartbeatTimeout is added so long-running activities are detected as lost.
+func execActivityOptions(policy agentrt.ExecutionPolicy, activityID string, withHeartbeat bool) workflow.ActivityOptions {
+	attempts := int32(policy.MaxAttempts)
+	if attempts < 1 {
+		attempts = 1
+	}
+	opts := workflow.ActivityOptions{
+		ActivityID:          activityID,
+		StartToCloseTimeout: policy.Timeout,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:    policy.Retry.InitialInterval,
+			BackoffCoefficient: policy.Retry.BackoffCoefficient,
+			MaximumInterval:    policy.Retry.MaximumInterval,
+			MaximumAttempts:    attempts,
+		},
+	}
+	if withHeartbeat {
+		opts.HeartbeatTimeout = agentLongActivityHeartbeatTimeout
+	}
+	return opts
+}
+
+// retryPolicy builds a Temporal *RetryPolicy with SDK default backoff.
+// maxAttempts is clamped to a minimum of 1 so a zero value does not disable retries.
 func retryPolicy(maxAttempts int32) *temporal.RetryPolicy {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	def := agentrt.DefaultRetryPolicy()
 	return &temporal.RetryPolicy{
-		InitialInterval:    time.Second,
-		BackoffCoefficient: 2,
-		MaximumInterval:    10 * time.Minute,
+		InitialInterval:    def.InitialInterval,
+		BackoffCoefficient: def.BackoffCoefficient,
+		MaximumInterval:    def.MaximumInterval,
 		MaximumAttempts:    maxAttempts,
 	}
 }

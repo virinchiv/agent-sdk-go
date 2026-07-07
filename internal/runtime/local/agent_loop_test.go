@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,9 +208,20 @@ func TestRunAgentLoop_OnDemandSaveMemoryTool(t *testing.T) {
 
 func TestRunAgentLoop_LLMError(t *testing.T) {
 	client := &seqLLMClient{errs: []error{errors.New("llm fail")}}
-	rt, _ := newLoopRT(t, 5, client)
+	rt, err := NewLocalRuntime(
+		WithLogger(logger.NoopLogger()),
+		WithAgentSpec(sdkruntime.AgentSpec{Name: "loop-agent", SystemPrompt: "sys"}),
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM:    sdkruntime.AgentLLM{Client: client},
+			Limits: sdkruntime.AgentLimits{MaxIterations: 5, Timeout: 10 * time.Second},
+			ExecutionConfigs: sdkruntime.ExecutionConfigs{
+				LLM: sdkruntime.ExecutionConfig{MaxAttempts: 1},
+			},
+		}),
+	)
+	require.NoError(t, err)
 
-	_, err := runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "hi"})
+	_, err = runLoop(context.Background(), rt, nil, AgentLoopInput{UserPrompt: "hi"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm fail")
 }
@@ -555,7 +567,7 @@ func TestExecuteToolsParallel_AllSucceed(t *testing.T) {
 		testToolCall("c2", "t2"),
 	}
 
-	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg-1", 0, calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg-1", 0, calls, rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	// Order must match submission order (parallel but results are indexed).
@@ -569,7 +581,7 @@ func TestExecuteToolsParallel_ToolErrorInMessage(t *testing.T) {
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, failing)
 
 	calls := []base.ToolCallRequest{testToolCall("c1", "bad")}
-	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg", 0, calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "msg", 0, calls, rt.executionPolicies(), noopEmit)
 	require.NoError(t, err) // parallel swallows into message
 	require.Len(t, msgs, 1)
 	require.Contains(t, msgs[0].message.Content, "boom")
@@ -590,7 +602,7 @@ func TestExecuteToolsParallel_ResultsOrderPreserved(t *testing.T) {
 		testToolCall("2", "b"),
 		testToolCall("3", "c"),
 	}
-	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "m", 0, calls, noopEmit)
+	msgs, err := rt.executeToolsParallel(context.Background(), loopToolsInput(tools), "m", 0, calls, rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, []string{"A", "B", "C"}, []string{msgs[0].message.Content, msgs[1].message.Content, msgs[2].message.Content})
 }
@@ -608,7 +620,7 @@ func TestExecuteToolsSequential_AllSucceed(t *testing.T) {
 		testToolCall("c1", "s1"),
 		testToolCall("c2", "s2"),
 	}
-	msgs, err := rt.executeToolsSequential(context.Background(), loopToolsInput(tools), "msg", 0, calls, noopEmit)
+	msgs, err := rt.executeToolsSequential(context.Background(), loopToolsInput(tools), "msg", 0, calls, rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	require.Equal(t, "v1", msgs[0].message.Content)
@@ -621,7 +633,7 @@ func TestExecuteToolsSequential_HardErrorOnContextCancel(t *testing.T) {
 	cancel() // pre-cancelled
 
 	calls := []base.ToolCallRequest{testToolCall("c1", "missing-tool")}
-	results, err := rt.executeToolsSequential(ctx, AgentLoopInput{}, "msg", 0, calls, noopEmit)
+	results, err := rt.executeToolsSequential(ctx, AgentLoopInput{}, "msg", 0, calls, rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.True(t, results[0].failed)
@@ -638,7 +650,7 @@ func TestExecuteSingleTool_Approved(t *testing.T) {
 
 	emit, evs := captureEmit()
 	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg-1", 0,
-		testToolCall("c1", "my-tool"), emit)
+		testToolCall("c1", "my-tool"), rt.executionPolicies(), emit)
 
 	require.NoError(t, err)
 	require.Equal(t, "hello", msg.message.Content)
@@ -656,7 +668,7 @@ func TestExecuteSingleTool_ToolExecError(t *testing.T) {
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
 
 	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg", 0,
-		testToolCall("c1", "boom"), noopEmit)
+		testToolCall("c1", "boom"), rt.executionPolicies(), noopEmit)
 	require.NoError(t, err) // tool errors become a content message, not a hard error
 	require.Contains(t, msg.message.Content, "exec failed")
 	require.True(t, msg.failed)
@@ -666,7 +678,7 @@ func TestExecuteSingleTool_UnknownToolErrors(t *testing.T) {
 	rt, _ := newLoopRT(t, 5, &seqLLMClient{}) // no tools registered
 
 	_, err := rt.executeSingleTool(context.Background(), AgentLoopInput{}, "msg", 0,
-		testToolCall("c1", "ghost"), noopEmit)
+		testToolCall("c1", "ghost"), rt.executionPolicies(), noopEmit)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ghost")
 }
@@ -687,7 +699,7 @@ func TestExecuteSingleTool_AuthorizationDenied(t *testing.T) {
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, authTool)
 
 	msg, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg", 0,
-		testToolCall("c1", "restricted"), noopEmit)
+		testToolCall("c1", "restricted"), rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Contains(t, msg.message.Content, msgToolUnauthorized)
 	require.False(t, msg.failed)
@@ -699,7 +711,7 @@ func TestExecuteSingleTool_AuthorizationError(t *testing.T) {
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, authTool)
 
 	_, err := rt.executeSingleTool(context.Background(), loopToolsInput(tools), "msg", 0,
-		testToolCall("c1", "err-tool"), noopEmit)
+		testToolCall("c1", "err-tool"), rt.executionPolicies(), noopEmit)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "auth backend down")
 }
@@ -711,7 +723,7 @@ func TestExecuteSingleTool_ApprovalUnavailable(t *testing.T) {
 
 	msg, err := rt.executeSingleTool(context.Background(),
 		AgentLoopInput{ChannelName: "", ApprovalHandler: nil, Tools: tools}, "msg", 0,
-		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
+		testToolCallNeedsApproval("c1", "guarded"), rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Contains(t, msg.message.Content, msgToolApprovalUnavailable)
 }
@@ -726,7 +738,7 @@ func TestExecuteSingleTool_ApprovalHandlerApproves(t *testing.T) {
 
 	msg, err := rt.executeSingleTool(context.Background(),
 		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg", 0,
-		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
+		testToolCallNeedsApproval("c1", "guarded"), rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, "ok", msg.message.Content)
 }
@@ -741,7 +753,7 @@ func TestExecuteSingleTool_ApprovalHandlerRejects(t *testing.T) {
 
 	msg, err := rt.executeSingleTool(context.Background(),
 		AgentLoopInput{ApprovalHandler: handler, Tools: tools}, "msg", 0,
-		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
+		testToolCallNeedsApproval("c1", "guarded"), rt.executionPolicies(), noopEmit)
 	require.NoError(t, err)
 	require.Equal(t, msgToolRejected, msg.message.Content)
 }
@@ -791,6 +803,7 @@ func TestExecuteSingleTool_StreamingApproveUnblocks(t *testing.T) {
 			AgentLoopInput{ChannelName: "some-channel", Tools: tools}, // streaming path
 			"msg", 0,
 			testToolCallNeedsApproval("c1", "guarded"),
+			rt.executionPolicies(),
 			emit,
 		)
 	}()
@@ -812,6 +825,26 @@ func TestExecuteSingleTool_StreamingApproveUnblocks(t *testing.T) {
 	require.Equal(t, "stream-ok", result.message.Content)
 }
 
+func TestExecuteSingleTool_ApprovalTimeout(t *testing.T) {
+	tool := stubTool{name: "guarded", result: "should not run", needsApproval: true}
+	rt, err := NewLocalRuntime(
+		WithLogger(logger.NoopLogger()),
+		WithAgentSpec(sdkruntime.AgentSpec{Name: "loop-agent", SystemPrompt: "sys"}),
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM:    sdkruntime.AgentLLM{Client: &seqLLMClient{}},
+			Limits: sdkruntime.AgentLimits{MaxIterations: 5, Timeout: 10 * time.Second, ApprovalTimeout: 30 * time.Millisecond},
+		}),
+	)
+	require.NoError(t, err)
+	tools := []interfaces.Tool{tool}
+
+	_, err = rt.executeSingleTool(context.Background(),
+		AgentLoopInput{ChannelName: "some-channel", Tools: tools}, "msg", 0,
+		testToolCallNeedsApproval("c1", "guarded"), rt.executionPolicies(), noopEmit)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "tool approval timed out")
+}
+
 func TestExecuteSingleTool_ApprovalContextCancel(t *testing.T) {
 	tool := stubTool{name: "guarded", result: "should not run", needsApproval: true}
 	rt, tools := newLoopRT(t, 5, &seqLLMClient{}, tool)
@@ -827,7 +860,7 @@ func TestExecuteSingleTool_ApprovalContextCancel(t *testing.T) {
 
 	_, err := rt.executeSingleTool(ctx,
 		AgentLoopInput{ChannelName: "some-channel", Tools: tools}, "msg", 0,
-		testToolCallNeedsApproval("c1", "guarded"), noopEmit)
+		testToolCallNeedsApproval("c1", "guarded"), rt.executionPolicies(), noopEmit)
 
 	<-done
 	require.Error(t, err)
@@ -941,6 +974,97 @@ func TestPersistConversationMessages_ContinuesAfterFailure(t *testing.T) {
 		{Role: interfaces.MessageRoleUser, Content: "1"},
 		{Role: interfaces.MessageRoleAssistant, Content: "2"},
 	})
+}
+
+// ---------------------------------------------------------------------------
+// executeWithPolicy — timeout and retry budget
+// ---------------------------------------------------------------------------
+
+func TestRunStep_success(t *testing.T) {
+	t.Parallel()
+	got, err := executeWithPolicy(context.Background(), sdkruntime.ExecutionConfig{Timeout: time.Second, MaxAttempts: 1}.ToPolicy(),
+		func(ctx context.Context) (string, error) {
+			return "ok", nil
+		})
+	require.NoError(t, err)
+	require.Equal(t, "ok", got)
+}
+
+func TestRunStep_retriesThenSucceeds(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	got, err := executeWithPolicy(context.Background(), sdkruntime.ExecutionConfig{Timeout: time.Second, MaxAttempts: 3}.ToPolicy(),
+		func(ctx context.Context) (int, error) {
+			if calls.Add(1) < 3 {
+				return 0, errors.New("transient")
+			}
+			return 42, nil
+		})
+	require.NoError(t, err)
+	require.Equal(t, 42, got)
+	require.Equal(t, int32(3), calls.Load())
+}
+
+func TestRunStep_exhaustsRetries(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	_, err := executeWithPolicy(context.Background(), sdkruntime.ExecutionConfig{Timeout: time.Second, MaxAttempts: 2}.ToPolicy(),
+		func(ctx context.Context) (struct{}, error) {
+			calls.Add(1)
+			return struct{}{}, errors.New("fail")
+		})
+	require.Error(t, err)
+	require.Equal(t, int32(2), calls.Load())
+}
+
+func TestRunStep_respectsParentCancel(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := executeWithPolicy(ctx, sdkruntime.ExecutionConfig{Timeout: time.Second, MaxAttempts: 3}.ToPolicy(),
+		func(ctx context.Context) (struct{}, error) {
+			return struct{}{}, errors.New("fail")
+		})
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestRunStep_perAttemptTimeout(t *testing.T) {
+	t.Parallel()
+	start := time.Now()
+	_, err := executeWithPolicy(context.Background(), sdkruntime.ExecutionConfig{Timeout: 20 * time.Millisecond, MaxAttempts: 1}.ToPolicy(),
+		func(ctx context.Context) (struct{}, error) {
+			<-ctx.Done()
+			return struct{}{}, ctx.Err()
+		})
+	require.Error(t, err)
+	require.Less(t, time.Since(start), time.Second)
+}
+
+func TestSubAgentExecutionPolicy_timeoutFallback(t *testing.T) {
+	// No override and no run timeout: SubAgent.Timeout stays zero (SDK default has no timeout).
+	rt := &LocalRuntime{}
+	require.Equal(t, time.Duration(0), rt.subAgentExecutionPolicy().Timeout)
+
+	// No override but run timeout set: falls back to run timeout.
+	rt.AgentConfig.Limits.Timeout = 60 * time.Minute
+	require.Equal(t, 60*time.Minute, rt.subAgentExecutionPolicy().Timeout)
+
+	// Explicit agent override wins over run timeout.
+	rt.AgentConfig.ExecutionConfigs.SubAgent = sdkruntime.ExecutionConfig{Timeout: 20 * time.Minute}
+	require.Equal(t, 20*time.Minute, rt.subAgentExecutionPolicy().Timeout)
+}
+
+func TestApprovalTaskTimeout_defaultsAndCaps(t *testing.T) {
+	rt := &LocalRuntime{}
+	rt.AgentConfig.Limits.ApprovalTimeout = 0
+	require.Equal(t, types.MaxApprovalTimeout, rt.approvalTaskTimeout())
+
+	rt.AgentConfig.Limits.ApprovalTimeout = 2 * time.Minute
+	require.Equal(t, 2*time.Minute, rt.approvalTaskTimeout())
+
+	rt.AgentConfig.Limits.ApprovalTimeout = types.MaxApprovalTimeout + time.Hour
+	require.Equal(t, types.MaxApprovalTimeout, rt.approvalTaskTimeout())
 }
 
 // ---------------------------------------------------------------------------

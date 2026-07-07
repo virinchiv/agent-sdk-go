@@ -12,7 +12,7 @@ import (
 // Default MCP settings applied when fields are zero.
 const (
 	DefaultMCPTimeout       = 30 * time.Second
-	DefaultMCPRetryAttempts = 3
+	DefaultMCPRetryAttempts = 1
 )
 
 // MCPToolFilter restricts which tools from Discover are registered (exact name match).

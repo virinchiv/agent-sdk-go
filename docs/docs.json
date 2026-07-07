@@ -59,6 +59,7 @@
               "features/a2a",
               "features/sub-agents",
               "features/approvals",
+              "features/execution-config",
               "features/conversation",
               "features/memory",
               "features/retrieval",
@@ -127,6 +128,12 @@
               "examples/concurrent-runs",
               "examples/json-response",
               "examples/reasoning"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "examples/execution-config"
             ]
           },
           {

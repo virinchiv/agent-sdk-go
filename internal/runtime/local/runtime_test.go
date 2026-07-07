@@ -214,9 +214,23 @@ func TestExecute_PropagatesLLMError(t *testing.T) {
 	client := &seqLLMClient{
 		errs: []error{errors.New("llm unavailable")},
 	}
-	rt := newLocalRT(t, client)
+	rt, err := NewLocalRuntime(
+		WithLogger(logger.NoopLogger()),
+		WithAgentSpec(sdkruntime.AgentSpec{Name: "test-agent", SystemPrompt: "you are helpful"}),
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM: sdkruntime.AgentLLM{Client: client},
+			Limits: sdkruntime.AgentLimits{
+				MaxIterations: 5,
+				Timeout:       30 * time.Second,
+			},
+			ExecutionConfigs: sdkruntime.ExecutionConfigs{
+				LLM: sdkruntime.ExecutionConfig{MaxAttempts: 1},
+			},
+		}),
+	)
+	require.NoError(t, err)
 
-	_, err := rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
+	_, err = rt.Execute(context.Background(), &sdkruntime.ExecuteRequest{UserPrompt: "hi"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "llm unavailable")
 }
@@ -325,7 +339,21 @@ func TestExecuteStream_EmitsRunError(t *testing.T) {
 	client := &seqLLMClient{
 		errs: []error{errors.New("llm down")},
 	}
-	rt := newLocalRT(t, client)
+	rt, err := NewLocalRuntime(
+		WithLogger(logger.NoopLogger()),
+		WithAgentSpec(sdkruntime.AgentSpec{Name: "test-agent", SystemPrompt: "you are helpful"}),
+		WithAgentConfig(sdkruntime.AgentConfig{
+			LLM: sdkruntime.AgentLLM{Client: client},
+			Limits: sdkruntime.AgentLimits{
+				MaxIterations: 5,
+				Timeout:       30 * time.Second,
+			},
+			ExecutionConfigs: sdkruntime.ExecutionConfigs{
+				LLM: sdkruntime.ExecutionConfig{MaxAttempts: 1},
+			},
+		}),
+	)
+	require.NoError(t, err)
 
 	ch, err := rt.ExecuteStream(context.Background(), &sdkruntime.ExecuteRequest{
 		UserPrompt: "hi",

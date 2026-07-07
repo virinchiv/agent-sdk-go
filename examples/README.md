@@ -48,6 +48,7 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | `agent_with_retriever` | **`weaviate/`** or **`pgvector/`**; **`RETRIEVER_MODE`** — **[README](agent_with_retriever/README.md)** | `infra:weaviate:up` or `infra:pgvector:up` |
 | `agent_with_memory` | **`weaviate/`** or **`pgvector/`** — **[README](agent_with_memory/README.md)**; `MEMORY_STORE_MODE=always\|ondemand` | `infra:weaviate:up` or `infra:pgvector:up` |
 | `agent_with_hooks` | All middleware hooks — PII scrubbing, retrieval filtering, memory tenant checks; **[README](agent_with_hooks/README.md)** | — |
+| `agent_with_execution_config` | Execution config — `WithLLMExecutionConfig`, `WithToolExecutionConfig`, `WithSubAgentExecutionConfig`; SDK defaults and partial overrides | — |
 
 ### Temporal only
 

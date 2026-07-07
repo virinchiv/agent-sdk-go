@@ -57,6 +57,9 @@ const (
 	AgentToolExecutionModeSequential = types.AgentToolExecutionModeSequential
 )
 
+// ExecutionConfig controls timeout and max attempts for one agent loop operation. Aliases [runtime.ExecutionConfig].
+type ExecutionConfig = runtime.ExecutionConfig
+
 // RetrieverMode selects how retrievers are used in a run. Aliases [types.RetrieverMode].
 type RetrieverMode = types.RetrieverMode
 
@@ -190,6 +193,8 @@ type ObservabilityConfig struct {
 //     WithMaxIterations, WithStream, WithLogger, WithLogLevel, WithConversation, WithMemory,
 //     WithResponseFormat, WithLLMSampling, WithSubAgents, WithMaxSubAgentDepth,
 //     WithMCPConfig, WithMCPClients, WithA2AConfig, WithA2AClients, WithRetrievers, WithRetrieverMode, WithAgentMode, WithDisableFingerprintCheck, WithAgentToolExecutionMode,
+//     WithLLMExecutionConfig, WithToolAuthExecutionConfig, WithToolExecutionConfig, WithMCPExecutionConfig, WithA2AExecutionConfig,
+//     WithRetrieverExecutionConfig, WithMemoryExecutionConfig, WithConversationExecutionConfig, WithSubAgentExecutionConfig,
 //     WithObservabilityConfig, WithTracer, WithMetrics, WithLogs, WithHooks
 //
 // When [WithObservabilityConfig] is set and a signal is not disabled, [buildAgentConfig] replaces
@@ -216,7 +221,8 @@ type agentConfig struct {
 	logLevel           string
 	approvalHandler    types.ApprovalHandler
 	timeout            time.Duration
-	approvalTimeout    time.Duration // max wait per tool approval; must be < timeout when tools require approval
+	approvalTimeout    time.Duration            // max wait per tool approval; must be < timeout when tools require approval
+	executionConfigs   runtime.ExecutionConfigs // per-operation timeout/retry overrides; zero fields use SDK defaults at resolve time
 
 	conversationConfig *conversation.Config
 
@@ -426,6 +432,61 @@ func WithTimeout(d time.Duration) Option {
 // Capped at maxApprovalTimeout (31 days). Validation at build: approvalTimeout < timeout.
 func WithApprovalTimeout(d time.Duration) Option {
 	return func(c *agentConfig) { c.approvalTimeout = d }
+}
+
+// WithLLMExecutionConfig overrides timeout and/or max attempts for LLM generate and stream calls.
+// Zero fields keep the SDK default (Timeout: 30m, MaxAttempts: 3). Applies to Agent and AgentWorker.
+func WithLLMExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.LLM = cfg }
+}
+
+// WithToolAuthExecutionConfig overrides timeout and/or max attempts for tool authorization calls.
+// Zero fields keep the SDK default (Timeout: 30m, MaxAttempts: 1). Applies to Agent and AgentWorker.
+func WithToolAuthExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.ToolAuth = cfg }
+}
+
+// WithToolExecutionConfig overrides timeout and/or max attempts for tool execution calls.
+// Zero fields keep the SDK default (Timeout: 30m, MaxAttempts: 3). Applies to Agent and AgentWorker.
+func WithToolExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.ToolExecute = cfg }
+}
+
+// WithMCPExecutionConfig overrides timeout and/or max attempts for MCP calls.
+// Zero fields keep the SDK default (Timeout: 30m, MaxAttempts: 3). Applies to Agent and AgentWorker.
+func WithMCPExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.MCP = cfg }
+}
+
+// WithA2AExecutionConfig overrides timeout and/or max attempts for A2A calls.
+// Zero fields keep the SDK default (Timeout: 30m, MaxAttempts: 3). Applies to Agent and AgentWorker.
+func WithA2AExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.A2A = cfg }
+}
+
+// WithRetrieverExecutionConfig overrides timeout and/or max attempts for retriever prefetch calls.
+// Zero fields keep the SDK default (Timeout: 5m, MaxAttempts: 3). Applies to Agent and AgentWorker.
+func WithRetrieverExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.Retriever = cfg }
+}
+
+// WithMemoryExecutionConfig overrides timeout and/or max attempts for memory recall and store calls.
+// Zero fields keep the SDK default (Timeout: 5m, MaxAttempts: 3). Applies to Agent and AgentWorker.
+func WithMemoryExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.Memory = cfg }
+}
+
+// WithConversationExecutionConfig overrides timeout and/or max attempts for conversation persist calls.
+// Zero fields keep the SDK default (Timeout: 30s, MaxAttempts: 1). Applies to Agent and AgentWorker.
+func WithConversationExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.Conversation = cfg }
+}
+
+// WithSubAgentExecutionConfig overrides timeout and/or max attempts for sub-agent delegation calls.
+// Zero fields keep the SDK default (MaxAttempts: 1). Zero Timeout falls back to the agent run
+// timeout set via [WithTimeout] rather than a fixed default. Applies to Agent and AgentWorker.
+func WithSubAgentExecutionConfig(cfg ExecutionConfig) Option {
+	return func(c *agentConfig) { c.executionConfigs.SubAgent = cfg }
 }
 
 // EnableRemoteWorkers enables the runtime's remote event path (out-of-process event delivery). Agent only.
@@ -1288,7 +1349,8 @@ func (c *agentConfig) runtimeAgentConfig() runtime.AgentConfig {
 			Timeout:         c.timeout,
 			ApprovalTimeout: c.approvalTimeout,
 		},
-		Hooks: c.runtimeHookGroups(),
+		ExecutionConfigs: c.executionConfigs,
+		Hooks:            c.runtimeHookGroups(),
 	}
 	if c.llmSampling != nil {
 		d.LLM.Sampling = &runtime.LLMSampling{
