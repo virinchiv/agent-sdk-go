@@ -16,6 +16,7 @@ import (
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm/anthropic"
+	"github.com/agenticenv/agent-sdk-go/pkg/llm/deepseek"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm/gemini"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm/openai"
 	"github.com/agenticenv/agent-sdk-go/pkg/logger"
@@ -548,7 +549,8 @@ func NewLoggerFromLogConfig(cfg *Config) logger.Logger {
 }
 
 // NewLLMClientFromConfig creates an LLM client from config using the new llm.Option-based API.
-// BaseURL is applied only for OpenAI; set LLM_BASEURL when using a non-default OpenAI-compatible API.
+// BaseURL applies to the OpenAI and DeepSeek providers; set LLM_BASEURL for a non-default
+// OpenAI-compatible endpoint. DeepSeek defaults to its own endpoint when LLM_BASEURL is unset.
 func NewLLMClientFromConfig(cfg *Config) (interfaces.LLMClient, error) {
 	opts := []llm.Option{
 		llm.WithAPIKey(cfg.APIKey),
@@ -565,6 +567,11 @@ func NewLLMClientFromConfig(cfg *Config) (interfaces.LLMClient, error) {
 		return openai.NewClient(opts...)
 	case interfaces.LLMProviderGemini:
 		return gemini.NewClient(opts...)
+	case interfaces.LLMProviderDeepSeek:
+		if cfg.BaseURL != "" {
+			opts = append(opts, llm.WithBaseURL(cfg.BaseURL))
+		}
+		return deepseek.NewClient(opts...)
 	default:
 		if cfg.BaseURL != "" {
 			opts = append(opts, llm.WithBaseURL(cfg.BaseURL))
