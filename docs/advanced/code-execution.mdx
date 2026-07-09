@@ -1,0 +1,121 @@
+---
+title: "Code Execution in Agents"
+sidebarTitle: "Code Execution"
+description: "Let the LLM write and run code safely — plug in any sandbox behind a single interface"
+---
+
+**The problem:** You want the agent to answer questions by running real code — computations, data transformations, script verification — without trusting LLM-hallucinated output and without bloating the context window with raw data.
+
+**The solution:** Expose a custom `execute_code` tool backed by a `SandboxRuntime` interface. The LLM writes a short self-contained script, passes it to the tool, and reads the actual output. The sandbox handles isolation — the SDK never runs code itself.
+
+## What the LLM does vs. what the sandbox does
+
+| LLM | Your sandbox |
+|---|---|
+| Decide when to run code | Execute the script |
+| Write a self-contained script | Enforce resource limits |
+| Read `output` and explain it to the user | Isolate from host filesystem and network |
+| Retry with a fixed script on non-zero `exit_code` | Return stdout + stderr and exit code |
+
+The LLM never invents output — it always calls `execute_code` first.
+
+Example: [Code Execution](/examples/code-execution).
+
+## Tool pattern
+
+```go
+type SandboxRuntime interface {
+    Execute(ctx context.Context, language, code string) (ExecutionResult, error)
+}
+
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTools(NewCodeTool(yourRuntime)),
+)
+```
+
+`Execute` blocks until the sandbox returns `ExecutionResult{Output, ExitCode}`. The LLM reads `output` from the result and replies to the user.
+
+## Sandbox options
+
+Implement `SandboxRuntime` once per environment. The example ships two; add more by following the same pattern:
+
+| Sandbox | Use case | Activate |
+|---|---|---|
+| **Local os/exec** | Development, CI, trusted scripts | default (no env var) |
+| **Docker** | Isolated execution on your host | `SANDBOX_ENV=docker` |
+| **AWS Lambda** | Serverless, per-request isolation | implement `LambdaRuntime` |
+| **Modal / E2B** | Cloud sandboxes with language images | implement `ModalRuntime` / `E2BRuntime` |
+| **Firecracker / microVMs** | Maximum isolation, low latency | implement `FirecrackerRuntime` |
+
+Only `main.go` changes when you swap runtimes — `code_tool.go` and the agent config stay the same.
+
+## Docker sandbox isolation
+
+The example Docker runner passes safety flags to `docker run`:
+
+```
+--rm              remove container after exit (no state between calls)
+--network none    block all outbound network access from LLM-generated code
+--memory 128m     cap memory to prevent runaway scripts
+```
+
+Adjust these to match your security policy. In production, also add `--cpus`, `--read-only`, and a non-root user.
+
+## Timeout layers
+
+| Layer | What it limits | Configure |
+|---|---|---|
+| **Per `Run` context** | Entire agent call | `context.WithTimeout` — **always wins** |
+| **Agent run** | Whole turn | [`WithTimeout`](/advanced/timeouts-and-modes) |
+| **Tool execute** | Single `execute_code` call | [`WithToolExecutionConfig`](/features/execution-config) |
+| **Sandbox** | Script execution wall time | Your runtime config / Docker `--stop-timeout` |
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTools(NewCodeTool(runtime)),
+    agent.WithAgentMode(agent.AgentModeAutonomous),
+    agent.WithToolExecutionConfig(agent.ExecutionConfig{
+        Timeout:     2 * time.Minute, // covers Docker image pull on first run
+        MaxAttempts: 1,               // do not silently re-run side-effectful code
+    }),
+)
+```
+
+## System prompt guidance
+
+Tell the LLM not to make up output — it must call the tool first:
+
+```
+"When the user asks to compute or verify something with code, write a short
+self-contained script and call execute_code. Read the output and explain the
+result. Do not make up output — always run the code first."
+```
+
+Example: [Code Execution](/examples/code-execution).
+
+## Examples
+
+<CardGroup cols={2}>
+  <Card title="Code Execution" icon="play" href="/examples/code-execution" horizontal>
+    execute_code tool with local and Docker runtimes
+  </Card>
+  <Card title="Execution config" icon="play" href="/examples/execution-config" horizontal>
+    Per-operation timeout overrides
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Execution config" icon="sliders" href="/features/execution-config" horizontal>
+    Tool execute timeout and max attempts
+  </Card>
+  <Card title="Deterministic Execution" icon="diagram-project" href="/advanced/deterministic-execution" horizontal>
+    Running predefined workflows from the agent
+  </Card>
+  <Card title="Tools" icon="wrench" href="/features/tools" horizontal>
+    Custom tool implementation
+  </Card>
+</CardGroup>

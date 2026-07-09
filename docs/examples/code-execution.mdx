@@ -1,0 +1,74 @@
+---
+title: "Code Execution"
+description: "Let the LLM write and run code in an isolated sandbox via a custom execute_code tool"
+---
+
+Shows how to give an agent a code execution capability using a custom `execute_code` tool. The LLM writes a short script, the sandbox runs it, and the output is returned for the LLM to explain. The sandbox is pluggable — swap the runtime without changing the tool.
+
+Source: [`examples/agent_with_code_execution/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_code_execution)
+
+## What it demonstrates
+
+- `execute_code` custom tool — `interfaces.Tool` with `language` and `code` parameters
+- `SandboxRuntime` interface — pluggable sandbox (local os/exec, Docker, cloud APIs)
+- LLM writes code, runs it, reads output, replies — never makes up results
+- Sandbox isolation — Docker runner uses `--network none` and memory limits
+
+## Run
+
+From `examples/`:
+
+Local sandbox — needs Python or Node installed on host:
+
+```bash
+go run ./agent_with_code_execution "Write a Python script that prints the first 10 Fibonacci numbers"
+```
+
+Docker sandbox — isolated, no host interpreter needed:
+
+```bash
+SANDBOX_ENV=docker go run ./agent_with_code_execution "Write a Python script that prints the first 10 Fibonacci numbers"
+```
+
+Requires `LLM_APIKEY` in `examples/.env`.
+
+## Key code
+
+```go
+// newSandbox picks the execution environment from SANDBOX_ENV (default: local os/exec).
+// Swap newLocalRunner for newDockerRunner, a Lambda runner, Modal, E2B, etc.
+sandbox, err := newSandbox()
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTools(NewCodeTool(sandbox)),
+    agent.WithAgentMode(agent.AgentModeAutonomous),
+    agent.WithToolExecutionConfig(agent.ExecutionConfig{
+        Timeout:     2 * time.Minute,
+        MaxAttempts: 1,
+    }),
+)
+
+result, err := a.Run(context.Background(), prompt, nil)
+```
+
+`Execute` blocks until `SandboxRuntime.Execute` returns the program output and exit code.
+
+## Expected output
+
+```
+user: Write a Python script that prints the first 10 Fibonacci numbers
+
+A: Here are the first 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34.
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Code Execution in Agents" icon="terminal" href="/advanced/code-execution" horizontal>
+    Sandbox options, isolation, timeout config, cloud runtimes
+  </Card>
+  <Card title="Execution config" icon="sliders" href="/features/execution-config" horizontal>
+    Tool execute timeout and max attempts
+  </Card>
+</CardGroup>

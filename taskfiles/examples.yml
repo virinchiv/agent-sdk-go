@@ -123,7 +123,9 @@ tasks:
       PROMPT: '{{.PROMPT | default ""}}'
       SKIP_RUN: '{{.SKIP_RUN | default "false"}}'
       MEMORY_STORE_MODE: '{{.MEMORY_STORE_MODE | default ""}}'
-      RUN_LABEL: '{{.NAME}}{{if .MEMORY_STORE_MODE}} store={{.MEMORY_STORE_MODE}}{{end}}'
+      ORCHESTRATION_ENGINE: '{{.ORCHESTRATION_ENGINE | default ""}}'
+      SANDBOX_ENV: '{{.SANDBOX_ENV | default ""}}'
+      RUN_LABEL: '{{.NAME}}{{if .MEMORY_STORE_MODE}} store={{.MEMORY_STORE_MODE}}{{end}}{{if .ORCHESTRATION_ENGINE}} engine={{.ORCHESTRATION_ENGINE}}{{end}}{{if .SANDBOX_ENV}} sandbox={{.SANDBOX_ENV}}{{end}}'
     cmds:
       - |
         if [ "{{.SKIP_RUN}}" = "true" ]; then
@@ -185,6 +187,8 @@ tasks:
       # Batch only — not in .env.defaults; manual go run leaves unset (interactive y/n).
       EXAMPLES_AUTO_APPROVE: '{{.EXAMPLES_AUTO_APPROVE | default "true"}}'
       MEMORY_STORE_MODE: '{{.MEMORY_STORE_MODE}}'
+      ORCHESTRATION_ENGINE: '{{.ORCHESTRATION_ENGINE}}'
+      SANDBOX_ENV: '{{.SANDBOX_ENV}}'
 
   exec:examples:
     internal: true
@@ -195,29 +199,33 @@ tasks:
       WRITE_SUMMARY: '{{.WRITE_SUMMARY | default "true"}}'
       FAIL_ON_ERROR: '{{.FAIL_ON_ERROR | default "true"}}'
       EXAMPLES:
-        - simple_agent
-        - agent_with_tools/basic
-        - agent_with_tools/custom
-        - agent_with_tools/dynamic_registry
-        - agent_with_hooks
-        - agent_with_execution_config
-        - agent_with_tools/authorizer
-        - agent_with_json_response
-        - agent_with_stream
-        - agent_with_reasoning
-        - multiple_agents
-        - agent_with_mcp_config
-        - agent_with_mcp_client
-        - agent_with_a2a_config
-        - agent_with_a2a_client
-        - agent_with_retriever/weaviate
-        - agent_with_retriever/pgvector
-        - agent_with_observability/config
-        - agent_with_observability/objects
-        - agent_with_subagents
-        - agent_with_tools/approval
-        - agent_with_run_async
-        - agent_with_concurrent_runs
+        - NAME: simple_agent
+        - NAME: agent_with_tools/basic
+        - NAME: agent_with_tools/custom
+        - NAME: agent_with_tools/dynamic_registry
+        - NAME: agent_with_hooks
+        - NAME: agent_with_execution_config
+        - NAME: agent_with_tools/authorizer
+        - NAME: agent_with_json_response
+        - NAME: agent_with_stream
+        - NAME: agent_with_reasoning
+        - NAME: multiple_agents
+        - NAME: agent_with_mcp_config
+        - NAME: agent_with_mcp_client
+        - NAME: agent_with_a2a_config
+        - NAME: agent_with_a2a_client
+        - NAME: agent_with_retriever/weaviate
+        - NAME: agent_with_retriever/pgvector
+        - NAME: agent_with_observability/config
+        - NAME: agent_with_observability/objects
+        - NAME: agent_with_subagents
+        - NAME: agent_with_tools/approval
+        - NAME: agent_with_run_async
+        - NAME: agent_with_concurrent_runs
+        - NAME: agent_with_workflows
+        - NAME: agent_with_code_execution
+        - NAME: agent_with_code_execution
+          SANDBOX_ENV: docker
       EXAMPLES_MEMORY:
         - NAME: agent_with_memory/weaviate
           MEMORY_STORE_MODE: always
@@ -231,12 +239,14 @@ tasks:
         - agent_with_conversation
         - agent_with_stream_conversation
       EXAMPLES_TEMPORAL:
-        - agent_with_temporal_client
+        - NAME: agent_with_temporal_client
+        - NAME: agent_with_workflows
+          ORCHESTRATION_ENGINE: temporal
         # TODO: enable — split worker + agent REPL
-        # - durable_agent/worker
-        # - durable_agent/agent
-        # - agent_with_worker/worker
-        # - agent_with_worker/agent
+        # - NAME: durable_agent/worker
+        # - NAME: durable_agent/agent
+        # - NAME: agent_with_worker/worker
+        # - NAME: agent_with_worker/agent
     cmds:
       - printf '0 0\n' > {{.COUNT_FILE}}
       - for:
@@ -244,7 +254,8 @@ tasks:
         ignore_error: true
         task: exec:example
         vars:
-          NAME: '{{.ITEM}}'
+          NAME: '{{.ITEM.NAME}}'
+          SANDBOX_ENV: '{{.ITEM.SANDBOX_ENV}}'
           RUNTIME: '{{.RUNTIME}}'
           REPORT_FILE: '{{.REPORT_FILE}}'
           LOG_FILE: '{{.LOG_FILE}}'
@@ -280,7 +291,8 @@ tasks:
         ignore_error: true
         task: exec:example
         vars:
-          NAME: '{{.ITEM}}'
+          NAME: '{{.ITEM.NAME}}'
+          ORCHESTRATION_ENGINE: '{{.ITEM.ORCHESTRATION_ENGINE}}'
           RUNTIME: '{{.RUNTIME}}'
           REPORT_FILE: '{{.REPORT_FILE}}'
           LOG_FILE: '{{.LOG_FILE}}'
