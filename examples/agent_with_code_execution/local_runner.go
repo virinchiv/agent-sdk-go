@@ -31,24 +31,22 @@ func (r *localRunner) Execute(ctx context.Context, language, code string) (Execu
 	if err != nil {
 		return ExecutionResult{}, fmt.Errorf("create temp file: %w", err)
 	}
-	defer os.Remove(tmpFile.Name())
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := tmpFile.WriteString(code); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return ExecutionResult{}, fmt.Errorf("write code: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		return ExecutionResult{}, fmt.Errorf("close temp file: %w", err)
+	}
 
 	var stdout, stderr bytes.Buffer
-	var cmd *exec.Cmd
-	if language == "shell" {
-		cmd = exec.CommandContext(ctx, binary, tmpFile.Name())
-	} else {
-		cmd = exec.CommandContext(ctx, binary, tmpFile.Name())
-	}
+	cmd := exec.CommandContext(ctx, binary, tmpPath)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	cmd.Dir = filepath.Dir(tmpFile.Name())
+	cmd.Dir = filepath.Dir(tmpPath)
 
 	runErr := cmd.Run()
 
