@@ -1,0 +1,79 @@
+---
+title: "Workflows"
+description: "Deterministic workflow execution inside an agent — the LLM routes intent, your orchestration engine runs steps"
+---
+
+Shows how to run deterministic multi-step workflows from inside an agent using a custom `run_workflow` tool. The LLM decides *when* to call the tool and maps user intent to `workflow_name` and `input`; your orchestration engine runs the steps in order, retries on failure, and returns a structured result.
+
+Source: [`examples/agent_with_workflows/`](https://github.com/agenticenv/agent-sdk-go/tree/main/examples/agent_with_workflows)
+
+## What it demonstrates
+
+- Deterministic workflow execution — steps defined in your engine, not improvised by the LLM
+- `WorkflowTool` + `WorkflowRunner` interface — pluggable engine (in-process, Temporal, Conductor, Argo, etc.)
+- Agent waits until the workflow finishes — `Execute` blocks on `WorkflowRunner.Run`
+- Long-running config — `AgentModeAutonomous`, `WithTimeout`, `WithToolExecutionConfig` sized for workflow duration
+
+## Run
+
+From `examples/`:
+
+In-process runner — no infrastructure needed:
+
+```bash
+go run ./agent_with_workflows "Run the onboarding workflow for user Alice"
+```
+
+Temporal runner — durable, survives restarts:
+
+```bash
+task infra:temporal:up && task infra:temporal:wait
+ORCHESTRATION_ENGINE=temporal go run ./agent_with_workflows "Run the onboarding workflow for user Alice"
+```
+
+Requires `LLM_APIKEY` in `examples/.env`.
+
+## Key code
+
+```go
+// newRunner picks the engine from RUNNER env var (default: in-process).
+// Swap inProcessRunner for NewTemporalRunner, a Conductor runner, etc.
+runner, stop, err := newRunner(cfg)
+defer stop()
+
+a, err := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTools(NewWorkflowTool(runner)),
+
+    // Workflows can be long-running — autonomous mode + explicit tool ceiling.
+    agent.WithAgentMode(agent.AgentModeAutonomous),
+    agent.WithTimeout(10 * time.Minute),
+    agent.WithToolExecutionConfig(agent.ExecutionConfig{
+        Timeout:     10 * time.Minute,
+        MaxAttempts: 1, // do not blindly re-trigger a started workflow
+    }),
+)
+
+result, err := a.Run(context.Background(), prompt, nil)
+```
+
+`Execute` blocks on `WorkflowRunner.Run` — the agent run stays open until the workflow finishes or a timeout fires.
+
+## Expected output
+
+```
+user: Run the onboarding workflow for user Alice
+
+assistant: Onboarding for Alice is complete. A welcome email was sent and a workspace was provisioned.
+```
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="Deterministic Execution" icon="diagram-project" href="/advanced/deterministic-execution" horizontal>
+    What deterministic means, wait semantics, timeouts, orchestration runners
+  </Card>
+  <Card title="Execution config" icon="sliders" href="/features/execution-config" horizontal>
+    Tool execute timeout and max attempts
+  </Card>
+</CardGroup>

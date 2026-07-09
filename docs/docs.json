@@ -74,6 +74,8 @@
             "group": "Advanced",
             "pages": [
               "advanced/dynamic-capabilities",
+              "advanced/deterministic-execution",
+              "advanced/code-execution",
               "advanced/worker-separation",
               "advanced/multiple-agents",
               "advanced/timeouts-and-modes"
@@ -140,6 +142,8 @@
             "group": "Tools & MCP",
             "pages": [
               "examples/tools",
+              "examples/workflows",
+              "examples/code-execution",
               "examples/mcp-config",
               "examples/mcp-client"
             ]

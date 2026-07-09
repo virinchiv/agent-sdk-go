@@ -49,6 +49,8 @@ These examples run with `AGENT_RUNTIME=local` (default) or `AGENT_RUNTIME=tempor
 | `agent_with_memory` | **`weaviate/`** or **`pgvector/`** — **[README](agent_with_memory/README.md)**; `MEMORY_STORE_MODE=always\|ondemand` | `infra:weaviate:up` or `infra:pgvector:up` |
 | `agent_with_hooks` | All middleware hooks — PII scrubbing, retrieval filtering, memory tenant checks; **[README](agent_with_hooks/README.md)** | — |
 | `agent_with_execution_config` | Execution config — `WithLLMExecutionConfig`, `WithToolExecutionConfig`, `WithSubAgentExecutionConfig`; SDK defaults and partial overrides | — |
+| `agent_with_workflows` | Deterministic workflow execution via `run_workflow` tool — `WorkflowRunner` interface; `inprocess_runner.go` (default, no infra) and `temporal_runner.go` (`ORCHESTRATION_ENGINE=temporal`) | `infra:temporal:up`, `infra:temporal:wait` (Temporal engine only) |
+| `agent_with_code_execution` | Sandboxed code execution via `execute_code` tool — `SandboxRuntime` interface; `local_runner.go` (default, needs Python/Node) and `docker_runner.go` (`SANDBOX_ENV=docker`) | Docker (Docker runner only) |
 
 ### Temporal only
 
@@ -105,6 +107,27 @@ go run ./agent_with_tools/approval "What is 15 + 27?"
 go run ./agent_with_tools/authorizer "Get the protected note for roadmap."
 go run ./agent_with_tools/custom "Reverse 'hello world'"
 go run ./agent_with_tools/dynamic_registry
+```
+
+### Agent with workflows
+
+```bash
+# in-process runner (default — no infrastructure needed)
+go run ./agent_with_workflows "Run the onboarding workflow for user Alice"
+
+# Temporal runner — durable execution
+task infra:temporal:up && task infra:temporal:wait
+ORCHESTRATION_ENGINE=temporal go run ./agent_with_workflows "Run the onboarding workflow for user Alice"
+```
+
+### Agent with code execution
+
+```bash
+# local sandbox (default — needs Python or Node installed)
+go run ./agent_with_code_execution "Write a Python script that prints the first 10 Fibonacci numbers"
+
+# Docker sandbox — isolated execution
+SANDBOX_ENV=docker go run ./agent_with_code_execution "Write a Python script that prints the first 10 Fibonacci numbers"
 ```
 
 ### Agent with hooks

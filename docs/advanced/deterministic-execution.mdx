@@ -1,0 +1,136 @@
+---
+title: "Deterministic Execution in Agents"
+sidebarTitle: "Deterministic Execution"
+description: "Run named user workflows from inside an agent — the LLM routes intent, your orchestration engine controls execution"
+---
+
+**The problem:** Your organization already runs multi-step procedures — onboarding, provisioning, compliance checks — in an orchestration engine. You want the LLM to trigger those procedures without re-implementing steps inside the agent loop, and without the LLM improvising or skipping steps.
+
+**The solution:** Expose workflows as a custom tool (`run_workflow`). The LLM routes user intent to `workflow_name` and `input`; your `WorkflowRunner` executes the steps deterministically and returns the result. Steps run in order, retry on failure, and produce an auditable record — entirely inside your engine.
+
+## What deterministic means here
+
+The LLM's job is **intent routing** — mapping "onboard Alice" to `workflow_name: onboarding, input: Alice`. Your orchestration engine owns the procedure:
+
+| LLM | Your orchestration engine |
+|---|---|
+| Pick `workflow_name` and `input` | Execute steps in defined order |
+| Summarize `WorkflowResult` for the user | Retry each step on failure |
+| Ask clarifying questions before calling the tool | Enforce side effects (email, provision, API calls) |
+| Never skip or reorder steps | Produce an audit trail |
+
+This is different from asking the LLM to "figure out what steps to run" — the engine always runs the same steps for the same workflow name.
+
+Example: [Workflows](/examples/workflows).
+
+## Tool pattern
+
+```go
+type WorkflowRunner interface {
+    Run(ctx context.Context, name, input string) (WorkflowResult, error)
+}
+
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTools(NewWorkflowTool(yourRunner)),
+)
+```
+
+`Execute` delegates to `WorkflowRunner.Run` and returns when the workflow reaches a terminal state (or the context deadline fires).
+
+## How the agent waits
+
+```
+User prompt → LLM calls run_workflow → Execute → WorkflowRunner.Run
+  → engine starts workflow → steps run deterministically → WorkflowResult → LLM reply
+```
+
+One agent `Run` stays open until `WorkflowRunner.Run` returns — minutes or hours depending on workflow duration and any wait steps inside your engine. Pass the SDK's `ctx` from `Execute` into your wait loop so deadlines propagate.
+
+## Wait steps inside orchestration
+
+Workflows can pause on external events or human gates defined in your engine — the agent run stays open the whole time:
+
+| Engine | Wait / gate mechanism |
+|---|---|
+| **Temporal** | `workflow.AwaitWithTimeout` on a signal |
+| **Conductor** | `HUMAN` task |
+| **Argo Workflows** | `suspend` template |
+| **Step Functions** | `.waitForTaskToken` |
+
+Size [`WithToolExecutionConfig`](/features/execution-config) and [`WithTimeout`](/advanced/timeouts-and-modes) to cover the full workflow duration including any wait steps.
+
+## Timeout layers
+
+| Layer | What it limits | Configure |
+|---|---|---|
+| **Per `Run` context** | Entire agent call | `context.WithTimeout` — **always wins** |
+| **Agent run** | Whole turn (LLM + all tool waits) | [`WithTimeout`](/advanced/timeouts-and-modes) |
+| **Tool execute** | Single `run_workflow` wait | [`WithToolExecutionConfig`](/features/execution-config) |
+| **Orchestration engine** | Individual steps | Your engine config |
+
+```go
+a, _ := agent.NewAgent(
+    agent.WithLLMClient(llmClient),
+    agent.WithTools(NewWorkflowTool(runner)),
+    agent.WithAgentMode(agent.AgentModeAutonomous),
+    agent.WithTimeout(2 * time.Hour),
+    agent.WithToolExecutionConfig(agent.ExecutionConfig{
+        Timeout:     2 * time.Hour,
+        MaxAttempts: 1, // do not blindly re-trigger a started workflow
+    }),
+)
+```
+
+Default tool execution timeout is **30 minutes** with up to **3 attempts** if unset — raise it for workflow agents.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+defer cancel()
+result, err := a.Run(ctx, "Run onboarding for Alice", nil)
+```
+
+If the deadline fires, `Execute` returns `context deadline exceeded` — the workflow may still be running in your engine. Use idempotent workflow IDs and a status API in your runner for recovery.
+
+## Orchestration runners
+
+Implement `WorkflowRunner` once per engine — map `workflow_name` + `input` to your API, wait until terminal, return `WorkflowResult`:
+
+| Engine | Wait until complete |
+|---|---|
+| **In-process** | Run steps directly; no infrastructure needed (default in example) |
+| **Temporal** | `ExecuteWorkflow` + `run.Get(ctx, &result)` |
+| **Conductor** | Start → poll until `COMPLETED` / `FAILED` |
+| **Argo Workflows** | Submit → watch until phase `Succeeded` / `Failed` |
+| **Step Functions** | `StartExecution` → `DescribeExecution` |
+
+The example ships two runners: `inprocess_runner.go` (default, no infra) and `temporal_runner.go` (`ORCHESTRATION_ENGINE=temporal`). Add `conductor_runner.go`, `argo_runner.go`, etc. for other engines — only `main.go` changes when you swap runners.
+
+Workflow orchestration is independent of `AGENT_RUNTIME` — the agent can run in-process while your runner uses any backend.
+
+Example: [Workflows](/examples/workflows).
+
+## Examples
+
+<CardGroup cols={2}>
+  <Card title="Workflows" icon="play" href="/examples/workflows" horizontal>
+    run_workflow tool with in-process and Temporal runners
+  </Card>
+  <Card title="Execution config" icon="play" href="/examples/execution-config" horizontal>
+    Per-operation timeout overrides
+  </Card>
+</CardGroup>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Execution config" icon="sliders" href="/features/execution-config" horizontal>
+    Tool execute timeout and max attempts
+  </Card>
+  <Card title="Timeouts & modes" icon="clock" href="/advanced/timeouts-and-modes" horizontal>
+    Agent run timeout and interactive vs autonomous
+  </Card>
+  <Card title="Tools" icon="wrench" href="/features/tools" horizontal>
+    Custom tool implementation
+  </Card>
+</CardGroup>

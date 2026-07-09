@@ -33,6 +33,8 @@ Examples use `LLM_APIKEY`, `LLM_PROVIDER`, and `LLM_MODEL` from `examples/.env` 
 | [JSON Response](/examples/json-response) | [Response format](/features/response-format) | Local, Temporal | — |
 | [Reasoning](/examples/reasoning) | [Reasoning](/features/reasoning) | Local, Temporal | — |
 | [Tools](/examples/tools) | [Tools](/features/tools) | Local, Temporal | — |
+| [Workflows](/examples/workflows) | [Deterministic Execution](/advanced/deterministic-execution) | Local, Temporal | — (in-process default); Temporal (ORCHESTRATION_ENGINE=temporal) |
+| [Code Execution](/examples/code-execution) | [Code Execution in Agents](/advanced/code-execution) | Local, Temporal | — (local os/exec default); Docker (SANDBOX_ENV=docker) |
 | [MCP Config](/examples/mcp-config) | [MCP](/features/mcp) | Local, Temporal | MCP server |
 | [MCP Client](/examples/mcp-client) | [MCP](/features/mcp) | Local, Temporal | MCP server |
 | [Stream](/examples/stream) | [Streaming](/getting-started/streaming) | Local, Temporal | — |
@@ -55,6 +57,8 @@ Examples use `LLM_APIKEY`, `LLM_PROVIDER`, and `LLM_MODEL` from `examples/.env` 
 ## Suggested order
 
 **Basics** — [Simple Agent](/examples/simple-agent) → [Tools](/examples/tools) → [Stream](/examples/stream)
+
+**Custom tools (advanced patterns)** — [Workflows](/examples/workflows) → [Code Execution](/examples/code-execution)
 
 **Stateful agents** — [Conversation](/examples/conversation) → [Memory](/examples/memory) or [Retrieval](/examples/retrieval)
 
