@@ -29,6 +29,9 @@ type Config struct {
 	LLM      *LLMConfig      `mapstructure:"llm"`
 	Logger   *LoggerConfig   `mapstructure:"logger"`
 	MCP      *MCPRootConfig  `mapstructure:"mcp"`
+	// ShowLLMUsage prints a session token-usage summary when the conversation ends (exit/quit/bye).
+	// Override with AGENT_SHOW_LLM_USAGE=true.
+	ShowLLMUsage bool `mapstructure:"show_llm_usage"`
 }
 
 // UseTemporalRuntime reports whether the temporal backend is selected.
@@ -246,6 +249,7 @@ func LoadConfig(path string) (*Config, error) {
 	_ = v.BindEnv("logger.format", "AGENT_LOGGER_FORMAT")
 	_ = v.BindEnv("logger.add_source", "AGENT_LOGGER_ADD_SOURCE")
 	_ = v.BindEnv("logger.tee_stderr", "AGENT_LOGGER_TEE_STDERR")
+	_ = v.BindEnv("show_llm_usage", "AGENT_SHOW_LLM_USAGE")
 
 	// Set defaults so env can override even when file is missing or key absent
 	v.SetDefault("runtime", "local")
@@ -261,6 +265,7 @@ func LoadConfig(path string) (*Config, error) {
 	v.SetDefault("logger.format", "json")
 	v.SetDefault("logger.add_source", true)
 	v.SetDefault("logger.tee_stderr", false)
+	v.SetDefault("show_llm_usage", false)
 
 	_ = v.ReadInConfig() // ignore: file not found uses defaults + env
 	var cfg Config
@@ -309,6 +314,7 @@ func NewLLMClient(cfg *Config, lgr logger.Logger) (interfaces.LLMClient, error) 
 	}
 	switch interfaces.LLMProvider(cfg.LLM.Provider) {
 	case interfaces.LLMProviderAnthropic:
+		opts = append(opts, llm.WithPromptCaching(true))
 		return anthropic.NewClient(opts...)
 	case interfaces.LLMProviderOpenAI:
 		if cfg.LLM.BaseURL != "" {

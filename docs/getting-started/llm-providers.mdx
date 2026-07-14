@@ -68,6 +68,22 @@ llmClient, err := anthropic.NewClient(
 
 Anthropic supports extended thinking via [`WithLLMSampling`](/features/reasoning). See [Reasoning](/features/reasoning).
 
+### Prompt caching
+
+Anthropic supports prompt-cache breakpoints (`cache_control`) that let the provider reuse the KV-cache for the stable part of a request — system prompt, tool definitions, and everything up to the second-to-last message — instead of reprocessing it every call. Enable it with `llm.WithPromptCaching`:
+
+```go
+llmClient, err := anthropic.NewClient(
+    llm.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
+    llm.WithModel("claude-sonnet-4-20250514"),
+    llm.WithPromptCaching(true),
+)
+```
+
+**Disabled by default.** Anthropic's cache writes cost more than a normal input token and have a short (default 5-minute) TTL, so it's only worth enabling once request volume is high enough that repeated calls reliably land inside that window. `WithPromptCaching` is Anthropic-only — OpenAI, Gemini, and DeepSeek ignore it (OpenAI caches automatically server-side with no client-side option needed; Gemini/DeepSeek have no equivalent in this SDK today).
+
+See [Token Usage](/features/token-usage) for how to measure `CachedPromptTokens` and confirm caching is actually being hit.
+
 ## Gemini
 
 ```go

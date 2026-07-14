@@ -51,3 +51,13 @@ func TestBuildConfig_WithOptions(t *testing.T) {
 		t.Fatal("expected injected logger")
 	}
 }
+
+func TestBuildConfig_WithPromptCaching(t *testing.T) {
+	c, err := BuildConfig(WithAPIKey("k"), WithPromptCaching(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.PromptCaching == nil || !*c.PromptCaching {
+		t.Fatalf("PromptCaching = %#v, want true", c.PromptCaching)
+	}
+}

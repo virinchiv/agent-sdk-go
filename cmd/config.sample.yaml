@@ -37,6 +37,10 @@ logger:
   add_source: false
   tee_stderr: false
 
+# When true, accumulate token usage across turns and print a summary on exit (exit/quit/bye).
+# Override: AGENT_SHOW_LLM_USAGE=true
+show_llm_usage: false
+
 # Optional MCP servers. Set enabled: true on entries you use.
 # When any server is enabled, the CLI uses auto tool approval (same pattern as examples with MCP).
 # Transports: stdio | local (subprocess); streamable_http | http | remote | streamable (URL).

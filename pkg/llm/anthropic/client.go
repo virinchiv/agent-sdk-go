@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"log/slog"
+
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
 	"github.com/agenticenv/agent-sdk-go/pkg/llm"
 	"github.com/anthropics/anthropic-sdk-go"
@@ -12,7 +14,6 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 	"github.com/anthropics/anthropic-sdk-go/shared/constant"
-	"log/slog"
 )
 
 var _ interfaces.LLMClient = (*Client)(nil)
@@ -20,17 +21,23 @@ var _ interfaces.LLMClient = (*Client)(nil)
 // Client implements interfaces.LLMClient for Anthropic Claude.
 type Client struct {
 	llm.LLMConfig
-	client anthropic.Client
+	client        anthropic.Client
+	promptCaching bool // default false
 }
 
 // NewClient creates a new Anthropic LLM client.
+// Prompt caching is disabled by default; enable with llm.WithPromptCaching(true).
 func NewClient(opts ...llm.Option) (*Client, error) {
 	config, err := llm.BuildConfig(opts...)
 	if err != nil {
 		return nil, err
 	}
 	c := &Client{
-		LLMConfig: *config,
+		LLMConfig:     *config,
+		promptCaching: false,
+	}
+	if config.PromptCaching != nil {
+		c.promptCaching = *config.PromptCaching
 	}
 	options := []option.RequestOption{option.WithAPIKey(c.APIKey)}
 	if c.BaseURL != "" {
@@ -69,12 +76,14 @@ func (c *Client) buildMessageParams(messages []anthropic.MessageParam, req *inte
 		params.TopK = param.NewOpt(int64(*req.TopK))
 	}
 	if req.SystemMessage != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: req.SystemMessage},
+		sys := anthropic.TextBlockParam{Text: req.SystemMessage}
+		if c.promptCaching {
+			sys.CacheControl = anthropic.NewCacheControlEphemeralParam()
 		}
+		params.System = []anthropic.TextBlockParam{sys}
 	}
 	if len(req.Tools) > 0 {
-		params.Tools = toolsToAnthropic(req.Tools)
+		params.Tools = c.toolsToAnthropic(req.Tools)
 		params.ToolChoice = anthropic.ToolChoiceUnionParam{
 			OfAuto: &anthropic.ToolChoiceAutoParam{},
 		}
@@ -124,7 +133,7 @@ func responseFormatToAnthropic(rf *interfaces.ResponseFormat) anthropic.OutputCo
 }
 
 func (c *Client) Generate(ctx context.Context, req *interfaces.LLMRequest) (*interfaces.LLMResponse, error) {
-	messages := messagesToAnthropic(req)
+	messages := c.messagesToAnthropic(req)
 
 	params := c.buildMessageParams(messages, req)
 
@@ -133,7 +142,8 @@ func (c *Client) Generate(ctx context.Context, req *interfaces.LLMRequest) (*int
 		slog.String("model", c.Model),
 		slog.Int("messageCount", len(req.Messages)),
 		slog.Int("toolCount", len(req.Tools)),
-		slog.Bool("hasSystemMessage", req.SystemMessage != ""))
+		slog.Bool("hasSystemMessage", req.SystemMessage != ""),
+		slog.Bool("promptCaching", c.promptCaching))
 	msg, err := c.client.Messages.New(ctx, params)
 	if err != nil {
 		return nil, err
@@ -166,8 +176,9 @@ func (c *Client) GenerateStream(ctx context.Context, req *interfaces.LLMRequest)
 	c.Logger.Debug(ctx, "starting anthropic stream",
 		slog.String("model", c.Model),
 		slog.Int("messageCount", len(req.Messages)),
-		slog.Int("toolCount", len(req.Tools)))
-	messages := messagesToAnthropic(req)
+		slog.Int("toolCount", len(req.Tools)),
+		slog.Bool("promptCaching", c.promptCaching))
+	messages := c.messagesToAnthropic(req)
 	params := c.buildMessageParams(messages, req)
 	stream := c.client.Messages.NewStreaming(ctx, params)
 	acc := &anthropic.Message{}
@@ -228,16 +239,24 @@ func anthropicUsageToLLM(u anthropic.Usage) *interfaces.LLMUsage {
 	}
 }
 
-func messagesToAnthropic(req *interfaces.LLMRequest) []anthropic.MessageParam {
-	if len(req.Messages) == 0 {
-		return []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock("")),
-		}
+func (c *Client) messagesToAnthropic(req *interfaces.LLMRequest) []anthropic.MessageParam {
+	out := convertToAnthropicMessages(req.Messages)
+	if c.promptCaching {
+		markStableMessageForCaching(out)
+	}
+	return out
+}
+
+// convertToAnthropicMessages maps SDK messages onto Anthropic's alternating user/assistant
+// format. Consecutive "tool" role messages are merged into a single user message, since
+// Anthropic expects tool results as content blocks within one user turn.
+func convertToAnthropicMessages(messages []interfaces.Message) []anthropic.MessageParam {
+	if len(messages) == 0 {
+		return []anthropic.MessageParam{anthropic.NewUserMessage(anthropic.NewTextBlock(""))}
 	}
 	var out []anthropic.MessageParam
-	i := 0
-	for i < len(req.Messages) {
-		m := req.Messages[i]
+	for i := 0; i < len(messages); i++ {
+		m := messages[i]
 		switch m.Role {
 		case "user":
 			out = append(out, anthropic.NewUserMessage(anthropic.NewTextBlock(m.Content)))
@@ -261,19 +280,42 @@ func messagesToAnthropic(req *interfaces.LLMRequest) []anthropic.MessageParam {
 			}
 		case "tool":
 			var toolBlocks []anthropic.ContentBlockParamUnion
-			for i < len(req.Messages) && req.Messages[i].Role == "tool" {
-				t := req.Messages[i]
+			for ; i < len(messages) && messages[i].Role == "tool"; i++ {
+				t := messages[i]
 				toolBlocks = append(toolBlocks, anthropic.NewToolResultBlock(t.ToolCallID, t.Content, false))
-				i++
 			}
+			i--
 			if len(toolBlocks) > 0 {
 				out = append(out, anthropic.NewUserMessage(toolBlocks...))
 			}
-			continue
 		}
-		i++
 	}
 	return out
+}
+
+// markStableMessageForCaching adds an Anthropic cache breakpoint to the last content block of
+// the second-to-last message, so the model can reuse the cached prefix for every turn except
+// the newest (most dynamic) one.
+func markStableMessageForCaching(messages []anthropic.MessageParam) {
+	if len(messages) < 2 {
+		return
+	}
+	content := messages[len(messages)-2].Content
+	if len(content) == 0 {
+		return
+	}
+	setCacheControl(&content[len(content)-1])
+}
+
+func setCacheControl(block *anthropic.ContentBlockParamUnion) {
+	switch {
+	case block.OfText != nil:
+		block.OfText.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	case block.OfToolUse != nil:
+		block.OfToolUse.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	case block.OfToolResult != nil:
+		block.OfToolResult.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
 }
 
 func extractContentAndToolCalls(blocks []anthropic.ContentBlockUnion) (string, []*interfaces.ToolCall) {
@@ -298,17 +340,20 @@ func extractContentAndToolCalls(blocks []anthropic.ContentBlockUnion) (string, [
 	return content, toolCalls
 }
 
-func toolsToAnthropic(specs []interfaces.ToolSpec) []anthropic.ToolUnionParam {
+func (c *Client) toolsToAnthropic(specs []interfaces.ToolSpec) []anthropic.ToolUnionParam {
 	out := make([]anthropic.ToolUnionParam, len(specs))
 	for i, s := range specs {
 		schema := toolInputSchema(s.Parameters)
-		out[i] = anthropic.ToolUnionParam{
-			OfTool: &anthropic.ToolParam{
-				Name:        s.Name,
-				Description: anthropic.String(s.Description),
-				InputSchema: schema,
-			},
+		tool := &anthropic.ToolParam{
+			Name:        s.Name,
+			Description: anthropic.String(s.Description),
+			InputSchema: schema,
 		}
+		// Last tool gets the breakpoint so the full tools list is one cacheable prefix (max 4 breakpoints).
+		if c.promptCaching && i == len(specs)-1 {
+			tool.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
+		out[i] = anthropic.ToolUnionParam{OfTool: tool}
 	}
 	return out
 }

@@ -123,6 +123,7 @@ Environment variables override config file values. Prefer them for secrets.
 | `AGENT_LLM_BASEURL` | Optional base URL for OpenAI-compatible proxies |
 | `AGENT_LOGGER_LEVEL` | `error`, `warn`, `info`, `debug` |
 | `AGENT_LOGGER_OUTPUT` | Log file path, `stdout`, or `stderr` |
+| `AGENT_SHOW_LLM_USAGE` | Print session token usage summary on exit |
 
 ```bash
 export AGENT_LLM_APIKEY=sk-your-key
@@ -148,6 +149,20 @@ mcp:
 Each entry supports: `enabled`, `name`, `transport` (`stdio` or `streamable_http`), `command`/`args` (stdio) or `url`/`bearer_token` (HTTP), and optional `timeout_seconds`, `retry_attempts`, `allow_tools`, `block_tools`.
 
 See `cmd/config.sample.yaml` for HTTP transport, OAuth, and tool filter examples.
+
+## Token usage summary
+
+When `show_llm_usage: true` is set in `config.yaml` (or `AGENT_SHOW_LLM_USAGE=true`), the CLI accumulates `LLMUsage` across every turn of the session and prints one summary on exit (`exit`/`quit`/`bye`):
+
+```
+[USAGE] session total
+  prompt_tokens:     12120
+  completion_tokens: 262
+  total_tokens:      12382
+  cached_prompt:     12541
+```
+
+Use this to measure cost across a full interactive session. `cached_prompt` reflects provider cache hits when the LLM reports them (for Anthropic, only when prompt caching is enabled — the CLI enables it automatically for Anthropic).
 
 ## SDK vs CLI
 

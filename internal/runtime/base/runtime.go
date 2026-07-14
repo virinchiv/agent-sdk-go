@@ -48,20 +48,32 @@ type ExecuteLLMInput struct {
 }
 
 // BuildLLMRequest constructs an LLMRequest from the given messages and options.
-// When memoryContext or retrieverContext is non-empty each is appended to the system prompt.
-// tools is the per-run resolved tool list from [runtime.ExecuteRequest] or activity resolve.
+// SystemMessage is the static system prompt only. When memoryContext or retrieverContext
+// is non-empty each is prepended as a labeled user message (memory then RAG) before the
+// conversation messages. Message content is sanitized for the LLM copy only; the caller's
+// slice is not modified. tools is the per-run resolved tool list from [runtime.ExecuteRequest]
+// or activity resolve.
 func (rt *Runtime) BuildLLMRequest(messages []interfaces.Message, skipTools bool, memoryContext, retrieverContext string, tools []interfaces.Tool) *interfaces.LLMRequest {
-	systemMessage := rt.AgentSpec.SystemPrompt
+	sanitized := sanitizeMessages(messages)
+	outMsgs := make([]interfaces.Message, 0, len(sanitized)+2)
 	if memoryContext != "" {
-		systemMessage = fmt.Sprintf("%s\n\nRelevant Memories:\n%s", systemMessage, memoryContext)
+		outMsgs = append(outMsgs, interfaces.Message{
+			Role:    interfaces.MessageRoleUser,
+			Content: "Relevant Memories:\n" + memoryContext,
+		})
 	}
 	if retrieverContext != "" {
-		systemMessage = fmt.Sprintf("%s\n\nRelevant Context:\n%s", systemMessage, retrieverContext)
+		outMsgs = append(outMsgs, interfaces.Message{
+			Role:    interfaces.MessageRoleUser,
+			Content: "Relevant Context:\n" + retrieverContext,
+		})
 	}
+	outMsgs = append(outMsgs, sanitized...)
+
 	req := &interfaces.LLMRequest{
-		SystemMessage:  systemMessage,
+		SystemMessage:  rt.AgentSpec.SystemPrompt,
 		ResponseFormat: rt.AgentSpec.ResponseFormat,
-		Messages:       messages,
+		Messages:       outMsgs,
 	}
 	ApplyLLMSampling(rt.AgentConfig.LLM.Sampling, req)
 	if skipTools {

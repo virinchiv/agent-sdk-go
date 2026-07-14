@@ -12,6 +12,8 @@ type LLMConfig struct {
 	BaseURL  string
 	Logger   logger.Logger
 	LogLevel string
+	// PromptCaching is Anthropic-only; nil means disabled. Set via WithPromptCaching.
+	PromptCaching *bool
 }
 
 type Option func(*LLMConfig)
@@ -34,6 +36,13 @@ func WithModel(model string) Option {
 
 func WithBaseURL(baseURL string) Option {
 	return func(c *LLMConfig) { c.BaseURL = baseURL }
+}
+
+// WithPromptCaching enables or disables Anthropic prompt-cache breakpoints.
+// Default when unset is disabled (write cost / short TTL are a poor fit at low volume).
+// OpenAI/Gemini/DeepSeek ignore this option.
+func WithPromptCaching(enabled bool) Option {
+	return func(c *LLMConfig) { c.PromptCaching = &enabled }
 }
 
 // DefaultMaxTokens is used when MaxTokens is 0 and the provider requires it (e.g. Anthropic).

@@ -1162,6 +1162,8 @@ func (cfg *agentConfig) buildAgentRuntime(remoteWorker bool) (runtime.Runtime, e
 }
 
 // resolveTools builds the merged tool list for one run from registries and resolution.
+// Order is stable-first for prompt-cache friendliness:
+// native → MCP → A2A → sub-agents → save_memory → RAG/retriever tools last.
 func (c *agentConfig) resolveTools(ctx context.Context) ([]interfaces.Tool, error) {
 	tools := c.toolRegistry.List()
 
@@ -1183,17 +1185,17 @@ func (c *agentConfig) resolveTools(ctx context.Context) ([]interfaces.Tool, erro
 	}
 	tools = append(tools, subAgentTools...)
 
-	retrieverTools, err := c.resolveRetrieverTools()
-	if err != nil {
-		return nil, err
-	}
-	tools = append(tools, retrieverTools...)
-
 	memoryTools, err := c.resolveMemoryTools()
 	if err != nil {
 		return nil, err
 	}
 	tools = append(tools, memoryTools...)
+
+	retrieverTools, err := c.resolveRetrieverTools()
+	if err != nil {
+		return nil, err
+	}
+	tools = append(tools, retrieverTools...)
 
 	if err := validateToolNames(tools); err != nil {
 		return nil, err

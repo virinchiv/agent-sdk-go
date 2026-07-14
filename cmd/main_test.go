@@ -6,7 +6,24 @@ import (
 
 	"github.com/agenticenv/agent-sdk-go/internal/events"
 	"github.com/agenticenv/agent-sdk-go/internal/types"
+	"github.com/agenticenv/agent-sdk-go/pkg/agent"
 )
+
+func TestMergeLLMUsage(t *testing.T) {
+	if mergeLLMUsage(nil, nil) != nil {
+		t.Fatal("expected nil")
+	}
+	a := &agent.LLMUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3, CachedPromptTokens: 4}
+	got := mergeLLMUsage(nil, a)
+	if got == nil || got.PromptTokens != 1 || got.CachedPromptTokens != 4 {
+		t.Fatalf("nil+add = %#v", got)
+	}
+	b := &agent.LLMUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30, ReasoningTokens: 5}
+	got = mergeLLMUsage(a, b)
+	if got.PromptTokens != 11 || got.CompletionTokens != 22 || got.TotalTokens != 33 || got.CachedPromptTokens != 4 || got.ReasoningTokens != 5 {
+		t.Fatalf("merge = %#v", got)
+	}
+}
 
 func TestIsExitCommand(t *testing.T) {
 	// main() trims input before calling isExitCommand; the helper itself is case-insensitive, not TrimSpace.

@@ -28,6 +28,8 @@ Interactive conversation mode. Type prompts, get responses. Type `exit`, `quit`,
 
 The CLI uses `temporal.host`, `temporal.port`, and `temporal.namespace` from `config.yaml` (default: localhost, 7233, default). Override with `AGENT_TEMPORAL_HOST`, `AGENT_TEMPORAL_PORT`, and `AGENT_TEMPORAL_NAMESPACE` if Temporal runs elsewhere.
 
+**Anthropic prompt caching:** when `llm.provider: anthropic`, the CLI always enables `llm.WithPromptCaching(true)` — this differs from the SDK library default, which is caching **off** unless you opt in explicitly (see [LLM Providers](../docs/getting-started/llm-providers.mdx#prompt-caching)). Set `show_llm_usage: true` to see `cached_prompt` in the exit summary and confirm cache hits.
+
 ## Run
 
 ```bash
@@ -81,6 +83,7 @@ Config is loaded from `cmd/config.yaml` (default). If the file does not exist, d
 | `AGENT_LLM_BASEURL` | Optional; for OpenAI-compatible proxies |
 | `AGENT_LOGGER_LEVEL` | `error` (default), `warn`, `info`, `debug` |
 | `AGENT_LOGGER_OUTPUT` | Log file path; default `cmd/logs/agent.log` |
+| `AGENT_SHOW_LLM_USAGE` | When `true`, print accumulated session token usage on exit (`show_llm_usage` in config) |
 
 ### MCP (optional)
 
