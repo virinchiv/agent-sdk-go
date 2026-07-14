@@ -37,7 +37,7 @@ func AgentOptions(
 	}
 	prompt := fmt.Sprintf(
 		"You are a helpful assistant with long-term memory backed by %s (%s). "+
-			"When the system prompt includes a Relevant Memories section, treat those as facts from prior runs and answer from them.",
+			"When a Relevant Memories section appears in the conversation messages, treat those as facts from prior runs and answer from them.",
 		backendLabel,
 		recallNote,
 	)

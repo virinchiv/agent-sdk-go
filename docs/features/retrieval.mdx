@@ -5,7 +5,7 @@ description: "Connect agents to external knowledge bases with agentic, prefetch,
 
 Retrieval-Augmented Generation (RAG) lets agents query external knowledge bases and ground responses in up-to-date or domain-specific content — without hardcoding it into the prompt.
 
-When a retrieval fires, the SDK calls `Search(ctx, query)` on your retriever, collects the returned `[]Document`, and **injects the document content into the LLM request** — either as context prepended to the system message (prefetch) or as a tool result the model requested (agentic). The LLM then sees the retrieved text alongside the user prompt when generating its response.
+When a retrieval fires, the SDK calls `Search(ctx, query)` on your retriever, collects the returned `[]Document`, and **injects the document content into the LLM request** — either as a labeled "Relevant Context" message ahead of conversation history (prefetch) or as a tool result the model requested (agentic). The system prompt itself is never modified. The LLM then sees the retrieved text alongside the user prompt when generating its response.
 
 Built-in retriever implementations are in `pkg/retriever/weaviate` and `pkg/retriever/pgvector`. Bring your own by implementing [`interfaces.Retriever`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/interfaces#Retriever).
 

@@ -5,7 +5,7 @@ description: "Store and recall long-term memories scoped by user or tenant using
 
 Memory lets agents **remember facts and preferences across separate runs** — scoped per user, tenant, or custom tags — without relying on conversation history alone.
 
-At the start of each run, the SDK performs a semantic search against the memory store using the incoming prompt as a query. Matching memories are **injected as context** into the LLM request — ahead of the system prompt — so the model can reference past facts without the caller having to pass them explicitly. The agent also stores new memories during or after the run depending on the store mode.
+At the start of each run, the SDK performs a semantic search against the memory store using the incoming prompt as a query. Matching memories are **injected as a labeled "Relevant Memories" message** ahead of conversation history (the system prompt itself is left untouched) — so the model can reference past facts without the caller having to pass them explicitly. When both memory and [retrieval](/features/retrieval) prefetch are active, memory is placed first, RAG context second, keeping the request's stable prefix (system prompt, tools) unaffected by either. The agent also stores new memories during or after the run depending on the store mode.
 
 Use it when users return across sessions, when preferences should persist beyond a single conversation, or when you need tenant- or project-scoped memory separate from chat history.
 

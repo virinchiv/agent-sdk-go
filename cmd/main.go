@@ -81,6 +81,9 @@ func main() {
 	lineCh := make(chan string)
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
+		if err := scanner.Err(); err != nil {
+			log.Printf("error reading stdin: %v", err)
+		}
 		for scanner.Scan() {
 			lineCh <- scanner.Text()
 		}
@@ -112,6 +115,7 @@ func main() {
 
 	fmt.Println("Conversation mode. " + exitPrompt)
 
+	var sessionUsage *agent.LLMUsage
 	for {
 		fmt.Print("\nYou: ")
 		line, ok := <-lineCh
@@ -202,13 +206,22 @@ func main() {
 					fmt.Print(t.Delta)
 				}
 			}
-			if res := runResultFromFinishedEvent(ev); res != nil && res.Content != "" {
-				finalContent = res.Content
+			if res := runResultFromFinishedEvent(ev); res != nil {
+				if res.Content != "" {
+					finalContent = res.Content
+				}
+				if cfg.ShowLLMUsage {
+					sessionUsage = mergeLLMUsage(sessionUsage, res.LLMUsage)
+				}
 			}
 		}
 		if finalContent != "" {
 			fmt.Println()
 		}
+	}
+
+	if cfg.ShowLLMUsage {
+		printSessionUsageSummary(sessionUsage)
 	}
 }
 
@@ -316,6 +329,42 @@ func isExitCommand(s string) bool {
 		return true
 	}
 	return false
+}
+
+// mergeLLMUsage accumulates add into acc. Either argument may be nil.
+func mergeLLMUsage(acc, add *agent.LLMUsage) *agent.LLMUsage {
+	if add == nil {
+		return acc
+	}
+	if acc == nil {
+		cp := *add
+		return &cp
+	}
+	return &agent.LLMUsage{
+		PromptTokens:       acc.PromptTokens + add.PromptTokens,
+		CompletionTokens:   acc.CompletionTokens + add.CompletionTokens,
+		TotalTokens:        acc.TotalTokens + add.TotalTokens,
+		CachedPromptTokens: acc.CachedPromptTokens + add.CachedPromptTokens,
+		ReasoningTokens:    acc.ReasoningTokens + add.ReasoningTokens,
+	}
+}
+
+// printSessionUsageSummary prints accumulated session token usage, or a short note when none was reported.
+func printSessionUsageSummary(u *agent.LLMUsage) {
+	if u == nil {
+		fmt.Println("\n[USAGE] no token usage reported this session")
+		return
+	}
+	fmt.Println("\n[USAGE] session total")
+	fmt.Printf("  prompt_tokens:     %d\n", u.PromptTokens)
+	fmt.Printf("  completion_tokens: %d\n", u.CompletionTokens)
+	fmt.Printf("  total_tokens:      %d\n", u.TotalTokens)
+	if u.CachedPromptTokens > 0 {
+		fmt.Printf("  cached_prompt:     %d\n", u.CachedPromptTokens)
+	}
+	if u.ReasoningTokens > 0 {
+		fmt.Printf("  reasoning_tokens:  %d\n", u.ReasoningTokens)
+	}
 }
 
 func formatNewAgentCreateErr(err error) string {

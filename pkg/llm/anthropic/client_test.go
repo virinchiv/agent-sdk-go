@@ -13,11 +13,11 @@ import (
 
 func testClient(t *testing.T) *Client {
 	t.Helper()
-	cfg, err := llm.BuildConfig(llm.WithAPIKey("test-key"), llm.WithModel("claude-3-5-haiku-20241022"))
+	c, err := NewClient(llm.WithAPIKey("test-key"), llm.WithModel("claude-3-5-haiku-20241022"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Client{LLMConfig: *cfg}
+	return c
 }
 
 func TestClient_Getters(t *testing.T) {
@@ -66,7 +66,7 @@ func TestBuildMessageParams_smoke(t *testing.T) {
 		ResponseFormat: &interfaces.ResponseFormat{Type: interfaces.ResponseFormatJSON, Schema: map[string]any{"type": "object"}},
 		Reasoning:      &interfaces.LLMReasoning{BudgetTokens: 2048},
 	}
-	msgs := messagesToAnthropic(req)
+	msgs := c.messagesToAnthropic(req)
 	p := c.buildMessageParams(msgs, req)
 	if p.Model == "" || p.MaxTokens == 0 || len(p.Messages) == 0 {
 		t.Fatalf("params: %+v", p)
@@ -109,13 +109,87 @@ func TestToolInputSchema(t *testing.T) {
 }
 
 func TestToolsToAnthropic(t *testing.T) {
-	out := toolsToAnthropic([]interfaces.ToolSpec{{
+	c := testClient(t)
+	out := c.toolsToAnthropic([]interfaces.ToolSpec{{
 		Name:        "t1",
 		Description: "d",
 		Parameters:  interfaces.JSONSchema{"type": "object", "properties": map[string]any{}},
 	}})
 	if len(out) != 1 || out[0].OfTool == nil || out[0].OfTool.Name != "t1" {
 		t.Fatalf("%#v", out)
+	}
+	if out[0].OfTool.CacheControl.Type != "" {
+		t.Fatal("default: no cache_control on tools")
+	}
+}
+
+func TestPromptCaching_disabledByDefault(t *testing.T) {
+	c := testClient(t)
+	if c.promptCaching {
+		t.Fatal("expected prompt caching disabled by default")
+	}
+	req := &interfaces.LLMRequest{
+		SystemMessage: "sys",
+		Tools: []interfaces.ToolSpec{
+			{Name: "a", Description: "d", Parameters: interfaces.JSONSchema{"type": "object"}},
+		},
+		Messages: []interfaces.Message{
+			{Role: interfaces.MessageRoleUser, Content: "a"},
+			{Role: interfaces.MessageRoleUser, Content: "b"},
+		},
+	}
+	params := c.buildMessageParams(c.messagesToAnthropic(req), req)
+	if params.System[0].CacheControl.Type != "" {
+		t.Fatal("system should not have cache_control by default")
+	}
+	tools := c.toolsToAnthropic(req.Tools)
+	if tools[0].OfTool.CacheControl.Type != "" {
+		t.Fatal("tools should not have cache_control by default")
+	}
+}
+
+func TestPromptCaching_enabled(t *testing.T) {
+	c, err := NewClient(llm.WithAPIKey("test-key"), llm.WithModel("claude-3-5-haiku-20241022"), llm.WithPromptCaching(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.promptCaching {
+		t.Fatal("expected enabled")
+	}
+	req := &interfaces.LLMRequest{
+		SystemMessage: "sys",
+		Tools: []interfaces.ToolSpec{
+			{Name: "a", Description: "d", Parameters: interfaces.JSONSchema{"type": "object"}},
+			{Name: "b", Description: "d", Parameters: interfaces.JSONSchema{"type": "object"}},
+		},
+		Messages: []interfaces.Message{
+			{Role: interfaces.MessageRoleUser, Content: "earlier"},
+			{Role: interfaces.MessageRoleAssistant, Content: "mid"},
+			{Role: interfaces.MessageRoleUser, Content: "latest"},
+		},
+	}
+	tools := c.toolsToAnthropic(req.Tools)
+	if tools[0].OfTool.CacheControl.Type != "" {
+		t.Fatal("only last tool should carry cache_control")
+	}
+	if tools[1].OfTool.CacheControl.Type == "" {
+		t.Fatal("last tool must carry cache_control")
+	}
+	params := c.buildMessageParams(c.messagesToAnthropic(req), req)
+	if len(params.System) != 1 || params.System[0].CacheControl.Type == "" {
+		t.Fatalf("system cache params: %#v", params.System)
+	}
+	msgs := c.messagesToAnthropic(req)
+	if len(msgs) != 3 {
+		t.Fatalf("msgs len=%d", len(msgs))
+	}
+	mid := msgs[1]
+	if len(mid.Content) == 0 || mid.Content[0].OfText == nil || mid.Content[0].OfText.CacheControl.Type == "" {
+		t.Fatalf("expected cache on second-to-last message: %#v", mid.Content)
+	}
+	latest := msgs[2]
+	if len(latest.Content) > 0 && latest.Content[0].OfText != nil && latest.Content[0].OfText.CacheControl.Type != "" {
+		t.Fatal("latest message must not have cache_control")
 	}
 }
 
@@ -144,9 +218,9 @@ func TestAnthropicUsageToLLM(t *testing.T) {
 // always set a non-empty tool name on assistant tool_use content.
 func TestMessagesToAnthropic_toolUseNamesNeverEmpty(t *testing.T) {
 	t.Parallel()
+	c := testClient(t)
 
 	t.Run("preserves non-empty tool name", func(t *testing.T) {
-		t.Parallel()
 		req := &interfaces.LLMRequest{
 			Messages: []interfaces.Message{
 				{Role: interfaces.MessageRoleUser, Content: "add 1 and 2"},
@@ -167,7 +241,7 @@ func TestMessagesToAnthropic_toolUseNamesNeverEmpty(t *testing.T) {
 				},
 			},
 		}
-		for _, name := range toolUseNamesFromMessages(messagesToAnthropic(req)) {
+		for _, name := range toolUseNamesFromMessages(c.messagesToAnthropic(req)) {
 			if name != "add" {
 				t.Fatalf("expected tool_use name 'add', got %q", name)
 			}
@@ -175,7 +249,6 @@ func TestMessagesToAnthropic_toolUseNamesNeverEmpty(t *testing.T) {
 	})
 
 	t.Run("empty tool name falls back so request is valid", func(t *testing.T) {
-		t.Parallel()
 		req := &interfaces.LLMRequest{
 			Messages: []interfaces.Message{
 				{Role: interfaces.MessageRoleUser, Content: "add 1 and 2"},
@@ -196,7 +269,7 @@ func TestMessagesToAnthropic_toolUseNamesNeverEmpty(t *testing.T) {
 				},
 			},
 		}
-		names := toolUseNamesFromMessages(messagesToAnthropic(req))
+		names := toolUseNamesFromMessages(c.messagesToAnthropic(req))
 		if len(names) != 1 {
 			t.Fatalf("expected one tool_use block, got %d", len(names))
 		}

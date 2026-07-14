@@ -1183,6 +1183,37 @@ func TestBuildAgentConfig_toolsList_includesRetrieverTools_hybrid(t *testing.T) 
 	}
 }
 
+func TestResolveTools_order_nativeMemoryThenRAG(t *testing.T) {
+	cfg, err := buildAgentConfig([]Option{
+		WithName("test"),
+		WithTemporalConfig(&TemporalConfig{TaskQueue: "q"}),
+		WithLLMClient(stubLLM{}),
+		WithTools(mockTool{name: "echo"}),
+		WithMemory(memory.DefaultConfig(stubMemoryBackend{})),
+		WithRetrievers(stubRetriever{}),
+		WithRetrieverMode(RetrieverModeAgentic),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := cfg.resolveTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("len=%d want 3", len(list))
+	}
+	if list[0].Name() != "echo" {
+		t.Fatalf("tool[0]=%q want echo", list[0].Name())
+	}
+	if list[1].Name() != types.SaveMemoryToolName {
+		t.Fatalf("tool[1]=%q want %s", list[1].Name(), types.SaveMemoryToolName)
+	}
+	if list[2].Name() != "retriever_stub" {
+		t.Fatalf("tool[2]=%q want retriever_stub (RAG last)", list[2].Name())
+	}
+}
+
 func TestAgentConfigFingerprint_AgenticRetrieverNamesChangesDigest(t *testing.T) {
 	baseOpts := []Option{
 		WithName("test"),

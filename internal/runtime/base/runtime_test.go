@@ -102,20 +102,41 @@ func TestBuildLLMRequest_WithRetrieverContext(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
-	req := rt.BuildLLMRequest(nil, false, "", "extra context", nil)
-	require.Contains(t, req.SystemMessage, "you are helpful")
-	require.Contains(t, req.SystemMessage, "extra context")
+	user := []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "q"}}
+	req := rt.BuildLLMRequest(user, false, "", "extra context", nil)
+	require.Equal(t, "you are helpful", req.SystemMessage)
+	require.Len(t, req.Messages, 2)
+	require.Equal(t, interfaces.MessageRoleUser, req.Messages[0].Role)
+	require.Contains(t, req.Messages[0].Content, "Relevant Context")
+	require.Contains(t, req.Messages[0].Content, "extra context")
+	require.Equal(t, "q", req.Messages[1].Content)
 }
 
 func TestBuildLLMRequest_WithMemoryContext(t *testing.T) {
 	rt := newTestRuntime(sdkruntime.AgentConfig{
 		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
 	})
-	req := rt.BuildLLMRequest(nil, false, "memory fact", "retriever doc", nil)
-	require.Contains(t, req.SystemMessage, "Relevant Memories")
-	require.Contains(t, req.SystemMessage, "memory fact")
-	require.Contains(t, req.SystemMessage, "Relevant Context")
-	require.Contains(t, req.SystemMessage, "retriever doc")
+	user := []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "q"}}
+	req := rt.BuildLLMRequest(user, false, "memory fact", "retriever doc", nil)
+	require.Equal(t, "you are helpful", req.SystemMessage)
+	require.Len(t, req.Messages, 3)
+	require.Contains(t, req.Messages[0].Content, "Relevant Memories")
+	require.Contains(t, req.Messages[0].Content, "memory fact")
+	require.Contains(t, req.Messages[1].Content, "Relevant Context")
+	require.Contains(t, req.Messages[1].Content, "retriever doc")
+	require.Equal(t, "q", req.Messages[2].Content)
+	// Input slice must not be mutated / aliased when context is prepended.
+	require.Len(t, user, 1)
+}
+
+func TestBuildLLMRequest_DoesNotMutateInput(t *testing.T) {
+	rt := newTestRuntime(sdkruntime.AgentConfig{
+		LLM: sdkruntime.AgentLLM{Client: stubLLMClient{}},
+	})
+	msgs := []interfaces.Message{{Role: interfaces.MessageRoleUser, Content: "  hello   world  "}}
+	req := rt.BuildLLMRequest(msgs, false, "mem", "", nil)
+	require.Equal(t, "  hello   world  ", msgs[0].Content)
+	require.Equal(t, "hello world", req.Messages[1].Content)
 }
 
 func TestBuildLLMRequest_SkipTools(t *testing.T) {

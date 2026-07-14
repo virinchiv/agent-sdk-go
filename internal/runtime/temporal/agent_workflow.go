@@ -139,7 +139,8 @@ type AgentRetrieverInput struct {
 
 // AgentRetrieverResult is the return value of AgentRetrieverActivity.
 // RetrieverContext is the combined, formatted document context from all retrievers; empty when no
-// documents were found. It is injected into the system prompt by AgentLLMActivity and AgentLLMStreamActivity.
+// documents were found. BuildLLMRequest injects it as a labeled "Relevant Context" message ahead
+// of conversation history; the system prompt itself is left untouched.
 type AgentRetrieverResult struct {
 	RetrieverContext string `json:"retriever_context,omitempty"`
 	TotalSearches    int64  `json:"total_searches,omitempty"`

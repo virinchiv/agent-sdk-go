@@ -17,6 +17,8 @@ An agent run can involve **multiple LLM calls** — the initial generation, then
 | `CachedPromptTokens` | Prompt cache hits (when supported) |
 | `ReasoningTokens` | Extended thinking tokens (when supported) |
 
+`CachedPromptTokens` is populated by OpenAI automatically (server-side caching, no client option needed) and by Anthropic only when [`llm.WithPromptCaching(true)`](/getting-started/llm-providers#prompt-caching) is set — it's `0` for Anthropic otherwise, since caching is disabled by default there.
+
 ## Run
 
 [`AgentRunResult.LLMUsage`](https://pkg.go.dev/github.com/agenticenv/agent-sdk-go/pkg/agent#AgentRunResult) is the **sum across all LLM calls** in that run — including tool rounds. Use it for cost estimates, quotas, and logging:
