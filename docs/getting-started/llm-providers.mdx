@@ -143,8 +143,21 @@ llmClient, err := ollama.NewClient(
 
 Common models: any model you have pulled with `ollama pull`, e.g. `llama3.2`, `qwen2.5`, `mistral`. Start the daemon with `ollama serve`. Reasoning models such as `deepseek-r1` and `qwen3` surface their trace via the streaming `LLMStreamChunk.ThinkingDelta` and, for non-streaming responses, `LLMResponse.Metadata["reasoning_content"]`.
 
+### Ollama Cloud
+
+[Ollama Cloud](https://ollama.com) hosts larger models behind an API key, for machines that can't run them locally. Supplying an API key — via `llm.WithAPIKey` or the `OLLAMA_API_KEY` environment variable — automatically switches the default base URL to Ollama Cloud's endpoint (`https://ollama.com/v1`); no other code change is needed. `llm.WithBaseURL` still overrides either default, e.g. for a self-hosted daemon behind an auth proxy.
+
+```go
+llmClient, err := ollama.NewClient(
+    llm.WithAPIKey(os.Getenv("OLLAMA_API_KEY")), // omit to fall back to the OLLAMA_API_KEY env var
+    llm.WithModel("qwen3-coder:480b-cloud"),      // cloud models are suffixed "-cloud"
+)
+```
+
+Generate a key at [ollama.com/settings/keys](https://ollama.com/settings/keys).
+
 <Note>
-Not every Ollama model supports tool-calling or JSON mode, so tool use and response formats behave differently depending on which model you pull. As with DeepSeek, a [response format](/features/response-format) with `Type: ResponseFormatJSON` maps to `json_object`; any `Schema` is ignored, so prompt the model for the shape you want.
+Not every Ollama model supports tool-calling or JSON mode, so tool use and response formats behave differently depending on which model you pull or select on Cloud. As with DeepSeek, a [response format](/features/response-format) with `Type: ResponseFormatJSON` maps to `json_object`; any `Schema` is ignored, so prompt the model for the shape you want.
 </Note>
 
 ## Shared LLM options

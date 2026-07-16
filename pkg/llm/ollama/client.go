@@ -1,14 +1,26 @@
-// Package ollama provides an interfaces.LLMClient for Ollama.
+// Package ollama provides an interfaces.LLMClient for Ollama, covering both a local daemon
+// and Ollama Cloud (ollama.com).
 //
-// Ollama exposes an OpenAI-compatible Chat Completions API (default
-// http://localhost:11434/v1), so this client uses the openai-go SDK as its transport but
-// implements the interface independently: it defaults to Ollama's local base URL, requires
-// no API key (Ollama ignores auth, so a placeholder key is injected for the transport),
-// sends system prompts with the "system" role, and maps a "reasoning_content" field—emitted
-// by thinking models such as deepseek-r1 and qwen3 through Ollama—into
-// LLMResponse.Metadata["reasoning_content"] and streaming ThinkingDelta.
+// Ollama exposes an OpenAI-compatible Chat Completions API, so this client uses the
+// openai-go SDK as its transport but implements the interface independently: it sends
+// system prompts with the "system" role, and maps a "reasoning_content" field—emitted by
+// thinking models such as deepseek-r1 and qwen3—into LLMResponse.Metadata["reasoning_content"]
+// and streaming ThinkingDelta.
 //
+// # Local
+//
+// The local daemon requires no API key (Ollama ignores auth, so a placeholder key is
+// injected for the transport) and defaults to DefaultBaseURL (http://localhost:11434/v1).
 // Common models are any locally pulled model, e.g. "llama3.2", "qwen2.5", "mistral".
+//
+// # Cloud
+//
+// Ollama Cloud (https://ollama.com) hosts larger models behind an API key from
+// https://ollama.com/settings/keys. Supplying an API key—via llm.WithAPIKey or the
+// OLLAMA_API_KEY environment variable—switches the default base URL to DefaultCloudBaseURL
+// (https://ollama.com/v1); pass llm.WithBaseURL explicitly to override either default (e.g. a
+// self-hosted Ollama behind an auth proxy). Cloud models are suffixed "-cloud", e.g.
+// "qwen3-coder:480b-cloud".
 //
 // Model caveat: not every Ollama model supports tool-calling or JSON mode, so tool use and
 // response_format behavior varies by model.
@@ -18,6 +30,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/agenticenv/agent-sdk-go/pkg/interfaces"
@@ -34,8 +47,16 @@ import (
 // DefaultBaseURL is Ollama's local OpenAI-compatible API endpoint.
 const DefaultBaseURL = "http://localhost:11434/v1"
 
-// placeholderAPIKey is injected as the transport auth token. Ollama ignores auth, but the
-// openai-go SDK requires a non-empty key.
+// DefaultCloudBaseURL is Ollama Cloud's OpenAI-compatible API endpoint. It is used automatically
+// when an API key is set (via llm.WithAPIKey or OLLAMA_API_KEY) and llm.WithBaseURL is not.
+const DefaultCloudBaseURL = "https://ollama.com/v1"
+
+// cloudAPIKeyEnvVar is read as a fallback when llm.WithAPIKey is not supplied, matching the
+// Ollama CLI's own convention for Ollama Cloud authentication.
+const cloudAPIKeyEnvVar = "OLLAMA_API_KEY"
+
+// placeholderAPIKey is injected as the local transport's auth token. The local daemon ignores
+// auth, but the openai-go SDK requires a non-empty key.
 const placeholderAPIKey = "ollama"
 
 // reasoningContentField is the non-standard field thinking models (deepseek-r1, qwen3) return
@@ -50,24 +71,34 @@ type Client struct {
 	client openai.Client
 }
 
-// NewClient creates a new Ollama LLM client. No API key is required: the base URL defaults to
-// DefaultBaseURL (a caller-supplied llm.WithBaseURL overrides it for remote hosts), and a
-// placeholder key is injected for the transport since Ollama ignores auth.
+// NewClient creates a new Ollama LLM client, targeting a local daemon by default.
+//
+// No API key is required for local use. Supplying one—via llm.WithAPIKey or the
+// OLLAMA_API_KEY environment variable (checked when llm.WithAPIKey is not set)—switches the
+// default base URL to Ollama Cloud (DefaultCloudBaseURL). llm.WithBaseURL always overrides
+// the default, local or cloud, e.g. for a remote self-hosted daemon or an auth proxy.
 func NewClient(opts ...llm.Option) (*Client, error) {
 	config, err := llm.BuildConfigKeyless(opts...)
 	if err != nil {
 		return nil, err
 	}
-	if config.BaseURL == "" {
-		config.BaseURL = DefaultBaseURL
+	if config.APIKey == "" {
+		config.APIKey = os.Getenv(cloudAPIKeyEnvVar)
 	}
-	apiKey := config.APIKey
-	if apiKey == "" {
-		apiKey = placeholderAPIKey
+	if config.BaseURL == "" {
+		if config.APIKey != "" {
+			config.BaseURL = DefaultCloudBaseURL
+		} else {
+			config.BaseURL = DefaultBaseURL
+		}
+	}
+	transportKey := config.APIKey
+	if transportKey == "" {
+		transportKey = placeholderAPIKey
 	}
 	c := &Client{LLMConfig: *config}
 	c.client = openai.NewClient(
-		option.WithAPIKey(apiKey),
+		option.WithAPIKey(transportKey),
 		option.WithBaseURL(c.BaseURL),
 	)
 	return c, nil

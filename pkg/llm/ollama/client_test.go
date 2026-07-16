@@ -14,6 +14,9 @@ var _ interfaces.LLMClient = (*Client)(nil)
 
 func newTestClient(t *testing.T, opts ...llm.Option) *Client {
 	t.Helper()
+	// Isolate from the environment: an OLLAMA_API_KEY set on the host/CI must not silently
+	// change local-default tests to the cloud default. Cloud-specific tests set it back.
+	t.Setenv(cloudAPIKeyEnvVar, "")
 	c, err := NewClient(opts...)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -51,6 +54,56 @@ func TestNewClient_DefaultBaseURL(t *testing.T) {
 func TestNewClient_BaseURLOverride(t *testing.T) {
 	const custom = "http://remote-host:11434/v1"
 	c := newTestClient(t, llm.WithBaseURL(custom))
+	if c.BaseURL != custom {
+		t.Fatalf("BaseURL = %q, want override %q", c.BaseURL, custom)
+	}
+}
+
+// Supplying an API key (no explicit base URL) switches the default to Ollama Cloud.
+func TestNewClient_CloudBaseURL_WithAPIKeyOption(t *testing.T) {
+	c := newTestClient(t, llm.WithAPIKey("cloud-key"), llm.WithModel("qwen3-coder:480b-cloud"))
+	if c.BaseURL != DefaultCloudBaseURL {
+		t.Fatalf("BaseURL = %q, want cloud default %q", c.BaseURL, DefaultCloudBaseURL)
+	}
+	if c.APIKey != "cloud-key" {
+		t.Fatalf("APIKey = %q, want %q", c.APIKey, "cloud-key")
+	}
+}
+
+// OLLAMA_API_KEY is a fallback when llm.WithAPIKey is not supplied, matching the Ollama CLI's
+// own convention, and it also switches the default base URL to Ollama Cloud.
+func TestNewClient_CloudBaseURL_FromEnvVar(t *testing.T) {
+	t.Setenv(cloudAPIKeyEnvVar, "env-key")
+	c, err := NewClient(llm.WithModel("llama3.2"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if c.BaseURL != DefaultCloudBaseURL {
+		t.Fatalf("BaseURL = %q, want cloud default %q", c.BaseURL, DefaultCloudBaseURL)
+	}
+	if c.APIKey != "env-key" {
+		t.Fatalf("APIKey = %q, want %q", c.APIKey, "env-key")
+	}
+}
+
+// llm.WithAPIKey always takes precedence over OLLAMA_API_KEY, mirroring the Gemini client's
+// WithAPIKey/GOOGLE_API_KEY precedence.
+func TestNewClient_APIKeyOptionTakesPrecedenceOverEnv(t *testing.T) {
+	t.Setenv(cloudAPIKeyEnvVar, "env-key")
+	c, err := NewClient(llm.WithAPIKey("explicit-key"), llm.WithModel("llama3.2"))
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	if c.APIKey != "explicit-key" {
+		t.Fatalf("APIKey = %q, want %q", c.APIKey, "explicit-key")
+	}
+}
+
+// An explicit base URL always wins over the cloud default, e.g. a self-hosted daemon behind
+// an auth proxy that still needs a real API key.
+func TestNewClient_ExplicitBaseURLOverridesCloudDefault(t *testing.T) {
+	const custom = "https://proxy.example.com/v1"
+	c := newTestClient(t, llm.WithAPIKey("cloud-key"), llm.WithBaseURL(custom))
 	if c.BaseURL != custom {
 		t.Fatalf("BaseURL = %q, want override %q", c.BaseURL, custom)
 	}
